@@ -68,6 +68,22 @@ describe("CredentialStoreEncapsulated", () => {
     expect(round && "jti" in round).toBe(false);
   });
 
+  it("accepts only the canonical token string — no lenient base64url variants", async () => {
+    // WHY: Node's base64url decoder ignores stray characters and accepts the
+    // standard alphabet, so `tok=`, `tok `, `tok\n`, a `+/` spelling or `tok!`
+    // decoded to the same credential — each a distinct string, i.e. a fresh
+    // per-token rate-limit bucket for one refresh token.
+    const store = new CredentialStoreEncapsulated<MyClaims>({ secret: SECRET, clock });
+    const token = await store.persist(makeState("alice", clock.now()));
+    expect(await store.retrieve(token)).not.toBeNull();
+    const standard = token.replace(/-/g, "+").replace(/_/g, "/");
+    const variants = [`${token}=`, `${token} `, `${token}\n`, `${token}!`, ` ${token}`];
+    if (standard !== token) variants.push(standard);
+    for (const variant of variants) {
+      expect(await store.retrieve(variant), JSON.stringify(variant)).toBeNull();
+    }
+  });
+
   it("returns null for tampered ciphertext", async () => {
     const store = new CredentialStoreEncapsulated({ secret: SECRET, clock });
     const token = await store.persist(makeState("alice", clock.now()));

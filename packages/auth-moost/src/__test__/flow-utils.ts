@@ -7,19 +7,20 @@ import {
   MoostArbac,
   type TArbacRole,
 } from "@aooth/arbac-moost";
-import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
+import { AuthCredential, CredentialStoreMemory, RateLimitStoreMemory } from "@aooth/auth";
 import {
   AuthCodeStoreMemory,
   LoopbackClientPolicy,
   PendingAuthorizationStoreMemory,
 } from "@aooth/auth/authz";
 import { UserService, UserStoreMemory } from "@aooth/user";
-import type { UserServiceConfig } from "@aooth/user";
+import type { UserServiceConfig, UserStore } from "@aooth/user";
 import { MoostHttp } from "@moostjs/event-http";
 import {
   HandleStateStrategy,
   MoostWf,
   type WfOutlet,
+  type WfStateStore,
   type WfStateStrategy,
   WfStateStoreMemory,
 } from "@moostjs/event-wf";
@@ -41,6 +42,7 @@ import { Wooks } from "wooks";
 import type { AuthOptions } from "../auth.config";
 import { AuthController } from "../auth.controller";
 import { authGuardInterceptor } from "../auth.guard";
+import { rateLimitInterceptors, type RateLimitInterceptorOptions } from "../rate-limit/interceptor";
 import { AuthorizeController } from "../authz/authorize.controller";
 import {
   AUTH_CODE_STORE_TOKEN,
@@ -88,8 +90,11 @@ export const localizedHttpApp: TWooksHttpOptions = {
 /** A memory wf-state store that also keeps a copy of every state it persists. */
 class RecordingStateStore extends WfStateStoreMemory {
   readonly saved: unknown[] = [];
+  /** The `expiresAt` of every persisted state, in step with `saved`. */
+  readonly expiries: Array<number | undefined> = [];
   override set(...args: Parameters<WfStateStoreMemory["set"]>): Promise<void> {
     this.saved.push(structuredClone(args[1]));
+    this.expiries.push(args[2]);
     return super.set(...args);
   }
 }
@@ -109,6 +114,7 @@ export interface CapturedEmail {
 @Injectable()
 class FlowTriggerProvider extends WfTriggerProvider {
   static store = new RecordingStateStore();
+  static magicLinkStore = new WfStateStoreMemory();
   static emails: CapturedEmail[] = [];
   static hooks: WfTriggerHooks = {};
   constructor(wf: MoostWf, auth: AuthCredential) {
@@ -131,8 +137,19 @@ class FlowTriggerProvider extends WfTriggerProvider {
   protected override wfStateSecret(): Buffer {
     return deriveWfStateSecret("flow-utils-secret");
   }
+  /** `encapsulated`: keep the bundled default `store` strategy (client-held state). */
+  static storeMode: "durable" | "encapsulated" = "durable";
+  /** Back the magic-link strategy with the durable store (one shared table). */
+  static sharedStore = false;
   protected override storeStrategy(): WfStateStrategy {
-    return new HandleStateStrategy({ store: FlowTriggerProvider.store });
+    return FlowTriggerProvider.storeMode === "encapsulated"
+      ? super.storeStrategy()
+      : new HandleStateStrategy({ store: FlowTriggerProvider.store });
+  }
+  protected override magicLinkStore(): WfStateStore {
+    return FlowTriggerProvider.sharedStore
+      ? FlowTriggerProvider.store
+      : FlowTriggerProvider.magicLinkStore;
   }
   protected override triggerHooks(): WfTriggerHooks {
     return FlowTriggerProvider.hooks;
@@ -157,6 +174,8 @@ export interface PrepareFlowOpts extends AuthOptions {
   workflowOpts?: Partial<AuthWorkflowOpts>;
   workflowClass?: typeof FlowWorkflow;
   userConfig?: UserServiceConfig;
+  /** Use this user store instead of a fresh username-only memory store. */
+  userStore?: UserStore;
   controllerClass?: typeof AuthController;
   /** Use this credential orchestrator instead of the default memory-store one. */
   credential?: AuthCredential;
@@ -168,6 +187,12 @@ export interface PrepareFlowOpts extends AuthOptions {
   arbac?: { roles: TArbacRole<object, object>[]; userRoles: Map<string, string[]> };
   /** Options of the HTTP app (e.g. `resolveLocale`, `transformErrorBody`). */
   httpApp?: TWooksHttpOptions;
+  /** `'encapsulated'`: the bundled default `store` strategy instead of the durable memory one. */
+  storeMode?: "durable" | "encapsulated";
+  /** Back the magic-link strategy with the durable store (one shared table). */
+  sharedStore?: boolean;
+  /** Install `rateLimitInterceptors(rateLimit)` globally. */
+  rateLimit?: RateLimitInterceptorOptions;
 }
 
 export type FlowResponse = HarnessResponse;
@@ -178,6 +203,12 @@ export interface PreparedFlowApp {
   emails: CapturedEmail[];
   /** Every workflow state the durable store persisted, oldest first (copies). */
   savedStates: unknown[];
+  /** The `expiresAt` of every state the durable store persisted, in step with `savedStates`. */
+  savedExpiries: Array<number | undefined>;
+  /** The store behind the `magic-link` strategy (recovery and sign-in links). */
+  magicLinkStore: WfStateStoreMemory;
+  /** The durable store behind the `store` strategy (and the links, with `sharedStore`). */
+  durableStore: WfStateStoreMemory;
   users: UserService;
   auth: AuthCredential;
   /** Create an ACTIVE user with a password; returns its id. */
@@ -202,19 +233,28 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
   // registration wins — reset it so each boot runs its own workflow instance.
   clearGlobalWooks();
   FlowTriggerProvider.store = new RecordingStateStore();
+  FlowTriggerProvider.magicLinkStore = new WfStateStoreMemory();
   FlowTriggerProvider.emails = [];
   FlowTriggerProvider.hooks = opts.triggerHooks ?? {};
-  activeOpts = opts.workflowOpts ?? {};
+  FlowTriggerProvider.storeMode = opts.storeMode ?? "durable";
+  FlowTriggerProvider.sharedStore = opts.sharedStore ?? false;
+  // A fresh counter store per boot (code cooldowns and budgets, shadow
+  // lockouts) unless the test passes one — the default is process-wide.
+  activeOpts = { lockoutShadowStore: new RateLimitStoreMemory(), ...opts.workflowOpts };
   const {
     workflowOpts: _w,
     workflowClass,
     userConfig,
+    userStore,
     controllerClass,
     arbac: arbacOpts,
     credential,
     authorizationServer,
     triggerHooks: _h,
     httpApp,
+    storeMode: _m,
+    sharedStore: _s,
+    rateLimit,
     ...authOptions
   } = opts;
 
@@ -230,7 +270,7 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
       accessTtl: 60_000,
       refresh: { ttl: 600_000, rotation: "always" },
     });
-  const users = new UserService(new UserStoreMemory(), userConfig);
+  const users = new UserService(userStore ?? new UserStoreMemory(), userConfig);
   const consentStore = new ConsentStore();
   const pending = new PendingAuthorizationStoreMemory();
   const codes = new AuthCodeStoreMemory();
@@ -254,6 +294,7 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
       : createReplaceRegistry([WfTriggerProvider, FlowTriggerProvider]),
   );
   moost.applyGlobalInterceptors(authGuardInterceptor({ enableCookie: false, ...authOptions }));
+  if (rateLimit) moost.applyGlobalInterceptors(...rateLimitInterceptors(rateLimit));
   if (arbacOpts) {
     setTestArbacUserRoles(arbacOpts.userRoles);
     moost.applyGlobalInterceptors(arbacAuthorizeInterceptor);
@@ -281,6 +322,9 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
     moost,
     emails: FlowTriggerProvider.emails,
     savedStates: FlowTriggerProvider.store.saved,
+    savedExpiries: FlowTriggerProvider.store.expiries,
+    magicLinkStore: FlowTriggerProvider.magicLinkStore,
+    durableStore: FlowTriggerProvider.store,
     users,
     auth,
     seedUser: async (username, password, extras) => {

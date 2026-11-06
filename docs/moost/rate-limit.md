@@ -31,7 +31,7 @@ class LoginController {
 }
 ```
 
-The primary target is **open (public) endpoints** — login, invite acceptance, password reset, OAuth/DCR — keyed by client IP. The same decorator works on guarded endpoints keyed by user id.
+The primary target is **open (public) endpoints** — login, invite acceptance, password reset, token refresh, OAuth/DCR — keyed by client IP. aooth's own refresh, invite and authorization-server token routes ship [limits of their own](#bundled-limits). The same decorator works on guarded endpoints keyed by user id.
 
 ## `@RateLimit(...rules, options?)`
 
@@ -77,14 +77,15 @@ Before 0.2 the bottom-most decorator silently won and the others were ignored. C
 
 Returns **two** interceptor definitions — register with a spread, globally or via [`RateLimited`](#ratelimited-per-controller-sugar). Options:
 
-| Option       | Default | Effect                                                                                                                                                            |
-| ------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `limiter`    | —       | The shared `RateLimiter` — wire your `RateLimitStoreRedis` here. Omitted: a memory-store limiter is created once per factory call (single-process dev/test only). |
-| `rules`      | —       | App-wide default rules applied to **every** HTTP route without its own `@RateLimit` metadata. Routes opt out with `@RateLimit(false)`.                            |
-| `key`        | `'ip'`  | Default key strategy for routes whose decorator doesn't set one.                                                                                                  |
-| `trustProxy` | `false` | Trust exactly one proxy in front: the client IP is the right-most `x-forwarded-for` entry. `false`: the IP the HTTP app resolves (`useRequest().getIp()`).        |
-| `headers`    | `true`  | Emit draft `RateLimit-*` headers on every response of a limited route.                                                                                            |
-| `message`    | —       | App-wide default 429 message template.                                                                                                                            |
+| Option       | Default | Effect                                                                                                                                                                                                                              |
+| ------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `limiter`    | —       | The shared `RateLimiter` — wire your `RateLimitStoreRedis` here. Omitted: a memory-store limiter is created once per factory call (single-process dev/test only).                                                                   |
+| `rules`      | —       | App-wide default rules applied to **every** HTTP route without its own `@RateLimit` metadata. Routes opt out with `@RateLimit(false)`.                                                                                              |
+| `key`        | `'ip'`  | Default key strategy for routes whose decorator doesn't set one.                                                                                                                                                                    |
+| `trustProxy` | `false` | Trust exactly one proxy in front: the client IP is the right-most `x-forwarded-for` entry. `false`: the IP the HTTP app resolves (`useRequest().getIp()`).                                                                          |
+| `headers`    | `true`  | Emit draft `RateLimit-*` headers on every response of a limited route.                                                                                                                                                              |
+| `message`    | —       | App-wide default 429 message template.                                                                                                                                                                                              |
+| `policies`   | —       | Re-tune declared policies by `id` without redeclaring their routes: new rules replace the declared ones (key strategy, id and message stay); `false` switches one off. An unknown id throws. See [Bundled limits](#bundled-limits). |
 
 ::: warning `trustProxy: true` means exactly one proxy, always in front
 It trusts one hop — the socket peer — and takes the right-most `x-forwarded-for` entry, the address that proxy wrote (wooks 0.8; before, the left-most entry, which a client forges). Enable it only when **every** request reaches the app through exactly one reverse proxy: reached directly, a client picks its own IP; behind two proxies, every caller shares the inner proxy's budget. For other topologies configure `trustProxy` on the wooks HTTP app (hop count, CIDR list, predicate) and leave this option off — the limiter then uses the app's `useRequest().getIp()`.
@@ -117,24 +118,26 @@ type RateLimitKeyStrategy =
   | "user"
   | "auto"
   | "session"
+  | "refresh-token"
   | (string & {}) // any named subject kind — see the subject seam below
   | (() => string | null | undefined | Promise<string | null | undefined>);
 ```
 
-| Strategy       | Subject                   | Use for                                                                                                                                          |
-| -------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `'ip'`         | `ip:<addr>`               | Public endpoints (the default). Honors `trustProxy`. Evaluated **pre-guard**.                                                                    |
-| `'user'`       | `u:<userId>`              | Guarded endpoints — one budget per user regardless of source IP. Anonymous callers fall back to `ip:<addr>`.                                     |
-| `'session'`    | `s:<sessionId>`           | One budget per **login/device** — a stolen refresh token can't burn the whole user's budget.                                                     |
-| `'auto'`       | same as `'user'`          | Alias — reads better on mixed public/authed routes (the anonymous-fallback makes the two behaviorally identical).                                |
-| any other name | whatever the app supplied | App-defined subject kinds (`'tenant'`, `'apiKey'`, plan tier, …) populated via [`setRateLimitSubject`](#the-subject-seam-setratelimitsubject).   |
-| function       | whatever it returns       | Custom resolver — runs inside the event context **pre-guard**, so it must be self-sufficient (see below). `null` / `undefined` skips the policy. |
+| Strategy          | Subject                   | Use for                                                                                                                                                                                                                                                     |
+| ----------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `'ip'`            | `ip:<addr>`               | Public endpoints (the default). Honors `trustProxy`. Evaluated **pre-guard**.                                                                                                                                                                               |
+| `'user'`          | `u:<userId>`              | Guarded endpoints — one budget per user regardless of source IP. Anonymous callers fall back to `ip:<addr>`.                                                                                                                                                |
+| `'session'`       | `s:<sessionId>`           | One budget per **login/device** — a stolen refresh token can't burn the whole user's budget.                                                                                                                                                                |
+| `'refresh-token'` | `rt:<hash of the token>`  | The refresh token the request presents — the body's `refreshToken`, else the refresh cookie — hashed, so the bearer secret never becomes a counter key. One budget per token, whatever the IP. A request without one **skips** the policy (no IP fallback). |
+| `'auto'`          | same as `'user'`          | Alias — reads better on mixed public/authed routes (the anonymous-fallback makes the two behaviorally identical).                                                                                                                                           |
+| any other name    | whatever the app supplied | App-defined subject kinds (`'tenant'`, `'apiKey'`, plan tier, …) populated via [`setRateLimitSubject`](#the-subject-seam-setratelimitsubject).                                                                                                              |
+| function          | whatever it returns       | Custom resolver — runs inside the event context **pre-guard**, so it must be self-sufficient (see below). `null` / `undefined` skips the policy.                                                                                                            |
 
-Precedence: decorator `key` option → interceptor `key` option → `'ip'`. Every **named** strategy is evaluated in the post-guard phase and falls back to the IP budget when nobody populated the subject — a misconfigured kind degrades to flood protection, never to one global bucket.
+Precedence: decorator `key` option → interceptor `key` option → `'ip'`. Every **named** strategy is evaluated in the post-guard phase and falls back to the IP budget when nobody populated the subject — a misconfigured kind degrades to flood protection, never to one global bucket. The exception is `'refresh-token'`, which skips the policy when no token is presented.
 
 ### The subject seam — `setRateLimitSubject()`
 
-Named strategies read from a per-event **subjects map**: subject kind → resolved caller identity. Any GUARD-priority (or earlier) code writes into it; the post-guard rate-limit phase reads from it. The map is read **first** — when it's empty, the built-in kinds `user` (`u:<userId>`) and `session` (`s:<sessionId>`) derive from the auth context aooth's guard established, so with aooth auth alone nothing needs to write the map at all.
+Named strategies read from a per-event **subjects map**: subject kind → resolved caller identity. Any GUARD-priority (or earlier) code writes into it; the post-guard rate-limit phase reads from it. The map is read **first** — when it's empty, the built-in kinds `user` (`u:<userId>`) and `session` (`s:<sessionId>`) derive from the auth context aooth's guard established, and `refresh-token` from the presented refresh token, so with aooth auth alone nothing needs to write the map at all.
 
 A custom IAM, tenant resolver, or API-key gateway supplies its own subjects the same way:
 
@@ -185,6 +188,39 @@ import { useRequest } from "@wooksjs/event-http";
 ```
 
 When every policy of a route skips, the request carries no decision and no `RateLimit-*` headers.
+
+## Bundled limits {#bundled-limits}
+
+aooth's own controllers declare these policies; like every `@RateLimit` they are enforced only when the interceptor pair is installed:
+
+| Route                                                                                                                            | Policy id                      | Rule     | Key                                             | Why                                                                                                                                                                                        |
+| -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | -------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /auth/refresh`                                                                                                             | `aooth.refresh`                | `150/5m` | `'ip'`                                          | Checked before the auth guard: a flood of junk tokens from one caller costs no credential lookups.                                                                                         |
+| `POST /auth/refresh`                                                                                                             | `aooth.refresh-token`          | `10/1m`  | `'refresh-token'`                               | Caps re-presenting one refresh token from any number of IPs — a client presents a token about once per access-token lifetime (once, with rotation).                                        |
+| `GET /auth/invite/post-redemption`                                                                                               | `aooth.invite-post-redemption` | `30/5m`  | `'ip'`                                          | An anonymous lookup by user id.                                                                                                                                                            |
+| `POST /auth/token`                                                                                                               | `aooth.token`                  | `150/5m` | `'ip'`                                          | Every grant: code redemptions and refreshes cost store work.                                                                                                                               |
+| `POST /auth/token`                                                                                                               | `aooth.token-refresh`          | `10/1m`  | the `refresh_token` of a refresh grant (hashed) | Like `aooth.refresh-token`, for OAuth clients.                                                                                                                                             |
+| `POST /auth/register`                                                                                                            | `aooth.register`               | `20/1h`  | `'ip'`                                          | Each dynamic client registration writes a row.                                                                                                                                             |
+| auth workflow: each recovery code, magic link or signup code requested                                                           | `aooth.send`                   | `20/15m` | `'ip'`                                          | Every request that could send (whether or not it does) — against mail-bombing an inbox. Enforced inside the workflow; over the limit the request answers the coded `429` and the run ends. |
+| auth workflow: each code sent after a first factor (email/SMS second factor, MFA enrolment, channel check, federated link proof) | `aooth.send-user`              | `10/1h`  | the account (`user:<id>`)                       | Whoever holds a password can make the account's phone or inbox receive codes — against SMS pumping. Same answer as `aooth.send`.                                                           |
+
+The refresh limits key on the IP for floods and on the token itself for replays — not on the session: the session is known only after the token is looked up, which is the work the limit guards. A request without a refresh token is not counted against a token budget; the handler answers `401` (`MISSING_REFRESH_TOKEN`).
+
+Change or switch them off with `policies`, by policy id:
+
+```ts
+app.applyGlobalInterceptors(
+  ...rateLimitInterceptors({
+    limiter,
+    policies: {
+      "aooth.refresh": "600/5m", // a large NAT shares one IP
+      "aooth.refresh-token": false, // switched off
+    },
+  }),
+);
+```
+
+`policies` takes the **ids** of declared policies: the bundled ones above and every `@RateLimit({ id })` your code declares (declare before you configure — import your controllers first). An unknown id throws when the pair is created, so a typo cannot silently leave a limit in force. Rules are parsed when the pair is created; an empty rule list throws (use `false`).
 
 ## Response headers — the full 429 contract
 
@@ -265,6 +301,7 @@ Inject a `clock` into the `RateLimiter` (and the store) to step through windows 
 - **DO** set `trustProxy: true` only when every request passes exactly one reverse proxy — reached directly, clients rotate budgets by forging `x-forwarded-for`; for other topologies configure `trustProxy` on the wooks HTTP app instead.
 - **DO** stack decorators for "per IP **and** per account" limits — each is its own policy — and give each an explicit `id`.
 - **DO** use `@RateLimit(false)` to exempt health checks / internal routes when app-wide default `rules` are configured.
+- **DO** re-tune the [bundled limits](#bundled-limits) with `policies` — **not** by subclassing the controller to redeclare a route.
 - **DO** give intentionally-shared budgets an explicit `id` — **not** rely on the default scope, which isolates per handler (`<ControllerClass>.<methodName>`).
 - **DO** supply app-defined subjects (`tenant`, `apiKey`, external-IAM principals) from a GUARD-priority interceptor via `setRateLimitSubject` — **not** from a custom key function, which runs pre-guard and can't see guard state.
 - **DON'T** expect `key: 'user'` to 429 anonymous floods _per user_ — anonymous callers share the IP fallback budget, and on guarded routes the auth guard 401s them before the post-guard phase runs (a missing token yields `401`, not `429`).

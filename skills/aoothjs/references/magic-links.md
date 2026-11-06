@@ -54,8 +54,7 @@ async function issueRecoveryLink(userId: string, email: string) {
   // pass authentication. If you need the link to be redemption-only, persist
   // with a distinct `kind` (e.g. `'magic.recovery'`) and check it on
   // `consume`, OR check `state.metadata?.label` explicitly before honoring
-  // the bearer use. The shipped auth-moost workflows accept the bearer
-  // collapse as the trade-off for using one store / one table.
+  // the bearer use.
   await store.persist(
     {
       userId,
@@ -77,7 +76,7 @@ async function consumeRecoveryLink(token: string) {
 }
 ```
 
-The shipped workflows in `@aooth/auth-moost` use this exact pattern with `kind: 'access'` + a `metadata.label` discriminator (`'recovery.magicLink'`, `'invite.magicLink'`, etc.).
+The shipped `@aooth/auth-moost` workflows do NOT store links in the credential store: a recovery / sign-in link is a workflow pause of its own (`magic-link` state strategy — hashed handle, consumed on first use, expires with `magicLinkTtlMs`, purpose-bound), sent through the `email` outlet; the invite link is the invite run's resume token. A link is therefore never a bearer access token. See [workflows.md](./workflows.md) § Magic links.
 
 ## Single-use guarantee
 
@@ -129,6 +128,8 @@ const buildMagicLinkUrl: BuildMagicLinkUrl = (kind, token, ctx) => {
   switch (kind) {
     case "recovery.magicLink":
       return `https://app.example.com/auth/recovery?wfs=${token}`;
+    case "login.magicLink":
+      return `https://app.example.com/login?wfs=${token}`;
     case "invite.magicLink":
       // ctx.userId is supplied for invite links → carries the invitee id so the
       // GET /auth/invite/post-redemption side route can rebuild the envelope.

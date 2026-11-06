@@ -95,9 +95,11 @@ export interface AuthWorkflowOpts {
    */
   lockoutDisclosure?: "uniform" | "generic" | "reveal";
   /**
-   * Counter store for the `'uniform'` shadow lockout of unknown handles.
-   * Default: one process-wide in-memory store — pass a shared store (e.g.
-   * `RateLimitStoreRedis`) when several instances serve sign-ins.
+   * Counter store for the `'uniform'` shadow lockout of unknown handles and
+   * for the magic-link send cooldown (one link per account and purpose per
+   * `mfa.pincodeResendTimeoutMs`). Default: one process-wide in-memory store —
+   * pass a shared store (e.g. `RateLimitStoreRedis`) when several instances
+   * serve sign-ins.
    */
   lockoutShadowStore?: RateLimitStore;
 
@@ -109,9 +111,37 @@ export interface AuthWorkflowOpts {
     pincodeResendTimeoutMs?: number;
     /** Max wrong-code submissions per minted pincode before the code is invalidated and the user must request a fresh one. Defaults to 5. */
     pincodeMaxAttempts?: number;
+    /**
+     * Wrong codes allowed per destination (an account's address, or a typed
+     * recovery / signup identifier) and client IP, across all its codes within
+     * `pincodeFailureWindowMs`; past it every send and check for that
+     * destination from that IP answers `429 AOOTH_CODE_LIMIT_REACHED`.
+     * Defaults to 10.
+     */
+    pincodeMaxFailures?: number;
+    /** Window of `pincodeMaxFailures`, from the first wrong code. Defaults to 1 hour. */
+    pincodeFailureWindowMs?: number;
+    /**
+     * Backstop over `pincodeMaxFailures`: wrong codes per destination from all
+     * client IPs together within `pincodeFailureWindowMs`. Defaults to 100.
+     */
+    pincodeMaxFailuresGlobal?: number;
+    /**
+     * Codes sent per destination from all client IPs together within
+     * `pincodeFailureWindowMs`; past it a request mints a code and sends
+     * nothing (the resend wait itself is per client IP). Defaults to 10 — a
+     * person needs a few codes an hour; this caps mail-bombing and SMS
+     * pumping spread over many IPs at 10 messages per destination per hour.
+     */
+    pincodeMaxSendsGlobal?: number;
   };
   /** Persisted-state TTL for the recovery flow — caps the window between OTP request and password reset. Applied at every recovery-side `requireInput` pause via the wf engine's `output.expires`. */
   recoveryStateTtlMs?: number;
+  /**
+   * Lifetime of a magic link (recovery and sign-in links), from the moment it
+   * is sent. Default 15 minutes. The link is single-use either way.
+   */
+  magicLinkTtlMs?: number;
   /** Canonical login URL — used by invite (post-accept redirect) and recovery (abort-to-login + post-reset redirect) as the resolver-default loginUrl. */
   loginUrl?: string;
   /** TOTP provisioning issuer — used by login MFA and invite MFA enrollment. */
@@ -199,6 +229,14 @@ export interface AuthWorkflowOpts {
 
     // Recovery
     recoveryPincode?: TAtscriptAnnotatedType;
+    /** Recovery delivery picker (magic link vs one-time code) — `resolveRecoveryDeliveryMode` → `'choice'`. */
+    recoveryModeSelect?: TAtscriptAnnotatedType;
+
+    // Magic-link sign-in
+    /** Identifier form of the login flow's `magicLink` alt-action. */
+    magicLinkRequest?: TAtscriptAnnotatedType;
+    /** Landing step of a clicked magic link ("Continue as …") — the link is used up on submit. */
+    magicLinkConfirm?: TAtscriptAnnotatedType;
 
     // Signup
     /** Self-signup identifier form (`auth/signup/flow` entry pause). */
@@ -232,8 +270,13 @@ export interface ResolvedAuthWorkflowOpts {
     pincodeTtlMs: number;
     pincodeResendTimeoutMs: number;
     pincodeMaxAttempts: number;
+    pincodeMaxFailures: number;
+    pincodeFailureWindowMs: number;
+    pincodeMaxFailuresGlobal: number;
+    pincodeMaxSendsGlobal: number;
   };
   recoveryStateTtlMs: number;
+  magicLinkTtlMs: number;
   loginUrl: string;
   totpIssuer: string;
   deviceTrust: {
@@ -271,6 +314,9 @@ export interface ResolvedAuthWorkflowOpts {
     termsBump: TAtscriptAnnotatedType;
     concurrencyLimit: TAtscriptAnnotatedType;
     recoveryPincode: TAtscriptAnnotatedType;
+    recoveryModeSelect: TAtscriptAnnotatedType;
+    magicLinkRequest: TAtscriptAnnotatedType;
+    magicLinkConfirm: TAtscriptAnnotatedType;
     signup: TAtscriptAnnotatedType;
     authzConsent: TAtscriptAnnotatedType;
   };

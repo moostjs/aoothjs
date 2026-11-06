@@ -3,6 +3,7 @@ import { Intercept } from "moost";
 
 import { rateLimitInterceptors, type RateLimitInterceptorOptions } from "./interceptor";
 import { getRateLimitMate, type RateLimitDecoratorOptions, type TRateLimitPolicy } from "./mate";
+import { declareRateLimitId } from "./registry";
 
 /**
  * Declares rate-limit rules for a controller method (or every method of a
@@ -48,6 +49,7 @@ export function RateLimit(
     throw new Error("@RateLimit requires at least one rule (or the literal `false` to opt out)");
   }
   const rules = (inputs as RateLimitRuleInput[]).map((r) => parseRateLimitRule(r));
+  if (options?.id) declareRateLimitId(options.id);
 
   const policy: TRateLimitPolicy = options ? { rules, options } : { rules };
   // Decorators apply bottom-up: prepend so the list keeps source order.

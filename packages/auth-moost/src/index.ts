@@ -149,10 +149,12 @@ export type {
   AuthWfCtx,
   AuthWfCompletionState,
   AuthWfConsentsState,
+  AuthWfMagicLinkState,
   AuthWfMfaEnrollState,
   AuthWfOAuthState,
   AuthWfPasswordUiState,
   AuthWfPincodeUiState,
+  AuthWfRecoveryDeliveryMode,
   AuthzReauthPolicy,
   ConsentDescriptorLike,
   MfaSummary,
@@ -163,4 +165,9 @@ export type {
 } from "./workflow/auth-workflow.ctx";
 
 export { type AuthEmailOutletDeps, createAuthEmailOutlet } from "./workflows/auth-email-outlet";
+export {
+  createMagicLinkOutlet,
+  MAGIC_LINK_OUTLET,
+  MAGIC_LINK_STRATEGY,
+} from "./workflow/magic-link-outlet";
 export { type AuditEmitter, type AuditEvent } from "./audit/index";

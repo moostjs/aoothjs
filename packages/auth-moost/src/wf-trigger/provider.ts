@@ -3,6 +3,7 @@ import { AuthCredential } from "@aooth/auth";
 import { createAsHttpOutlet, handleAsOutletRequest } from "@atscript/moost-wf";
 import {
   EncapsulatedStateStrategy,
+  HandleStateStrategy,
   MoostWf,
   type WfOutlet,
   type WfOutletTokenConfig,
@@ -10,6 +11,8 @@ import {
   type WfOutletTriggerDeps,
   type WfPauseRequest,
   type WfState,
+  type WfStateStore,
+  WfStateStoreMemory,
   type WfStateStrategy,
 } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
@@ -17,8 +20,126 @@ import { HttpError } from "@wooksjs/event-http";
 import { Injectable } from "moost";
 
 import { createInviteOutlet, reservePendingInviteLink } from "../workflow/invite-outlet";
+import { createMagicLinkOutlet, MAGIC_LINK_STRATEGY } from "../workflow/magic-link-outlet";
+import { derivePincodeKey, pincodeKeySlot, WF_STATE_KEY_LABEL } from "../workflow/pincode-key";
 import { withoutPublicProjection } from "../workflow/public-projection";
 import { aoothHttpError } from "../http-messages";
+
+/** Cap of the default (in-memory) magic-link store. */
+export const MAGIC_LINK_STORE_MAX_ENTRIES = 10_000;
+
+/**
+ * The default magic-link store: memory, with expired links swept at most once
+ * a minute on write, and at most {@link MAGIC_LINK_STORE_MAX_ENTRIES} links —
+ * the oldest is dropped first. Links nobody clicks (and requests for unknown
+ * identifiers) must not pile up for the life of the process.
+ */
+export class BoundedWfStateStoreMemory extends WfStateStoreMemory {
+  private lastSweep = 0;
+  /** The stored handles, oldest first, with their expiry (the base map is private). */
+  private readonly expiries = new Map<string, number | undefined>();
+  constructor(private readonly maxEntries = MAGIC_LINK_STORE_MAX_ENTRIES) {
+    super();
+  }
+  override async set(handle: string, state: WfState, expiresAt?: number): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastSweep > 60_000) {
+      this.lastSweep = now;
+      await this.cleanup();
+      for (const [key, expiry] of this.expiries) {
+        if (expiry && now > expiry) this.expiries.delete(key);
+      }
+    }
+    this.expiries.delete(handle);
+    while (this.expiries.size >= this.maxEntries) {
+      const oldest = this.expiries.keys().next().value as string;
+      this.expiries.delete(oldest);
+      await super.delete(oldest);
+    }
+    this.expiries.set(handle, expiresAt);
+    return super.set(handle, state, expiresAt);
+  }
+  override async delete(handle: string): Promise<void> {
+    this.expiries.delete(handle);
+    return super.delete(handle);
+  }
+  override async getAndDelete(handle: string): ReturnType<WfStateStoreMemory["getAndDelete"]> {
+    this.expiries.delete(handle);
+    return super.getAndDelete(handle);
+  }
+}
+
+/** Where aooth records, inside a persisted state, which strategy persisted it. */
+const STRATEGY_TAG = "aoothStrategy";
+/** Padding aooth adds to encapsulated states (stripped on read). */
+const PAD_KEY = "aoothPad";
+/** Encapsulated payloads are padded to a multiple of this many bytes. */
+const PAD_BUCKET = 256;
+/** Strategies new enough that every state they hold carries the tag. */
+const TAG_REQUIRED = new Set([MAGIC_LINK_STRATEGY]);
+
+type WfStateMeta = Record<string, unknown>;
+
+/**
+ * Wrap a registered strategy so a state can only be resumed through the
+ * strategy that persisted it: `persist` tags the state with `name`, and
+ * `retrieve` / `consume` refuse (as "not found") a state tagged by another
+ * strategy — e.g. a magic-link entry presented as a `store.` token when both
+ * share one store. A refused state is checked before it is consumed, so the
+ * attempt does not destroy it. States persisted before tagging existed are
+ * accepted, except by strategies that always tag. Encapsulated states are also
+ * padded to a {@link PAD_BUCKET}-byte multiple, so the token's length does not
+ * follow the length of what is inside.
+ */
+function tagStrategy(name: string, strategy: WfStateStrategy): WfStateStrategy {
+  const pad = strategy instanceof EncapsulatedStateStrategy;
+  const accepts = (state: WfState | null): state is WfState => {
+    if (!state) return false;
+    const tag = state.meta?.[STRATEGY_TAG];
+    return tag === undefined ? !TAG_REQUIRED.has(name) : tag === name;
+  };
+  const tagged = (state: WfState): WfState => {
+    const { [PAD_KEY]: _pad, ...meta } = (state.meta ?? {}) as WfStateMeta;
+    const out = { ...state, meta: { ...meta, [STRATEGY_TAG]: name } } as WfState;
+    if (!pad) return out;
+    // `{"s":<state>,"e":<expiry>}` is what the strategy encrypts; the expiry's
+    // length is the same for every state of one configuration.
+    const size = Buffer.byteLength(JSON.stringify(out)) + 32;
+    const fill = (PAD_BUCKET - (size % PAD_BUCKET)) % PAD_BUCKET;
+    (out.meta as WfStateMeta)[PAD_KEY] = "x".repeat(fill);
+    return out;
+  };
+  const clean = (state: WfState): WfState => {
+    const { [PAD_KEY]: _pad, ...meta } = (state.meta ?? {}) as WfStateMeta;
+    return { ...state, meta };
+  };
+  const wrapped: WfStateStrategy = {
+    persist: (state, options, overrides) => strategy.persist(tagged(state), options, overrides),
+    retrieve: async (token) => {
+      const state = await strategy.retrieve(token);
+      return accepts(state) ? clean(state) : null;
+    },
+    consume: async (token) => {
+      if (!accepts(await strategy.retrieve(token))) return null;
+      const state = await strategy.consume(token);
+      return accepts(state) ? clean(state) : null;
+    },
+  };
+  // The strategy it wraps — for introspection (tests, diagnostics).
+  Object.defineProperty(wrapped, "inner", { value: strategy });
+  if (strategy.persistEntry) {
+    wrapped.persistEntry = (state, options, overrides) =>
+      strategy.persistEntry!(tagged(state), options, overrides);
+  }
+  if (strategy.consumeEntry) {
+    wrapped.consumeEntry = async (token) => {
+      if (!accepts(await strategy.retrieve(token))) return null;
+      const entry = await strategy.consumeEntry!(token);
+      return entry && accepts(entry.state) ? { ...entry, state: clean(entry.state) } : null;
+    };
+  }
+  return wrapped;
+}
 
 const HOOK_NAMES = [
   "around",
@@ -105,7 +226,7 @@ function normalizeWfId(id: string): string {
 }
 
 function notAllowed(id: string): HttpError {
-  return aoothHttpError(403, "WORKFLOW_NOT_ALLOWED", { workflow: normalizeWfId(id) });
+  return aoothHttpError(403, "AOOTH_WORKFLOW_NOT_ALLOWED", { workflow: normalizeWfId(id) });
 }
 
 /**
@@ -189,11 +310,17 @@ function runTrigger(run: () => Promise<unknown>): Promise<unknown> {
 @Injectable()
 export class WfTriggerProvider {
   /**
-   * Outlets the trigger can pause on: HTTP (forms) and `invite` (the link of
-   * `AuthWorkflowOpts.inviteDelivery: 'deliver' | 'return-link'`). Append an
-   * `email` outlet (`createAuthEmailOutlet`) for the default invite delivery.
+   * Outlets the trigger can pause on: HTTP (forms), `invite` (the link of
+   * `AuthWorkflowOpts.inviteDelivery: 'deliver' | 'return-link'`) and
+   * `magic-link` (recovery and sign-in links — it sends through the `email`
+   * outlet). Append an `email` outlet (`createAuthEmailOutlet`) for the default
+   * invite delivery and for magic links.
    */
-  protected outlets: WfOutlet[] = [createAsHttpOutlet(), createInviteOutlet()];
+  protected outlets: WfOutlet[] = [
+    createAsHttpOutlet(),
+    createInviteOutlet(),
+    createMagicLinkOutlet(() => this.outlets.find((o) => o.name === "email")),
+  ];
   protected token: WfOutletTokenConfig = {
     read: ["body", "query", "cookie"],
     write: "body",
@@ -215,7 +342,30 @@ export class WfTriggerProvider {
    * `return deriveWfStateSecret(env.MY_SECRET)`.
    */
   protected wfStateSecret(): string | Buffer {
-    return this.auth.deriveStateKey("wf-state");
+    return this.auth.deriveStateKey(WF_STATE_KEY_LABEL);
+  }
+
+  /**
+   * Secret that keys the digests of one-time codes (recovery, sign-in, signup
+   * and enrolment codes) held in workflow state — the state keeps a keyed
+   * digest of each code, never the code. Default: the wf-state secret, so a
+   * store-backed setup that overrides `wfStateSecret()` needs nothing more.
+   * All instances must agree on it.
+   */
+  protected pincodeSecret(): string | Buffer {
+    return this.wfStateSecret();
+  }
+
+  private cachedPincodeKey?: Buffer;
+
+  /**
+   * The key of the one-time-code digests this provider publishes on every
+   * request: {@link derivePincodeKey} of {@link pincodeSecret}. With the
+   * default secrets it equals what `AuthWorkflow.pincodeKey()` derives outside
+   * a provider (`defaultPincodeKey`).
+   */
+  protected pincodeKey(): Buffer {
+    return (this.cachedPincodeKey ??= derivePincodeKey(this.pincodeSecret()));
   }
 
   /** TTL (ms) for encapsulated pre-validation tokens. Default: undefined = no TTL (token valid until used), so an idle login form never expires server-side. */
@@ -227,6 +377,20 @@ export class WfTriggerProvider {
   protected storeStrategy(): WfStateStrategy {
     return this.makeEncapsulated();
   }
+
+  /**
+   * Store of the magic-link pauses (recovery and sign-in links). Default: one
+   * in-memory store per provider — single process only. With several
+   * instances, return a shared `WfStateStore` (e.g. the `AsWfStore` of your
+   * wf-state table). The strategy around it is fixed: handles are stored
+   * hashed (a read of the store yields no usable link), each link is consumed
+   * by its first use, and it expires with the link (`magicLinkTtlMs`).
+   */
+  protected magicLinkStore(): WfStateStore {
+    return (this.defaultMagicLinkStore ??= new BoundedWfStateStoreMemory());
+  }
+
+  private defaultMagicLinkStore?: WfStateStore;
 
   private makeEncapsulated(): WfStateStrategy {
     return new EncapsulatedStateStrategy({
@@ -253,11 +417,18 @@ export class WfTriggerProvider {
 
   private cachedState?: StateRegistry;
 
-  /** Named strategy registry: every wf starts on `encapsulated` (default); a step calls swapStrategy('store') to move durable. Built lazily so subclass overrides (storeStrategy/wfStateSecret) are in effect. */
+  /** Named strategy registry: every wf starts on `encapsulated` (default); a step calls swapStrategy('store') to move durable, and a magic-link pause swaps to `magic-link`. Built lazily so subclass overrides (storeStrategy/wfStateSecret/magicLinkStore) are in effect. */
   protected stateRegistry(): StateRegistry {
     if (!this.cachedState) {
       this.cachedState = {
-        strategies: { encapsulated: this.makeEncapsulated(), store: this.storeStrategy() },
+        strategies: {
+          encapsulated: tagStrategy("encapsulated", this.makeEncapsulated()),
+          store: tagStrategy("store", this.storeStrategy()),
+          [MAGIC_LINK_STRATEGY]: tagStrategy(
+            MAGIC_LINK_STRATEGY,
+            new HandleStateStrategy({ store: this.magicLinkStore(), hashHandles: true }),
+          ),
+        },
         default: "encapsulated",
       };
     }
@@ -273,6 +444,7 @@ export class WfTriggerProvider {
    */
   async handle(opts: WfTriggerOpts = {}): Promise<unknown> {
     const wfApp = this.wf.getWfApp();
+    current().set(pincodeKeySlot, this.pincodeKey());
     const allowed = opts.allow && new Set(opts.allow.map(normalizeWfId));
     const permits = (schemaId: string) => !allowed || allowed.has(normalizeWfId(schemaId));
     const registry = this.stateRegistry();

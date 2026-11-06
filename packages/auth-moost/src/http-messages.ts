@@ -13,11 +13,11 @@ import { formatMessage, registerMessages } from "moost";
  */
 export const AOOTH_HTTP_MESSAGES = {
   /** 401 — the guard found no credential on a protected route. */
-  AUTH_REQUIRED: "Unauthorized",
+  AOOTH_AUTH_REQUIRED: "Unauthorized",
   /** 401 — the guard's credential is invalid, expired or revoked. */
-  CREDENTIAL_INVALID: "Invalid credential",
+  AOOTH_CREDENTIAL_INVALID: "Invalid credential",
   /** 401 — `useAuth().getUserId()` and `AuthController` routes without a signed-in user. */
-  NOT_AUTHENTICATED: "Not authenticated",
+  AOOTH_NOT_AUTHENTICATED: "Not authenticated",
   /** 401 — "log out other sessions" without a current session. */
   NO_CURRENT_SESSION: "No current session to keep",
   /** 401 — `POST /auth/refresh` without a refresh token. */
@@ -29,16 +29,18 @@ export const AOOTH_HTTP_MESSAGES = {
   /** 404 — `GET /auth/invite/post-redemption` for an unknown or still pending invite. */
   INVITE_NOT_FOUND: "Invite not found",
   /** 400 — `GET /auth/invite/post-redemption` without `uid`. */
-  MISSING_UID: "Missing uid query parameter",
+  AOOTH_MISSING_UID: "Missing uid query parameter",
   /** 404 — unlinking an identity the user does not have. */
   LINKED_IDENTITY_NOT_FOUND: "Linked identity not found",
   /** 409 — unlinking the user's only sign-in method. */
   LAST_SIGN_IN_METHOD:
     "Cannot remove your only sign-in method. Set a password first, or link another provider.",
   /** 404 — unlinking an identity of an unconfigured provider. Params: `provider`. */
-  UNKNOWN_PROVIDER: "Unknown provider '{provider}'",
+  AOOTH_UNKNOWN_PROVIDER: "Unknown provider '{provider}'",
+  /** 429 — the one-time codes of this account or address failed too often; answered to every code send and check until the window passes. */
+  AOOTH_CODE_LIMIT_REACHED: "Too many code attempts. Try again later.",
   /** 403 — the workflow trigger refused a workflow outside its allow list. Params: `workflow`. */
-  WORKFLOW_NOT_ALLOWED: "Workflow '{workflow}' is not allowed",
+  AOOTH_WORKFLOW_NOT_ALLOWED: "Workflow '{workflow}' is not allowed",
 } as const;
 
 registerMessages(AOOTH_HTTP_MESSAGES);
@@ -48,7 +50,7 @@ export type AoothHttpMessageCode = keyof typeof AOOTH_HTTP_MESSAGES;
 
 /** An `HttpError` with `code`, `params` and the code's English text. */
 export function aoothHttpError(
-  status: 400 | 401 | 403 | 404 | 409,
+  status: 400 | 401 | 403 | 404 | 409 | 429,
   code: AoothHttpMessageCode,
   params?: Record<string, string | number>,
 ): HttpError {

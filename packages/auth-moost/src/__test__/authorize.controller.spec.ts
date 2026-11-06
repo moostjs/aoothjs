@@ -21,12 +21,22 @@ import {
 } from "@aooth/auth/authz";
 import { MoostHttp } from "@moostjs/event-http";
 import { createHttpApp } from "@wooksjs/event-http";
-import { Controller, createProvideRegistry, getMoostInfact, Inherit, Inject, Moost } from "moost";
+import {
+  Controller,
+  createProvideRegistry,
+  getMoostInfact,
+  getMoostMate,
+  Inherit,
+  Inject,
+  Moost,
+} from "moost";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { Wooks } from "wooks";
 
 import { authGuardInterceptor } from "../auth.guard";
-import { AuthorizeController } from "../authz/authorize.controller";
+import { AUTHZ_RATE_LIMITS, AuthorizeController } from "../authz/authorize.controller";
+import { rateLimitInterceptors, type RateLimitInterceptorOptions } from "../rate-limit/interceptor";
+import type { TRateLimitMeta } from "../rate-limit/mate";
 import { AUTHZ_BINDING_COOKIE } from "../authz/authz-binding";
 import {
   AUTH_CODE_STORE_TOKEN,
@@ -668,6 +678,8 @@ async function buildDcrApp(opts?: {
   guard?: (args: { metadata: unknown }) => void;
   maxClients?: number;
   clock?: FakeClock;
+  /** Install `rateLimitInterceptors(rateLimit)` next to the guard. */
+  rateLimit?: RateLimitInterceptorOptions;
 }): Promise<DcrHarness> {
   (getMoostInfact() as unknown as { _cleanup?: () => void })._cleanup?.();
 
@@ -732,6 +744,7 @@ async function buildDcrApp(opts?: {
     ),
   );
   moost.applyGlobalInterceptors(authGuardInterceptor({ cookie: { secure: false } }));
+  if (opts?.rateLimit) moost.applyGlobalInterceptors(...rateLimitInterceptors(opts.rateLimit));
   // biome-ignore lint/suspicious/noExplicitAny: registerControllers' prefixed-tuple shape.
   moost.registerControllers(DcrAuthorizeController);
   await moost.init();
@@ -1365,5 +1378,83 @@ describe("AuthorizeController — refresh_token grant", () => {
     const res = await h.request("/auth/token", form({ grant_type: "client_credentials" }));
     expect(res.status).toBe(400);
     expect((res.body as { error: string }).error).toBe("unsupported_grant_type");
+  });
+});
+
+// ── Bundled rate limits on the public token endpoints ──
+// WHY: /auth/token and /auth/register are anonymous and do store work per call;
+// without a limit any caller forces unbounded lookups / registrations, and one
+// leaked refresh_token can be replayed from any number of IPs.
+describe("AuthorizeController — bundled rate limits", () => {
+  const read = (method: string) =>
+    getMoostMate<TRateLimitMeta>().read(AuthorizeController.prototype, method);
+
+  it("declares aooth.token (150/5m per IP), aooth.token-refresh (10/1m per refresh_token) and aooth.register (20/1h per IP)", () => {
+    const ids = (method: string) =>
+      read(method)?.rateLimitPolicies?.map((p) => [p.options?.id, p.rules.map((r) => r.limit)]);
+    expect(ids("token")).toEqual([
+      ["aooth.token", [150]],
+      ["aooth.token-refresh", [10]],
+    ]);
+    expect(ids("register")).toEqual([["aooth.register", [20]]]);
+    expect(AUTHZ_RATE_LIMITS).toEqual({
+      "aooth.token": "150/5m",
+      "aooth.token-refresh": "10/1m",
+      "aooth.register": "20/1h",
+    });
+  });
+
+  it("caps one refresh_token across requests with the coded 429; another token and code grants are unaffected", async () => {
+    const h = await buildDcrApp({ rateLimit: {} });
+    const refresh = (token: string) =>
+      h.request("/auth/token", form({ grant_type: "refresh_token", refresh_token: token }));
+    for (let i = 0; i < 10; i++) expect((await refresh("stolen")).status).toBe(401);
+    const limited = await refresh("stolen");
+    expect(limited.status).toBe(429);
+    expect(limited.body).toMatchObject({
+      code: "RATE_LIMITED",
+      params: { policy: "aooth.token-refresh", limit: 10, window: 60 },
+    });
+    expect((await refresh("other")).status).toBe(401);
+    // An authorization_code grant carries no refresh_token: not counted per token.
+    const code = await h.request(
+      "/auth/token",
+      form({ grant_type: "authorization_code", code: "x", code_verifier: "y" }),
+    );
+    expect(code.status).toBe(400);
+  });
+
+  it("caps one IP on /auth/token and /auth/register (re-tuned via policies)", async () => {
+    const h = await buildDcrApp({
+      rateLimit: { policies: { "aooth.token": "2/5m", "aooth.register": "1/1h" } },
+    });
+    const token = () =>
+      h.request("/auth/token", form({ grant_type: "authorization_code", code: "x" }));
+    await token();
+    await token();
+    const limited = await token();
+    expect(limited.status).toBe(429);
+    expect(limited.body).toMatchObject({ params: { policy: "aooth.token", limit: 2 } });
+
+    const reg = () =>
+      h.request(
+        "/auth/register",
+        registerJson({ client_name: "C", redirect_uris: [DYN_REDIRECT] }),
+      );
+    expect((await reg()).status).toBe(201);
+    const regLimited = await reg();
+    expect(regLimited.status).toBe(429);
+    expect(regLimited.body).toMatchObject({ params: { policy: "aooth.register", limit: 1 } });
+  });
+
+  it("policies: false switches a limit off", async () => {
+    const h = await buildDcrApp({ rateLimit: { policies: { "aooth.token-refresh": false } } });
+    for (let i = 0; i < 12; i++) {
+      const res = await h.request(
+        "/auth/token",
+        form({ grant_type: "refresh_token", refresh_token: "stolen" }),
+      );
+      expect(res.status).toBe(401);
+    }
   });
 });

@@ -60,19 +60,19 @@ import {
   WorkflowParam,
   WorkflowSchema,
 } from "@moostjs/event-wf";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 
-import { current } from "@wooksjs/event-core";
-import { useCookies, useHeaders, useRequest, useUrlParams } from "@wooksjs/event-http";
+import { current, tryGetCurrent } from "@wooksjs/event-core";
+import { useCookies, useHeaders, useRequest, useResponse, useUrlParams } from "@wooksjs/event-http";
 import { ArbacAction, ArbacResource, useArbac } from "@aooth/arbac-moost";
 import { Controller, Inherit, Param, useControllerContext, useLogger } from "moost";
 
 import { useAuth } from "../auth.composables";
-import { codedHttpError } from "../http-messages";
+import { aoothHttpError, codedHttpError } from "../http-messages";
 import { ConsentStore } from "../consent.store";
 import { Public } from "../auth.decorator";
 import { buildOAuthAuthorizeRequest, OAUTH_TTL_SEC } from "../oauth/oauth-authorize";
-import { AUTHZ_BINDING_COOKIE } from "../authz/authz-binding";
+import { AUTHZ_BINDING_COOKIE, authzBindingCookieAttrs } from "../authz/authz-binding";
 import { authzRedirectUrl } from "../authz/authz-redirect";
 import { OAUTH_CSRF_COOKIE, oauthCsrfCookieAttrs, safeEqual } from "../oauth/oauth-csrf";
 import { resolveOAuthRedirect } from "../oauth/oauth-redirect";
@@ -89,6 +89,7 @@ import type {
   AuthWfAltCredsPolicy,
   AuthWfPasswordUiState,
   AuthWfPublicState,
+  AuthWfRecoveryDeliveryMode,
   AuthzReauthPolicy,
   ConsentDescriptorLike,
   MfaSummary,
@@ -105,6 +106,10 @@ import {
   resolveAoothMessage,
 } from "./auth-messages";
 import { INVITE_OUTLET, setPendingInviteLink } from "./invite-outlet";
+import { MAGIC_LINK_OUTLET, MAGIC_LINK_STRATEGY } from "./magic-link-outlet";
+import { defaultPincodeKey, pincodeKeySlot } from "./pincode-key";
+import { enforceRateLimit, requestClientIp } from "../rate-limit/interceptor";
+import { SEND_RATE_LIMIT, SEND_USER_RATE_LIMIT } from "../rate-limit/registry";
 import {
   AskEmailForm,
   AskPhoneForm,
@@ -119,12 +124,15 @@ import {
   InviteChooseUsernameForm,
   InviteForm,
   LoginCredentialsForm,
+  MagicLinkConfirmForm,
+  MagicLinkRequestForm,
   ManageMfaForm,
   MfaCodeForm,
   PasswordReauthForm,
   PincodeForm,
   ProveControlForm,
   ProveControlOtpForm,
+  RecoveryModeSelectForm,
   RemoveMfaConfirmForm,
   Select2faForm,
   SetPasswordForm,
@@ -265,6 +273,9 @@ const DEFAULT_FORMS: ResolvedAuthWorkflowOpts["forms"] = {
   termsBump: TermsBumpForm,
   concurrencyLimit: ConcurrencyLimitForm,
   recoveryPincode: PincodeForm,
+  recoveryModeSelect: RecoveryModeSelectForm,
+  magicLinkRequest: MagicLinkRequestForm,
+  magicLinkConfirm: MagicLinkConfirmForm,
   signup: SignupForm,
   authzConsent: AuthorizeConsentForm,
 };
@@ -275,6 +286,37 @@ const DEFAULT_FORMS: ResolvedAuthWorkflowOpts["forms"] = {
  */
 const warnedOnce = { openInviteWhitelist: false, crossIssuerReuse: false };
 
+/** What `pincode-check` compares a recovery code against when there is no account: matches no code. */
+const NO_CODE = "\u0000";
+
+/** Default name of the cookie that binds a sign-in link to its browser (opt-in). */
+const MAGIC_LINK_BROWSER_COOKIE = "aooth_magic_link";
+
+/** The id an unknown identifier's recovery reads, so its lookups match a known one's. */
+const UNKNOWN_ACCOUNT_ID = "00000000-0000-4000-8000-000000000000";
+
+/** Key prefixes of a code's attempt counter and single-use marker (in `lockoutShadowStore`). */
+const PIN_ATTEMPT_PREFIX = "code-attempts:";
+const PIN_SPENT_PREFIX = "code-spent:";
+
+/** Key prefixes of a code destination's resend cooldown and failed-code budget. */
+const CODE_SEND_PREFIX = "code-send:";
+const CODE_FAIL_PREFIX = "code-fail:";
+
+/** Key prefix of a magic link's resend cooldown. */
+const MAGIC_LINK_SEND_PREFIX = "magic-link:";
+
+/** SHA-256 of `value`, base64url — fixed-size store keys and binding hashes. */
+function sha256url(value: string): string {
+  return createHash("sha256").update(value).digest("base64url");
+}
+
+/** How long a code's counters outlive the code. */
+const PIN_COUNTER_GRACE_MS = 60_000;
+
+/** Where a one-time code in flight lives (top-level ctx, or a pending federated link). */
+type PinState = { pinNonce?: string; pinDigest?: string; pinExpire?: number };
+
 /** Sliding lifetime of a shadow failure counter (and of a shadow "permanent" lock). */
 const SHADOW_TTL_MS = 30 * 24 * 60 * 60_000;
 
@@ -284,17 +326,34 @@ const SHADOW_LOCK_PREFIX = "shadow-lock:";
 /** Cap of the default (process-wide, in-memory) shadow-lockout store. */
 const SHADOW_STORE_MAX_ENTRIES = 50_000;
 
+/**
+ * Keys a flood of fresh failure counters must not push out of the default
+ * store: ACTIVE shadow locks (evicting one would unmask exactly the handles an
+ * attacker is probing), and the code and magic-link counters (evicting one
+ * would restore a code's attempt budget, or lift a resend wait).
+ */
+const EVICT_LAST_PREFIXES = [
+  SHADOW_LOCK_PREFIX,
+  PIN_ATTEMPT_PREFIX,
+  PIN_SPENT_PREFIX,
+  CODE_SEND_PREFIX,
+  CODE_FAIL_PREFIX,
+  MAGIC_LINK_SEND_PREFIX,
+];
+
+/** Internal: a memory `lockoutShadowStore` as the default one is built (bounded, protected keys evicted last). */
+export function createShadowStore(maxEntries = SHADOW_STORE_MAX_ENTRIES): RateLimitStoreMemory {
+  return new RateLimitStoreMemory({
+    maxEntries,
+    evictLast: (key) => EVICT_LAST_PREFIXES.some((prefix) => key.startsWith(prefix)),
+  });
+}
+
 // One process-wide shadow-lockout store: `AuthWorkflow` may be event-scoped,
 // and a per-instance memory store would forget every failure between requests.
 let sharedShadowStore: RateLimitStore | undefined;
 function defaultShadowStore(): RateLimitStore {
-  sharedShadowStore ??= new RateLimitStoreMemory({
-    maxEntries: SHADOW_STORE_MAX_ENTRIES,
-    // A flood of fresh failure counters must not push out ACTIVE locks —
-    // that would unmask exactly the handles an attacker is probing.
-    evictLast: (key) => key.startsWith(SHADOW_LOCK_PREFIX),
-  });
-  return sharedShadowStore;
+  return (sharedShadowStore ??= createShadowStore());
 }
 
 function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWorkflowOpts {
@@ -323,8 +382,13 @@ function mergeAuthWorkflowOpts(opts: Partial<AuthWorkflowOpts>): ResolvedAuthWor
       pincodeTtlMs: opts.mfa?.pincodeTtlMs ?? 5 * 60 * 1000,
       pincodeResendTimeoutMs: opts.mfa?.pincodeResendTimeoutMs ?? 60_000,
       pincodeMaxAttempts: opts.mfa?.pincodeMaxAttempts ?? 5,
+      pincodeMaxFailures: opts.mfa?.pincodeMaxFailures ?? 10,
+      pincodeFailureWindowMs: opts.mfa?.pincodeFailureWindowMs ?? 60 * 60_000,
+      pincodeMaxFailuresGlobal: opts.mfa?.pincodeMaxFailuresGlobal ?? 100,
+      pincodeMaxSendsGlobal: opts.mfa?.pincodeMaxSendsGlobal ?? 10,
     },
     recoveryStateTtlMs: opts.recoveryStateTtlMs ?? 60 * 60 * 1000,
+    magicLinkTtlMs: opts.magicLinkTtlMs ?? 15 * 60 * 1000,
     loginUrl: opts.loginUrl ?? "/login",
     totpIssuer: opts.totpIssuer ?? "aooth",
     deviceTrust,
@@ -561,8 +625,8 @@ function pickDefined<T extends object, K extends keyof T>(
  * Thrown by `recoveryPincodeTarget`'s registered (M2) branch when the confirmed
  * recovery method that `request`'s guard saw has VANISHED before send time
  * (deleted between the two row loads — the request→send TOCTOU). `pincode-send`
- * catches it and degrades to the generic anti-enumeration finish instead of
- * surfacing a distinguishable 500, so a known account can never become
+ * catches it and degrades to the ghost OTP run instead of surfacing a
+ * distinguishable 500, so a known account can never become
  * distinguishable from an unknown one on a resend. Recovery-only; the MFA
  * challenge branch keeps its own `HttpError(500)` (that path is post-password,
  * so enumeration is moot there).
@@ -1037,6 +1101,18 @@ export class AuthWorkflow {
   // ── Resolved policy surface (override on subclass to customize) ─────────
 
   /**
+   * How recovery proves the inbox: `'otp'` (default — a one-time code),
+   * `'magicLink'` (a single-use link, sent through the email outlet as
+   * `recovery.magicLink`) or `'choice'` (the user picks on
+   * `RecoveryModeSelectForm` after the identifier). Reached from recovery.flow.
+   */
+  protected resolveRecoveryDeliveryMode(
+    _ctx: AuthWfCtx,
+  ): AuthWfRecoveryDeliveryMode | Promise<AuthWfRecoveryDeliveryMode> {
+    return "otp";
+  }
+
+  /**
    * Resolve the alternate-credentials policy (forgot-password / signup /
    * magic-link / SSO providers). Reached from login.flow.
    */
@@ -1049,11 +1125,9 @@ export class AuthWorkflow {
       forgotPassword: true,
       signup: false,
       magicLink: false,
-      magicLinkSkipsMfa: false,
       ssoProviders: [],
       recoveryUrl: "/recover",
       signupUrl: "/signup",
-      embedRecovery: false,
     };
   }
 
@@ -1393,7 +1467,7 @@ export class AuthWorkflow {
    * `freshLoginRequired` field is GONE — the auto-login choice is the static
    * `AuthWorkflowOpts.autoLoginOnInvite` boolean (per §2 decision). Return
    * `confirmationMessage` to replace the default confirmation text
-   * (`ACCOUNT_CREATED`, rendered in the finishing request's language) with your
+   * (`AOOTH_ACCOUNT_CREATED`, rendered in the finishing request's language) with your
    * own, shown as is.
    */
   protected resolveAccept(
@@ -1487,6 +1561,11 @@ export class AuthWorkflow {
    * set) or from `ctx.email` (recovery path). Loads the user to read the raw
    * method `value` — the `ctx.mfa.enrolledMethods` summary carries only the
    * MASKED form, which is for display, never for delivery.
+   *
+   * In recovery it also runs for an identifier with no account a code can go
+   * to (unknown, inactive), on a copy of `ctx` whose `subject` is the
+   * placeholder `00000000-0000-4000-8000-000000000000` — so every identifier
+   * makes the same calls. Its result (or any error) is discarded there.
    */
   protected resolvePincodeTarget(
     ctx: AuthWfCtx,
@@ -1526,11 +1605,9 @@ export class AuthWorkflow {
    *   row (`selectRecoveryRegisteredMethod`) and the channel is that method's own
    *   kind. The user only typed an account identifier; the destination is a
    *   pre-verified channel they already control, so this also can't redirect
-   *   cross-account. `request`'s M2 guard normally generic-finishes any row with
-   *   no deliverable method up front; if the method is deleted in the narrow
-   *   window between that guard and this send (e.g. on a resend), this throws
-   *   `RecoveryMethodUnavailableError`, which `pincode-send` degrades to the
-   *   same generic finish — never a distinguishable 500.
+   *   cross-account. With no deliverable method this throws
+   *   `RecoveryMethodUnavailableError`, which recovery treats as "no account"
+   *   (nothing sent, every code refused) — never a distinguishable 500.
    */
   private recoveryPincodeTarget(
     ctx: AuthWfCtx,
@@ -1554,6 +1631,12 @@ export class AuthWorkflow {
     return channel instanceof Promise
       ? channel.then((c) => ({ address, channel: c }))
       : { address, channel };
+  }
+
+  /** `resolveRecoveryDeliverySource`, awaited. */
+  private async recoveryDeliverySource(ctx: AuthWfCtx): Promise<"typed" | "registered"> {
+    const source = this.resolveRecoveryDeliverySource(ctx);
+    return source instanceof Promise ? await source : source;
   }
 
   /**
@@ -1581,7 +1664,7 @@ export class AuthWorkflow {
    *   row** — `selectRecoveryRegisteredMethod` picks the confirmed MFA method;
    *   the destination is never taken from user input, so it cannot be redirected
    *   to an attacker-controlled address. A row with no deliverable confirmed
-   *   method finishes with the generic anti-enumeration envelope (see `request`).
+   *   method runs the ghost OTP pause, like an unknown identifier (see `request`).
    *
    * Consulted inline by `request` (no-method guard) and `recoveryPincodeTarget`
    * — no `prepare-*` step, mirroring `resolveRecoveryChannel`. Override to arm
@@ -1598,7 +1681,7 @@ export class AuthWorkflow {
    * its OTP to. Prefers a confirmed SMS method, then a confirmed email method —
    * phone-recovery-first. TOTP carries no deliverable address and is skipped.
    * Returns `null` when the row has no deliverable confirmed method; the caller
-   * turns that into the anti-enumeration generic finish. Stays sync (operates on
+   * turns that into the ghost OTP run (anti-enumeration). Stays sync (operates on
    * an already-loaded row); override to change the selection policy (e.g. honour
    * the user's `mfa.defaultMethod`).
    */
@@ -1784,6 +1867,10 @@ export class AuthWorkflow {
     if (ctx.newPasswordRequired !== undefined) {
       pub.newPasswordRequired = ctx.newPasswordRequired;
     }
+    if (ctx.magicLink?.sentAt && ctx.magicLink.address && !ctx.magicLink.confirmed) {
+      // The landing step's "Continue as …" — masked; the link went there.
+      pub.magicLink = { account: this.maskAddress(ctx.magicLink.address, "email") };
+    }
     if (ctx.authz) {
       // Display-only — `handle`/`approved`/`silent` stay server-only.
       // `clientName`/`scope`/`redirectHost` are staged by `authz-consent` from
@@ -1844,57 +1931,231 @@ export class AuthWorkflow {
     }
   }
 
-  /** Mint a numeric pincode + stash it onto ctx. Returns the plain code. */
+  /**
+   * Mint a numeric one-time code for `binding` (who it is sent for) and return
+   * the plain code for delivery. The state keeps only a random nonce and a
+   * keyed digest of `nonce|binding|code` — fixed lengths, never the code — so
+   * a read of the state does not reveal it, and {@link verifyPin} accepts it
+   * only for the same binding. `length` and `ttlMs` default to
+   * `mfa.pincodeLength` / `mfa.pincodeTtlMs`.
+   */
   protected mintPin(
-    ctx: { pin?: string; pinExpire?: number; pinAttempts?: number },
-    length: number,
-    ttlMs: number,
+    ctx: PinState,
+    binding: string,
+    length = this.opts.mfa.pincodeLength,
+    ttlMs = this.opts.mfa.pincodeTtlMs,
   ): string {
     // SECURITY: CSPRNG, never Math.random(). This pin gates account recovery,
     // the email/SMS MFA second factor, signup email verification, and the
     // federated link proof-of-control challenge — a predictable code is an
     // account-takeover primitive (CWE-338).
     const code = generateMfaCode(length);
-    ctx.pin = code;
+    ctx.pinNonce = randomBytes(16).toString("base64url");
+    ctx.pinDigest = this.pinDigest(ctx.pinNonce, binding, code);
     ctx.pinExpire = Date.now() + ttlMs;
-    // Fresh code → fresh attempt budget. `delete` (not `= 0`) because wf
-    // state-token persistence rejects `undefined` AND we want the field
-    // absent when never used.
-    delete ctx.pinAttempts;
     return code;
   }
 
+  /** Drop the code in flight (its nonce stays spent or counted server-side). */
+  protected clearPin(ctx: PinState): void {
+    delete ctx.pinNonce;
+    delete ctx.pinDigest;
+    delete ctx.pinExpire;
+  }
+
+  /** Binding of a code sent to `address` in this run (and for its subject, once known). */
+  private pinFor(ctx: AuthWfCtx, address: string): string {
+    return `${ctx.subject ?? ""}|${address}`;
+  }
+
   /**
-   * Verify a submitted pincode against `ctx.pin`. Returns an error map (with
-   * the message keyed under `code` so it renders inline on the code input) or
-   * `null` on success. Brute-force protection: wrong-code attempts increment
-   * `ctx.pinAttempts`; on the `pincodeMaxAttempts`-th miss the code is
-   * invalidated (clears `pin` + `pinExpire` + `pinAttempts`) and the returned
-   * error tells the user to request a fresh code. Without this gate the user
-   * could probe the full 10^pincodeLength space inside one `pincodeTtlMs`
-   * window.
+   * Binding of a recovery code: the account and the address it went to (a
+   * changed registered channel refuses the old channel's code). Without an
+   * account, the placeholder — the digest has the same length either way.
    */
-  protected verifyPin(
-    ctx: { pin?: string; pinExpire?: number; pinAttempts?: number },
+  private recoveryBinding(account: { subject: string; address: string } | null): string {
+    return account ? `${account.subject}|${account.address}` : `${UNKNOWN_ACCOUNT_ID}|`;
+  }
+
+  /**
+   * Server-side key of where a code goes — its resend cooldown and failed-code
+   * budget. Never an account id the caller could not know: recovery and signup
+   * key on the typed identifier, so known and unknown ones behave alike.
+   */
+  private codeTarget(...parts: Array<string | undefined>): string {
+    return sha256url(parts.map((p) => (p ?? "").trim().toLowerCase()).join("|"));
+  }
+
+  /** {@link codeTarget} of a code sent to `address` to enrol or verify a channel. */
+  private enrollTarget(ctx: AuthWfCtx, address: string | undefined): string {
+    return this.codeTarget("enroll", ctx.subject, address);
+  }
+
+  /** {@link codeTarget} of a federated link's proof-of-control code. */
+  private linkTarget(pending: NonNullable<AuthWfCtx["pendingLink"]>): string {
+    return this.codeTarget("link", pending.candidateUserId);
+  }
+
+  /** {@link codeTarget} of the `pincode-send` / `pincode-check` pair. */
+  private pincodeTarget(ctx: AuthWfCtx, address: string | undefined): string {
+    if (ctx.mfa?.method) return this.codeTarget("mfa", ctx.subject, address);
+    return this.codeTarget(ctx.signup ? "signup" : "recovery", ctx.email);
+  }
+
+  /**
+   * Server-side gate of a code send to `target`, before minting: answers
+   * `429 AOOTH_CODE_LIMIT_REACHED` once the target's failed-code budget is
+   * spent (this client IP's, or all IPs' together), applies the per-account
+   * `aooth.send-user` limit when `account` is given (sends after a first
+   * factor), and claims this client IP's resend wait for the target
+   * (`mfa.pincodeResendTimeoutMs`) and a slot of the target's send cap from
+   * all IPs (`mfa.pincodeMaxSendsGlobal` per `pincodeFailureWindowMs`).
+   * Returns whether the code may go out: `false` inside the wait or past the
+   * cap — the caller mints a code all the same and sends nothing, for known
+   * and unknown destinations alike.
+   */
+  protected async claimCodeSend(target: string, account?: string): Promise<boolean> {
+    if (account !== undefined) {
+      await enforceRateLimit(SEND_USER_RATE_LIMIT, `user:${account}`);
+    }
+    await this.assertCodeBudget(this.counterKeys(CODE_FAIL_PREFIX, target));
+    const store = this.opts.lockoutShadowStore;
+    const keys = this.counterKeys(CODE_SEND_PREFIX, target);
+    // The wait is this client's own: another IP's requests never delay it.
+    if ((await store.hit(keys.client, this.opts.mfa.pincodeResendTimeoutMs)) > 1) return false;
+    // All clients together: at most `pincodeMaxSendsGlobal` per window.
+    const sends = await store.hit(keys.global, this.opts.mfa.pincodeFailureWindowMs);
+    return sends <= this.opts.mfa.pincodeMaxSendsGlobal;
+  }
+
+  /** Whether a send to `target` is cooling down (`false` when the store cannot peek). */
+  private async codeSendCoolingDown(target: string): Promise<boolean> {
+    const store = this.opts.lockoutShadowStore;
+    if (!store.get) return false;
+    const keys = this.counterKeys(CODE_SEND_PREFIX, target);
+    return (
+      (await store.get(keys.client)) > 0 ||
+      (await store.get(keys.global)) >= this.opts.mfa.pincodeMaxSendsGlobal
+    );
+  }
+
+  /**
+   * Counters of a destination, per client IP and across all IPs:
+   * - sends (`CODE_SEND_PREFIX`): this client's resend wait, and the sends
+   *   from all IPs together in the window (the cap on mail-bombing and SMS
+   *   pumping spread over many IPs);
+   * - failed codes (`CODE_FAIL_PREFIX`): the budget one caller can spend (so
+   *   an attacker cannot lock the owner out from elsewhere), and the backstop
+   *   against distributed guessing.
+   *
+   * The client IP is hashed: fixed-size keys, no raw IPs in the store.
+   */
+  private counterKeys(prefix: string, target: string): { client: string; global: string } {
+    return {
+      client: `${prefix}${target}:${sha256url(requestClientIp())}`,
+      global: `${prefix}${target}`,
+    };
+  }
+
+  /** Answer `429 AOOTH_CODE_LIMIT_REACHED` once a destination's failed-code budget is spent. */
+  private async assertCodeBudget(keys: { client: string; global: string }): Promise<void> {
+    const store = this.opts.lockoutShadowStore;
+    if (!store.get) return;
+    const [client, global] = await Promise.all([store.get(keys.client), store.get(keys.global)]);
+    if (
+      client >= this.opts.mfa.pincodeMaxFailures ||
+      global >= this.opts.mfa.pincodeMaxFailuresGlobal
+    ) {
+      throw aoothHttpError(429, "AOOTH_CODE_LIMIT_REACHED");
+    }
+  }
+
+  /**
+   * Verify a submitted code against the one minted for `binding`. Returns an
+   * error map (keyed under `code` so it renders on the code input) or `null`
+   * on success.
+   *
+   * Attempts are counted server-side in `lockoutShadowStore`, per minted code
+   * (its nonce), before the comparison: a replayed older state token shares
+   * the counter, so `pincodeMaxAttempts` holds across replays and parallel
+   * submits. A code is single-use: once it verifies, its nonce is spent and
+   * the same code through any copy of the state is refused. A binding that
+   * differs from the one at mint (the account resolved differently since the
+   * send) reads as a wrong code. Wrong codes also count against `target`'s
+   * failed-code budgets across resends (`mfa.pincodeMaxFailures` per client
+   * IP, `pincodeMaxFailuresGlobal` for all IPs, per
+   * `pincodeFailureWindowMs`); once one is spent every check answers
+   * `429 AOOTH_CODE_LIMIT_REACHED`.
+   */
+  protected async verifyPin(
+    ctx: PinState,
     submitted: string | undefined,
-  ): { code: string } | null {
-    if (!ctx.pin || !ctx.pinExpire || Date.now() > ctx.pinExpire) {
-      return { code: this.msg("CODE_EXPIRED") };
+    binding: string,
+    target: string,
+  ): Promise<{ code: string } | null> {
+    const failureKeys = this.counterKeys(CODE_FAIL_PREFIX, target);
+    await this.assertCodeBudget(failureKeys);
+    const { pinNonce: nonce, pinDigest: digest, pinExpire: expire } = ctx;
+    const now = Date.now();
+    if (!nonce || !digest || !expire || now > expire) {
+      return { code: this.msg("AOOTH_CODE_EXPIRED") };
     }
-    if (submitted !== ctx.pin) {
-      const attempts = (ctx.pinAttempts ?? 0) + 1;
-      if (attempts >= this.opts.mfa.pincodeMaxAttempts) {
-        delete ctx.pin;
-        delete ctx.pinExpire;
-        delete ctx.pinAttempts;
-        return { code: this.msg("TOO_MANY_CODE_ATTEMPTS") };
+    const store = this.opts.lockoutShadowStore;
+    // Counters live as long as the code (plus a grace for clock skew between instances).
+    const ttl = expire - now + PIN_COUNTER_GRACE_MS;
+    const attempts = await store.hit(`${PIN_ATTEMPT_PREFIX}${nonce}`, ttl);
+    const max = this.opts.mfa.pincodeMaxAttempts;
+    // The code stays in the state: every later submit for it, through this
+    // state or any copy, lands here — only a resend mints a usable one.
+    if (attempts > max) return { code: this.msg("AOOTH_TOO_MANY_CODE_ATTEMPTS") };
+    if (!safeEqual(this.pinDigest(nonce, binding, submitted ?? ""), digest)) {
+      // The destination's budgets across all its codes (resends included):
+      // this client's, and all clients' together.
+      const window = this.opts.mfa.pincodeFailureWindowMs;
+      const [client, global] = await Promise.all([
+        store.hit(failureKeys.client, window),
+        store.hit(failureKeys.global, window),
+      ]);
+      if (
+        client > this.opts.mfa.pincodeMaxFailures ||
+        global > this.opts.mfa.pincodeMaxFailuresGlobal
+      ) {
+        throw aoothHttpError(429, "AOOTH_CODE_LIMIT_REACHED");
       }
-      ctx.pinAttempts = attempts;
-      return { code: this.msg("INVALID_CODE") };
+      return {
+        code: this.msg(attempts >= max ? "AOOTH_TOO_MANY_CODE_ATTEMPTS" : "AOOTH_INVALID_CODE"),
+      };
     }
-    delete ctx.pinAttempts;
+    const spent = await store.hit(`${PIN_SPENT_PREFIX}${nonce}`, ttl);
+    this.clearPin(ctx);
+    if (spent > 1) return { code: this.msg("AOOTH_CODE_EXPIRED") };
     return null;
   }
+
+  /** Keyed digest of a code, bound to its nonce and to who it was sent for. */
+  private pinDigest(nonce: string, binding: string, code: string): string {
+    return createHmac("sha256", this.pincodeKey())
+      .update(`${nonce}|${binding}|${code}`)
+      .digest("base64url");
+  }
+
+  /**
+   * Key of the code digests: the one `WfTriggerProvider` publishes for the
+   * request (derived from its `pincodeSecret()`), else the key a default
+   * provider publishes (`defaultPincodeKey`: derived from the default wf-state
+   * secret), so a code minted on one path verifies on the other. Throws
+   * `INVALID_CONFIG` outside a provider when the credential store has no
+   * derivable secret. Override when the workflow runs outside a
+   * `WfTriggerProvider` whose `wfStateSecret()` / `pincodeSecret()` is
+   * overridden — return that provider's key; every instance must agree.
+   */
+  protected pincodeKey(): Buffer {
+    const ctx = tryGetCurrent();
+    if (ctx?.has(pincodeKeySlot)) return ctx.get(pincodeKeySlot);
+    return (this.fallbackPincodeKey ??= defaultPincodeKey(this.auth));
+  }
+
+  private fallbackPincodeKey?: Buffer;
 
   /**
    * Validate + stash inline-consent fields submitted on a carrier form.
@@ -1972,12 +2233,25 @@ export class AuthWorkflow {
    * `enrollConfirm`, so the arming policy cannot drift between first send
    * and resend.
    */
-  private async mintAndSendEnrollPincode(ctx: AuthWfCtx, address: string): Promise<void> {
-    const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+  private async mintAndSendEnrollPincode(
+    ctx: AuthWfCtx,
+    address: string,
+    claimed?: boolean,
+  ): Promise<void> {
+    const deliver =
+      claimed ?? (await this.claimCodeSend(this.enrollTarget(ctx, address), ctx.subject));
+    const code = this.mintPin(ctx, this.pinFor(ctx, address));
     const pincode = (ctx.pincode ??= {});
     pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
     pincode.codeLength = this.opts.mfa.pincodeLength;
-    await this.sendEnrollPincode(ctx, address, code);
+    if (deliver) await this.sendEnrollPincode(ctx, address, code);
+  }
+
+  /** Seconds a resend still has to wait — the state's hint, else a full cooldown. */
+  private resendWaitSeconds(until: number | undefined): number {
+    const now = Date.now();
+    const ms = until && until > now ? until - now : this.opts.mfa.pincodeResendTimeoutMs;
+    return Math.ceil(ms / 1000);
   }
 
   /**
@@ -2028,8 +2302,7 @@ export class AuthWorkflow {
       // address as confirmed without any pincode round-trip.
       delete m.preConfirmed;
     }
-    delete ctx.pin;
-    delete ctx.pinExpire;
+    this.clearPin(ctx);
     if (ctx.pincode) delete ctx.pincode.sentTo;
   }
 
@@ -2063,13 +2336,15 @@ export class AuthWorkflow {
     value: string,
   ): string | undefined | Promise<string | undefined> {
     const v = (value ?? "").trim();
-    if (!v) return this.msg("ADDRESS_REQUIRED");
+    if (!v) return this.msg("AOOTH_ADDRESS_REQUIRED");
     if (method === "email") {
-      return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) ? undefined : this.msg("INVALID_EMAIL_ADDRESS");
+      return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)
+        ? undefined
+        : this.msg("AOOTH_INVALID_EMAIL_ADDRESS");
     }
     if (method === "sms") {
       const digits = v.replace(/[\s()+.-]/g, "");
-      return /^[1-9]\d{6,14}$/.test(digits) ? undefined : this.msg("INVALID_PHONE_NUMBER");
+      return /^[1-9]\d{6,14}$/.test(digits) ? undefined : this.msg("AOOTH_INVALID_PHONE_NUMBER");
     }
     return undefined;
   }
@@ -2425,6 +2700,11 @@ export class AuthWorkflow {
     // provider ids (from `alt.ssoProviders[].id`) must be declared as phantom
     // `ui.action` fields on the consumer's custom `LoginCredentialsForm`.
     const action = wf.resolveAction();
+    if (action === "magicLink" && alt.magicLink) {
+      // Hand over to the magic-link steps (identifier form → link → MFA).
+      ctx.magicLink = { purpose: "login" };
+      return undefined;
+    }
     if (action) {
       const typedUsername = getInputField("username");
       const handled = await this.handleCredentialsAlt(
@@ -2444,8 +2724,6 @@ export class AuthWorkflow {
         input.password,
         this.lockoutOverride(ctx),
       );
-      ctx.subject = result.user.id;
-      ctx.passwordStamp = result.user.password.lastChanged ?? 0;
       // `users.login()` already stamped `account.lastLogin` on this valid verify,
       // so latch the `record-login` funnel to a no-op stamp (it still fires
       // `afterLogin`) — no redundant second write. Federated / auto-login paths
@@ -2458,46 +2736,53 @@ export class AuthWorkflow {
       // pauses survive restarts. Pre-validation stays encapsulated (no server row),
       // so an idle login form can't 410-GONE. Sticky for the rest of the run.
       swapStrategy("store");
-      // Phase 2 inline guards — set top-level `isPasswordInitial`/`isPasswordExpired`
-      // so `prepare-semantic-flags` (which runs later) can read them as a fallback.
-      if (ctx.guards?.passwordInitial && result.user.password.isInitial) {
-        ctx.isPasswordInitial = true;
-      }
-      if (ctx.guards?.passwordExpiry && this.users.isPasswordExpired(result.user)) {
-        ctx.isPasswordExpired = true;
-      }
-      if (ctx.isPasswordInitial) {
-        (ctx.password ??= {}).changeReason = "initial";
-      } else if (ctx.isPasswordExpired) {
-        (ctx.password ??= {}).changeReason = "expired";
-      }
-      // Sync existing channel state so `ensureEmail`/`ensurePhone` skip
-      // when the user already has a confirmed channel.
-      const email = result.user.mfa.methods.find((m) => m.name === "email" && m.confirmed);
-      if (email) {
-        (ctx.notice ??= {}).email = email.value;
-        (ctx.channel ??= {}).emailConfirmed = true;
-      }
-      const phone = result.user.mfa.methods.find((m) => m.name === "sms" && m.confirmed);
-      if (phone) {
-        const channel = (ctx.channel ??= {});
-        channel.phone = phone.value;
-        channel.phoneConfirmed = true;
-      }
-      // Correspondence fallback — users who proved an inbox WITHOUT enrolling
-      // email MFA (invite magic-link, signup / recovery OTP, trusted federated
-      // claim) still get security notices.
-      if (!ctx.notice?.email) await this.seedCorrespondenceEmail(ctx, result.user);
+      await this.bindSignedInUser(ctx, result.user);
     } catch (err) {
       if (err instanceof UserAuthError) {
         const locked = await this.failedLoginReadsLocked(ctx, err, input.username);
         throw this.throwPublic(ctx, wf, {
-          formMessage: this.msg(locked ? "ACCOUNT_LOCKED" : "INVALID_CREDENTIALS"),
+          formMessage: this.msg(locked ? "AOOTH_ACCOUNT_LOCKED" : "INVALID_CREDENTIALS"),
         });
       }
       throw err;
     }
     return undefined;
+  }
+
+  /**
+   * Bind the login run to the account that passed its first factor — shared
+   * by the password and magic-link sign-ins, so both leave the run alike:
+   * - `ctx.subject` and the password stamp;
+   * - the inline password guards (`ctx.guards`): top-level
+   *   `isPasswordInitial` / `isPasswordExpired` (read by
+   *   `prepare-semantic-flags` later as a fallback) and the change reason;
+   * - the account's confirmed channels, so `ensureEmail` / `ensurePhone` skip
+   *   what is already confirmed and security notices have a recipient.
+   */
+  private async bindSignedInUser(ctx: AuthWfCtx, user: UserCredentials): Promise<void> {
+    ctx.subject = user.id;
+    ctx.passwordStamp = user.password.lastChanged ?? 0;
+    if (ctx.guards?.passwordInitial && user.password.isInitial) ctx.isPasswordInitial = true;
+    if (ctx.guards?.passwordExpiry && this.users.isPasswordExpired(user)) {
+      ctx.isPasswordExpired = true;
+    }
+    if (ctx.isPasswordInitial) (ctx.password ??= {}).changeReason = "initial";
+    else if (ctx.isPasswordExpired) (ctx.password ??= {}).changeReason = "expired";
+    const email = user.mfa.methods.find((m) => m.name === "email" && m.confirmed);
+    if (email) {
+      (ctx.notice ??= {}).email = email.value;
+      (ctx.channel ??= {}).emailConfirmed = true;
+    }
+    const phone = user.mfa.methods.find((m) => m.name === "sms" && m.confirmed);
+    if (phone) {
+      const channel = (ctx.channel ??= {});
+      channel.phone = phone.value;
+      channel.phoneConfirmed = true;
+    }
+    // Correspondence fallback — users who proved an inbox WITHOUT enrolling
+    // email MFA (invite magic-link, signup / recovery OTP, trusted federated
+    // claim) still get security notices.
+    if (!ctx.notice?.email) await this.seedCorrespondenceEmail(ctx, user);
   }
 
   /**
@@ -2526,7 +2811,7 @@ export class AuthWorkflow {
     };
     if (threshold <= 0) return false;
     const store = this.opts.lockoutShadowStore;
-    const id = createHash("sha256").update(handle.trim().toLowerCase()).digest("base64url");
+    const id = sha256url(handle.trim().toLowerCase());
     const lockKey = `${SHADOW_LOCK_PREFIX}${id}`;
     if (store.get && (await store.get(lockKey)) > 0) {
       // A permanent lock never lapses while someone keeps trying.
@@ -2574,9 +2859,6 @@ export class AuthWorkflow {
       });
       return ALT_HANDLED;
     }
-    if (action === "magicLink" && alt.magicLink) {
-      throw new HttpError(501, "Magic-link login path not implemented in this version");
-    }
     if (action === "sso") {
       // The bundled `AsSsoProviders` sets the chosen provider id into the
       // `ssoProvider` field, then invokes this single data-carrying action.
@@ -2623,43 +2905,92 @@ export class AuthWorkflow {
     const email = input.email;
     ctx.email = email;
 
-    let subject: string | undefined;
+    const modeResult = this.resolveRecoveryDeliveryMode(ctx);
+    // 'choice': the picker pauses next, holding only what the user typed.
+    await this.applyRecoveryMode(
+      ctx,
+      modeResult instanceof Promise ? await modeResult : modeResult,
+    );
+    return undefined;
+  }
+
+  /**
+   * Start recovery's delivery `mode` — the same way for known and unknown
+   * identifiers:
+   * - `'magicLink'`: the link for the typed identifier, resolved now but held
+   *   only in the link's server-side pause (the requester never gets a token
+   *   for it, and an earlier picker's state holds nothing about the account);
+   * - `'otp'`: the durable store strategy. Nothing about the account goes into
+   *   the state before the code is verified: `pincode-send` /
+   *   `pincode-check` resolve it from the typed identifier each time.
+   */
+  private async applyRecoveryMode(
+    ctx: AuthWfCtx,
+    mode: NonNullable<AuthWfCtx["recoveryDelivery"]>,
+  ): Promise<void> {
+    ctx.recoveryDelivery = mode;
+    if (mode === "magicLink") ctx.magicLink = await this.recoveryMagicLink(ctx);
+    else if (mode === "otp") swapStrategy("store");
+  }
+
+  /** A recovery magic link for the typed identifier (`subject` unset when it matches no account). */
+  private async recoveryMagicLink(ctx: AuthWfCtx): Promise<NonNullable<AuthWfCtx["magicLink"]>> {
+    const email = ctx.email ?? "";
+    const subject = await this.lookupRecoverySubject(email);
+    return {
+      purpose: "recovery",
+      identifier: email.trim().toLowerCase(),
+      ...(subject && { subject }),
+    };
+  }
+
+  /** `emailToUserId`, with an unknown identifier as `undefined`. */
+  private async lookupRecoverySubject(identifier: string): Promise<string | undefined> {
     try {
-      // `emailToUserId` already returns the stable `id` (the token subject) — no
-      // follow-up `getUser` round-trip needed; downstream OTP/reset steps re-read.
-      subject = (await this.emailToUserId(email)) ?? undefined;
+      return (await this.emailToUserId(identifier)) ?? undefined;
+    } catch (err) {
+      if (!(err instanceof UserAuthError) || err.type !== "NOT_FOUND") throw err;
+      return undefined;
+    }
+  }
+
+  /**
+   * The account a recovery code for the typed identifier goes to, and where —
+   * or `null` when no code can go anywhere: an unknown identifier, an inactive
+   * (pending / deactivated) account, or under M2 an account without a
+   * deliverable confirmed channel. A locked account may recover (self-service
+   * unlock). Resolved from `ctx.email` on every send and at verification —
+   * never kept in the state — and with the same reads for every identifier
+   * (an unknown one reads a placeholder row).
+   */
+  private async recoveryAccount(
+    ctx: AuthWfCtx,
+  ): Promise<{ subject: string; address: string; channel: "sms" | "email" } | null> {
+    const subject = await this.lookupRecoverySubject(ctx.email ?? "");
+    let user: UserCredentials | undefined;
+    try {
+      user = await this.users.getUser(subject ?? UNKNOWN_ACCOUNT_ID);
     } catch (err) {
       if (!(err instanceof UserAuthError) || err.type !== "NOT_FOUND") throw err;
     }
-
-    if (!subject) {
-      // Anti-enumeration: same generic response. Downstream skips via `ctx.subject` gate.
-      this.finishGenericRecovery();
-      return undefined;
+    const known = Boolean(subject && user?.account.active);
+    try {
+      // `resolvePincodeTarget` (M1: the typed address; M2: a confirmed channel
+      // of the row) — on a copy, so `ctx.subject` stays unset until verified.
+      // Without an account it runs too, on the placeholder row: the same
+      // resolvers and reads (M2 reads the row again) as for a known account.
+      const target = await this.resolvePincodeTarget({
+        ...ctx,
+        subject: known ? subject : UNKNOWN_ACCOUNT_ID,
+      });
+      return known ? { subject: subject as string, ...target } : null;
+    } catch (err) {
+      // Without an account, any failure of the resolvers on the placeholder
+      // is "no account" — an error only unknown identifiers raise would be an
+      // oracle.
+      if (!known || err instanceof RecoveryMethodUnavailableError) return null;
+      throw err;
     }
-
-    // M2 (registered-channel recovery): the OTP is delivered to a channel
-    // already verified on the row, not to the typed identifier. If the resolved
-    // account has no deliverable confirmed method, emit the SAME generic
-    // envelope as the unknown-identifier path above — so an attacker cannot
-    // distinguish "no such account" from "account with no recoverable channel"
-    // — and leave `ctx.subject` unset so the `{ break: !ctx.subject }` gate
-    // short-circuits the rest of the flow. (M1 has no such gate: the typed
-    // identifier is itself the destination.)
-    const sourceResult = this.resolveRecoveryDeliverySource(ctx);
-    const source = sourceResult instanceof Promise ? await sourceResult : sourceResult;
-    if (source === "registered") {
-      const user = await this.users.getUser(subject);
-      if (!this.selectRecoveryRegisteredMethod(user)) {
-        this.finishGenericRecovery();
-        return undefined;
-      }
-    }
-
-    ctx.subject = subject;
-    // real user resolved → durable store for the OTP-send + password-reset pauses (resumable, 1h TTL); unknown-email anti-enumeration path above never reaches here
-    swapStrategy("store");
-    return undefined;
   }
 
   /**
@@ -2671,14 +3002,6 @@ export class AuthWorkflow {
   protected async emailToUserId(email: string): Promise<string | null> {
     const user = await this.users.findByHandle(email);
     return user?.id ?? null;
-  }
-
-  /** Anti-enumeration generic finish envelope used when recovery's `request` step receives an unknown email. */
-  private finishGenericRecovery(): void {
-    finishWf({
-      data: { sent: true },
-      message: { level: "info", text: this.msg("RECOVERY_INSTRUCTIONS_SENT") },
-    });
   }
 
   /**
@@ -3083,7 +3406,7 @@ export class AuthWorkflow {
       const allowed = new Set(ctx.admin.availableRoles);
       const bad = parsed.find((r) => !allowed.has(r));
       if (bad !== undefined) {
-        throw this.throwPublic(ctx, wf, { errors: { roles: this.msg("INVALID_ROLE") } });
+        throw this.throwPublic(ctx, wf, { errors: { roles: this.msg("AOOTH_INVALID_ROLE") } });
       }
     }
     if (Object.keys(extra).length > 0) (ctx.admin ??= {}).form = extra;
@@ -3106,7 +3429,9 @@ export class AuthWorkflow {
         throw this.throwPublic(ctx, wf, { errors: { email: this.msg("INVITE_ALREADY_PENDING") } });
       }
       if (existing)
-        throw this.throwPublic(ctx, wf, { errors: { email: this.msg("USER_ALREADY_EXISTS") } });
+        throw this.throwPublic(ctx, wf, {
+          errors: { email: this.msg("AOOTH_USER_ALREADY_EXISTS") },
+        });
       throw this.throwPublic(ctx, wf, { errors: { email: this.msg("DUPLICATE_INVITE_REJECTED") } });
     }
     if (action === "reuse") {
@@ -3222,7 +3547,7 @@ export class AuthWorkflow {
       const existing = await this.users.findByHandle(ctx.email);
       if (existing) {
         if (!existing.account?.pendingInvitation) {
-          throw this.httpError(409, "USER_ALREADY_EXISTS");
+          throw this.httpError(409, "AOOTH_USER_ALREADY_EXISTS");
         }
         await this.users.update(existing.id, {
           ...fields,
@@ -3237,7 +3562,7 @@ export class AuthWorkflow {
       created = await this.users.createUser(ctx.email, undefined, fields);
     } catch (err) {
       if (err instanceof UserAuthError && err.type === "ALREADY_EXISTS") {
-        throw this.httpError(409, "USER_ALREADY_EXISTS");
+        throw this.httpError(409, "AOOTH_USER_ALREADY_EXISTS");
       }
       throw err;
     }
@@ -3466,7 +3791,7 @@ export class AuthWorkflow {
       data: { confirmed: true },
       message: {
         level: "success",
-        text: ctx.accept?.confirmationMessage ?? this.msg("ACCOUNT_CREATED"),
+        text: ctx.accept?.confirmationMessage ?? this.msg("AOOTH_ACCOUNT_CREATED"),
       },
     });
     return undefined;
@@ -3572,7 +3897,7 @@ export class AuthWorkflow {
         next: {
           trigger: "manual",
           primary: {
-            label: this.msg("BACK"),
+            label: this.msg("AOOTH_BACK"),
             action: {
               type: "redirect",
               target: this.opts.loginUrl,
@@ -3800,7 +4125,7 @@ export class AuthWorkflow {
           text:
             addMfa.blocked === "last-required-factor"
               ? this.msg("LAST_MFA_METHOD_NOT_REMOVABLE")
-              : this.msg("METHOD_NOT_CHANGEABLE"),
+              : this.msg("AOOTH_METHOD_NOT_CHANGEABLE"),
         },
       };
     } else if (candidates.length === 0 && !addMfa?.stepUpRequired) {
@@ -3991,14 +4316,18 @@ export class AuthWorkflow {
     const target = (sep >= 0 ? input.operation.slice(sep + 1) : "") as MfaTransport;
     if (action === "add") {
       if (!candidates.includes(target)) {
-        throw this.throwPublic(ctx, wf, { errors: { operation: this.msg("METHOD_UNAVAILABLE") } });
+        throw this.throwPublic(ctx, wf, {
+          errors: { operation: this.msg("AOOTH_METHOD_UNAVAILABLE") },
+        });
       }
     } else if (action === "replace" || action === "remove") {
       if (locked.has(target)) {
-        throw this.throwPublic(ctx, wf, { formMessage: this.msg("METHOD_NOT_CHANGEABLE") });
+        throw this.throwPublic(ctx, wf, { formMessage: this.msg("AOOTH_METHOD_NOT_CHANGEABLE") });
       }
       if (!enrolled.some((e) => e.kind === target)) {
-        throw this.throwPublic(ctx, wf, { errors: { operation: this.msg("UNKNOWN_METHOD") } });
+        throw this.throwPublic(ctx, wf, {
+          errors: { operation: this.msg("AOOTH_UNKNOWN_METHOD") },
+        });
       }
       // The Remove option was filtered off the menu when blocked — a submitted
       // remove here is a crafted/stale client. Re-pause on the menu (which
@@ -4010,7 +4339,7 @@ export class AuthWorkflow {
         });
       }
     } else {
-      throw this.throwPublic(ctx, wf, { errors: { operation: this.msg("CHOOSE_OPTION") } });
+      throw this.throwPublic(ctx, wf, { errors: { operation: this.msg("AOOTH_CHOOSE_OPTION") } });
     }
     addMfa.action = action;
     addMfa.target = target;
@@ -4115,27 +4444,38 @@ export class AuthWorkflow {
     } else {
       (ctx.channel ??= {}).phone = value;
     }
-    const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-    await this.dispatch({
-      kind: "enroll-pincode",
-      channel: isEmail ? "email" : "sms",
-      recipient: value,
-      code,
-      expiresInMs: this.opts.mfa.pincodeTtlMs,
-    });
-    // Arm the resend cooldown — `verifyChannel` reads `resendAllowedAt` to
-    // gate the user's "Resend code" click on the PincodeForm. Mirrors the
-    // `pincode-send` step's pattern so both pincode surfaces use the same
-    // cooldown contract. `sentTo` rides alongside so the PincodeForm's
-    // transportHint can render "Code sent to <masked>" — without it the
-    // login-enrollment branch falls through to the generic
-    // "Enter your verification code." copy.
-    const pincode = (ctx.pincode ??= {});
-    pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
-    pincode.sentTo = this.maskAddress(value, isEmail ? "email" : "sms");
-    pincode.codeLength = this.opts.mfa.pincodeLength;
+    const deliver = await this.claimCodeSend(this.enrollTarget(ctx, value), ctx.subject);
+    await this.sendChannelPincode(ctx, value, isEmail ? "email" : "sms", deliver);
     const pincodeWf = this.useAtscriptWfPublic(ctx, this.opts.forms.pincode);
     throw this.throwPublic(ctx, pincodeWf);
+  }
+
+  /**
+   * Mint the code proving a channel (`ask/*`, `verify/*`), deliver it when
+   * `deliver`, and arm the PincodeForm: the resend wait `verifyChannel`
+   * gates "Resend code" on (the same cooldown contract as `pincode-send`),
+   * the masked `sentTo` its "Code sent to …" hint renders, and the code length.
+   */
+  private async sendChannelPincode(
+    ctx: AuthWfCtx,
+    address: string,
+    channel: "email" | "sms",
+    deliver: boolean,
+  ): Promise<void> {
+    const code = this.mintPin(ctx, this.pinFor(ctx, address));
+    if (deliver) {
+      await this.dispatch({
+        kind: "enroll-pincode",
+        channel,
+        recipient: address,
+        code,
+        expiresInMs: this.opts.mfa.pincodeTtlMs,
+      });
+    }
+    const pincode = (ctx.pincode ??= {});
+    pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
+    pincode.sentTo = this.maskAddress(address, channel);
+    pincode.codeLength = this.opts.mfa.pincodeLength;
   }
 
   @Step("verify/:channel(email|phone)")
@@ -4161,29 +4501,31 @@ export class AuthWorkflow {
       // would be misattributed. `ctx.pincode.resendAllowedAt` rides the
       // `@wf.context.pass 'pincode'` whitelist so custom action components
       // can render a progress bar / countdown without re-deriving the value.
-      if (ctx.pincode?.resendAllowedAt && ctx.pincode.resendAllowedAt > Date.now()) {
-        const remainingSec = Math.ceil((ctx.pincode.resendAllowedAt - Date.now()) / 1000);
+      const cooldown = ctx.pincode?.resendAllowedAt;
+      const recipient = (isEmail ? ctx.channel?.email : ctx.channel?.phone) as string;
+      // The state's wait, then the server-side cooldown per destination (a
+      // replayed older state carries a stale wait).
+      if (
+        (cooldown && cooldown > Date.now()) ||
+        !(await this.claimCodeSend(this.enrollTarget(ctx, recipient), ctx.subject))
+      ) {
         throw this.throwPublic(ctx, pincodeWf, {
-          formMessage: this.msg("RESEND_WAIT", { seconds: remainingSec }),
+          formMessage: this.msg("AOOTH_RESEND_WAIT", {
+            seconds: this.resendWaitSeconds(cooldown),
+          }),
         });
       }
-      const recipient = (isEmail ? ctx.channel?.email : ctx.channel?.phone) as string;
-      const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-      await this.dispatch({
-        kind: "enroll-pincode",
-        channel: isEmail ? "email" : "sms",
-        recipient,
-        code,
-        expiresInMs: this.opts.mfa.pincodeTtlMs,
-      });
-      const pincode = (ctx.pincode ??= {});
-      pincode.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
-      pincode.sentTo = this.maskAddress(recipient, isEmail ? "email" : "sms");
-      pincode.codeLength = this.opts.mfa.pincodeLength;
+      await this.sendChannelPincode(ctx, recipient, isEmail ? "email" : "sms", true);
       throw this.throwPublic(ctx, pincodeWf);
     }
     const input = pincodeWf.resolveInput() as { code: string };
-    const pinErr = this.verifyPin(ctx, input.code);
+    const recipient = (isEmail ? ctx.channel?.email : ctx.channel?.phone) ?? "";
+    const pinErr = await this.verifyPin(
+      ctx,
+      input.code,
+      this.pinFor(ctx, recipient),
+      this.enrollTarget(ctx, recipient),
+    );
     if (pinErr) throw this.throwPublic(ctx, pincodeWf, { errors: pinErr });
     await this.withStoreErrorTranslation(() =>
       this.users.confirmMfaMethod(ctx.subject, isEmail ? "email" : "sms"),
@@ -4212,8 +4554,7 @@ export class AuthWorkflow {
         channelState.otpDisclosure,
       );
     }
-    delete ctx.pin;
-    delete ctx.pinExpire;
+    this.clearPin(ctx);
     // Channel-enrollment cooldown is local to the ask/verify pair. Clearing
     // `resendAllowedAt` + `sentTo` here keeps the enrolment cooldown from
     // surfacing on the first MFA-challenge PincodeForm pause when nothing
@@ -4396,7 +4737,7 @@ export class AuthWorkflow {
         // Banner — the user clicked a method radio + Submit, not a `methodName`
         // input. Inline errors on a radio group are misattributed UX.
         throw this.throwPublic(ctx, wf, {
-          formMessage: this.msg("RESEND_WAIT_CHANNEL", { seconds: waitSec, channel }),
+          formMessage: this.msg("AOOTH_RESEND_WAIT_CHANNEL", { seconds: waitSec, channel }),
         });
       }
     }
@@ -4420,66 +4761,86 @@ export class AuthWorkflow {
   @Step("pincode-send")
   @Public()
   async pincodeSend(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
+    const recovery = !ctx.mfa?.method && !ctx.signup;
+    // Anonymous sends (recovery, signup) count against the per-IP send limit —
+    // every request alike, whether or not a message goes out.
+    if (!ctx.mfa?.method) await enforceRateLimit(SEND_RATE_LIMIT);
     let target: { address: string; channel: "sms" | "email" };
-    try {
+    let account: Awaited<ReturnType<AuthWorkflow["recoveryAccount"]>> = null;
+    if (recovery) {
+      // Resolved from the typed identifier on every send, never kept in the
+      // state. No account (unknown, inactive, M2 without a channel — or a
+      // channel deleted since the last send): nothing is sent, and the run
+      // looks exactly like a real one.
+      account = await this.recoveryAccount(ctx);
+      target = await this.recoveryPincodeTarget(ctx, "typed");
+    } else {
       const targetResult = this.resolvePincodeTarget(ctx);
       target = targetResult instanceof Promise ? await targetResult : targetResult;
-    } catch (err) {
-      // Registered-channel recovery (M2): the confirmed method `request`'s guard
-      // saw was deleted before this send (the request→send TOCTOU, reachable on a
-      // resend). Degrade to the SAME generic finish as an unknown identifier —
-      // never a distinguishable 500 — and abort the OTP loop. `ctx.aborted`
-      // exits the recovery `while` and trips its `{ break: !!ctx.aborted }`;
-      // `pincode-check` is gated on `!ctx.aborted` so it does not overwrite this
-      // finish with a form pause.
-      if (err instanceof RecoveryMethodUnavailableError) {
-        ctx.aborted = true;
-        this.finishGenericRecovery();
-        return undefined;
-      }
-      throw err;
     }
-    const code = this.mintPin(ctx, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
+    // M2 shows no destination (not even masked) — it would disclose part of
+    // the account's own channel to whoever typed the identifier.
+    const registeredRecovery =
+      recovery && (await this.recoveryDeliverySource(ctx)) === "registered";
+    // Recovery binds the code to the account it is sent for (a fixed-length
+    // id, so a run without an account looks the same): if the identifier
+    // resolves to another account by the time it is entered, it is refused.
+    const binding = recovery ? this.recoveryBinding(account) : this.pinFor(ctx, target.address);
+    // Server-side resend cooldown + failed-code budget per destination (the
+    // typed identifier for recovery and signup — known or not), and the
+    // per-account send limit after a first factor. In a cooldown a code is
+    // minted all the same and nothing is sent.
+    const deliver = await this.claimCodeSend(
+      this.pincodeTarget(ctx, target.address),
+      ctx.mfa?.method ? ctx.subject : undefined,
+    );
+    const code = this.mintPin(ctx, binding);
     // Branched on `kind` discriminator. `recovery-pincode` carries
     // `target.channel` — email by default, SMS when `resolveRecoveryChannel`
     // routes it (the address is the typed identifier either way). Signup is
     // always email.
-    if (ctx.mfa?.method) {
-      await this.dispatch({
-        kind: "mfa-pincode",
-        channel: target.channel,
-        recipient: target.address,
-        code,
-        expiresInMs: this.opts.mfa.pincodeTtlMs,
-      });
-    } else if (ctx.signup) {
-      // Signup verify-first: prove email ownership before the row exists. The
-      // target is always email (`resolvePincodeTarget`'s non-MFA branch).
-      await this.dispatch({
-        kind: "signup-pincode",
-        channel: "email",
-        recipient: target.address,
-        code,
-        expiresInMs: this.opts.mfa.pincodeTtlMs,
-      });
-    } else {
-      await this.dispatch({
-        kind: "recovery-pincode",
-        channel: target.channel,
-        recipient: target.address,
-        code,
-        expiresInMs: this.opts.mfa.pincodeTtlMs,
-      });
+    // In a cooldown nothing goes out.
+    if (deliver) {
+      if (ctx.mfa?.method) {
+        await this.dispatch({
+          kind: "mfa-pincode",
+          channel: target.channel,
+          recipient: target.address,
+          code,
+          expiresInMs: this.opts.mfa.pincodeTtlMs,
+        });
+      } else if (ctx.signup) {
+        // Signup verify-first: prove email ownership before the row exists. The
+        // target is always email (`resolvePincodeTarget`'s non-MFA branch).
+        await this.dispatch({
+          kind: "signup-pincode",
+          channel: "email",
+          recipient: target.address,
+          code,
+          expiresInMs: this.opts.mfa.pincodeTtlMs,
+        });
+      } else if (account) {
+        await this.dispatch({
+          kind: "recovery-pincode",
+          channel: account.channel,
+          recipient: account.address,
+          code,
+          expiresInMs: this.opts.mfa.pincodeTtlMs,
+        });
+      }
     }
-    // Stash the REAL delivery target (recovery M2 may differ from the typed
-    // identifier) on every branch so `pincode-check` can record the
-    // email-channel inbox proof against the address the code actually went
-    // to. `ctx.otp` is server-only — an unmasked address never hits the wire.
-    const otp = (ctx.otp ??= {});
-    otp.deliveredTo = target.address;
-    otp.deliveredChannel = target.channel;
+    // Stash the delivery target so `pincode-check` can record the email inbox
+    // proof against the address the code went to — except in recovery, where
+    // `pincode-check` resolves it again (the state holds nothing about the
+    // account before the code is verified). `ctx.otp` is server-only.
+    if (!recovery) {
+      const otp = (ctx.otp ??= {});
+      otp.deliveredTo = target.address;
+      otp.deliveredChannel = target.channel;
+    }
     const pincode = (ctx.pincode ??= {});
-    pincode.sentTo = this.maskAddress(target.address, target.channel);
+    if (registeredRecovery) delete pincode.sentTo;
+    else pincode.sentTo = this.maskAddress(target.address, target.channel);
     pincode.codeLength = this.opts.mfa.pincodeLength;
     const cooldownAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
     pincode.resendAllowedAt = cooldownAt;
@@ -4510,14 +4871,19 @@ export class AuthWorkflow {
         // SERVER-SIDE cooldown enforcement — banner-form, see the matching
         // raise in `verify-channel` for the rationale (resend is an action
         // click, not a `code` input error).
-        if (ctx.pincode?.resendAllowedAt && ctx.pincode.resendAllowedAt > Date.now()) {
-          const remainingSec = Math.ceil((ctx.pincode.resendAllowedAt - Date.now()) / 1000);
+        // The state's wait, then the destination's server-side cooldown (a
+        // replayed older state carries a stale wait). `pincode-send` claims it.
+        if (
+          (ctx.pincode?.resendAllowedAt && ctx.pincode.resendAllowedAt > Date.now()) ||
+          (await this.codeSendCoolingDown(this.pincodeTarget(ctx, ctx.otp?.deliveredTo)))
+        ) {
           throw this.throwPublic(ctx, wf, {
-            formMessage: this.msg("RESEND_WAIT", { seconds: remainingSec }),
+            formMessage: this.msg("AOOTH_RESEND_WAIT", {
+              seconds: this.resendWaitSeconds(ctx.pincode?.resendAllowedAt),
+            }),
           });
         }
-        delete ctx.pin;
-        delete ctx.pinExpire;
+        this.clearPin(ctx);
         return undefined;
       }
       if (outcome === "exit") {
@@ -4529,8 +4895,7 @@ export class AuthWorkflow {
           ctx.mfa.ignoreDefault = true;
           delete ctx.mfa.method;
         }
-        delete ctx.pin;
-        delete ctx.pinExpire;
+        this.clearPin(ctx);
         // Method-switching MUST clear the CURRENT-channel resend cooldown —
         // the next channel is a fresh send, not a re-send for the channel
         // the user just walked away from. Without this delete, the user
@@ -4554,9 +4919,27 @@ export class AuthWorkflow {
       if (ctx.postReset && err instanceof StepRetriableError) throw this.stampRecoveryExpiry(err);
       throw err;
     }
-    const pinErr = this.verifyPin(ctx, input.code);
+    // Recovery resolves the account again (the state holds nothing about it).
+    // No account — a ghost run, or one deactivated / emptied since the send —
+    // refuses every code as a wrong one, with the same attempt counting.
+    const recovery = !ctx.mfa?.method && !ctx.signup;
+    const account = recovery ? await this.recoveryAccount(ctx) : null;
+    const binding = recovery
+      ? this.recoveryBinding(account)
+      : this.pinFor(ctx, ctx.otp?.deliveredTo ?? "");
+    const pinErr = await this.verifyPin(
+      ctx,
+      recovery && !account ? NO_CODE : input.code,
+      binding,
+      this.pincodeTarget(ctx, ctx.otp?.deliveredTo),
+    );
     if (pinErr) throw this.throwPublic(ctx, wf, { errors: pinErr });
     const otp = (ctx.otp ??= {});
+    if (account) {
+      ctx.subject = account.subject;
+      otp.deliveredTo = account.address;
+      otp.deliveredChannel = account.channel;
+    }
     otp.verified = true;
     // Verified pin DELIVERED to an email address — the user just proved that
     // inbox; record it as the correspondence address. One uniform rule for
@@ -4571,8 +4954,7 @@ export class AuthWorkflow {
     if (ctx.deviceTrust?.enabled && ctx.deviceTrust?.optIn) {
       (ctx.trust ??= {}).rememberDevice = Boolean(input.rememberDevice);
     }
-    delete ctx.pin;
-    delete ctx.pinExpire;
+    this.clearPin(ctx);
     return undefined;
   }
 
@@ -4607,11 +4989,11 @@ export class AuthWorkflow {
       if (err instanceof UserAuthError) {
         if (err.type === "LOCKED") {
           throw this.throwPublic(ctx, wf, {
-            formMessage: this.msg("ACCOUNT_LOCKED"),
+            formMessage: this.msg("AOOTH_ACCOUNT_LOCKED"),
           });
         }
         if (err.type === "INACTIVE") {
-          throw this.throwPublic(ctx, wf, { errors: { code: this.msg("INVALID_CODE") } });
+          throw this.throwPublic(ctx, wf, { errors: { code: this.msg("AOOTH_INVALID_CODE") } });
         }
         if (err.type === "MFA_NOT_CONFIGURED") {
           throw this.httpError(400, "TOTP_NOT_CONFIGURED");
@@ -4619,10 +5001,10 @@ export class AuthWorkflow {
         if (err.type === "MFA_INVALID") {
           if (err.details?.lockEnds !== undefined) {
             throw this.throwPublic(ctx, wf, {
-              formMessage: this.msg("ACCOUNT_LOCKED"),
+              formMessage: this.msg("AOOTH_ACCOUNT_LOCKED"),
             });
           }
-          throw this.throwPublic(ctx, wf, { errors: { code: this.msg("INVALID_CODE") } });
+          throw this.throwPublic(ctx, wf, { errors: { code: this.msg("AOOTH_INVALID_CODE") } });
         }
       }
       throw err;
@@ -4683,7 +5065,7 @@ export class AuthWorkflow {
       const input = wf.resolveInput() as { method: string };
       const picked = input.method as MfaTransport;
       if (!m.availableTransports.includes(picked)) {
-        throw this.throwPublic(ctx, wf, { errors: { method: this.msg("UNKNOWN_METHOD") } });
+        throw this.throwPublic(ctx, wf, { errors: { method: this.msg("AOOTH_UNKNOWN_METHOD") } });
       }
       m.method = picked;
     }
@@ -4855,13 +5237,19 @@ export class AuthWorkflow {
         throw this.throwPublic(ctx, wf, { formMessage: this.msg("TOTP_RESEND_NOT_APPLICABLE") });
       }
       const cooldown = ctx.pincode?.resendAllowedAt;
-      if (cooldown && Date.now() < cooldown) {
-        const waitSec = Math.ceil((cooldown - Date.now()) / 1000);
+      // The state's wait, then the server-side cooldown per destination (a
+      // replayed older state carries a stale wait).
+      if (
+        (cooldown && Date.now() < cooldown) ||
+        !(await this.claimCodeSend(this.enrollTarget(ctx, m.address), ctx.subject))
+      ) {
         throw this.throwPublic(ctx, wf, {
-          formMessage: this.msg("RESEND_WAIT_ANOTHER", { seconds: waitSec }),
+          formMessage: this.msg("AOOTH_RESEND_WAIT_ANOTHER", {
+            seconds: this.resendWaitSeconds(cooldown),
+          }),
         });
       }
-      await this.mintAndSendEnrollPincode(ctx, m.address as string);
+      await this.mintAndSendEnrollPincode(ctx, m.address as string, true);
       return undefined;
     }
     const input = wf.resolveInput() as { code: string };
@@ -4869,10 +5257,15 @@ export class AuthWorkflow {
       // Verify against the wf-state secret (write-on-confirm — no user-record row
       // exists yet). verifyTotpCode returns the matched counter, or null.
       if (verifyTotpCode(m.secret as string, input.code) === null) {
-        throw this.throwPublic(ctx, wf, { errors: { code: this.msg("INVALID_CODE") } });
+        throw this.throwPublic(ctx, wf, { errors: { code: this.msg("AOOTH_INVALID_CODE") } });
       }
     } else {
-      const pinErr = this.verifyPin(ctx, input.code);
+      const pinErr = await this.verifyPin(
+        ctx,
+        input.code,
+        this.pinFor(ctx, m.address ?? ""),
+        this.enrollTarget(ctx, m.address),
+      );
       if (pinErr) throw this.throwPublic(ctx, wf, { errors: pinErr });
     }
     await this.confirmEnrolledFactor(ctx);
@@ -4910,8 +5303,7 @@ export class AuthWorkflow {
     if (!m.keepExistingDefault) await this.users.setDefaultMfaMethod(username, methodName);
     m.done = true;
     (ctx.otp ??= {}).verified = true;
-    delete ctx.pin;
-    delete ctx.pinExpire;
+    this.clearPin(ctx);
   }
 
   /**
@@ -4978,8 +5370,7 @@ export class AuthWorkflow {
       const reason = res.reason ?? "additional verification required";
       session.riskStepUpReason = reason;
       if (ctx.otp) delete ctx.otp.verified;
-      delete ctx.pin;
-      delete ctx.pinExpire;
+      this.clearPin(ctx);
     } else {
       delete session.riskStepUpReason;
     }
@@ -5262,6 +5653,43 @@ export class AuthWorkflow {
   }
 
   /**
+   * Login-only guard before the `record-login` funnel: an account deactivated
+   * or locked while the run was paused (MFA, enrolment, consents …) is not
+   * stamped, announced or signed in — the run finishes with an error.
+   */
+  @Step("check-can-sign-in")
+  @Public()
+  async checkCanSignIn(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    await this.loginAccountBlocked(ctx);
+    return undefined;
+  }
+
+  /**
+   * Whether the run's account can no longer sign in (deactivated, locked or
+   * deleted since it authenticated). If so the run is finished with an error
+   * (`AOOTH_ACCOUNT_LOCKED` for a lock unless `lockoutDisclosure` is
+   * `'generic'`, else `INVALID_CREDENTIALS`) and `ctx.aborted` is set.
+   */
+  private async loginAccountBlocked(ctx: AuthWfCtx): Promise<boolean> {
+    this.requireSubject(ctx);
+    try {
+      await this.users.assertCanSignIn(ctx.subject);
+      return false;
+    } catch (err) {
+      if (!(err instanceof UserAuthError)) throw err;
+      const locked = err.type === "LOCKED" && this.opts.lockoutDisclosure !== "generic";
+      ctx.aborted = true;
+      finishWf({
+        message: {
+          level: "error",
+          text: this.msg(locked ? "AOOTH_ACCOUNT_LOCKED" : "INVALID_CREDENTIALS"),
+        },
+      });
+      return true;
+    }
+  }
+
+  /**
    * The SINGLE login-completion funnel. Every flow that establishes an
    * authenticated session routes through here — placed in each login schema
    * right after the guards and BEFORE the delivery terminal (`issue` /
@@ -5324,6 +5752,26 @@ export class AuthWorkflow {
   }
 
   /**
+   * Auto-login guard, ahead of `record-login` on every auto-login path (invite,
+   * recovery, signup): never stamp a login, fire `afterLogin` or issue a
+   * session for an account that is no longer active (deactivated meanwhile —
+   * every flow reaching here activated or verified it first). Recovery and
+   * invite fall back to the fresh-login finish (no session); signup fails.
+   */
+  @Step("auto-login-check")
+  @Public()
+  async autoLoginCheck(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
+    this.requireSubject(ctx);
+    const { account } = await this.users.getUser(ctx.subject);
+    if (account.active) return undefined;
+    if (!ctx.postReset && !ctx.accept) throw new HttpError(403, "Account is not active");
+    this.finalizeFreshLogin(ctx);
+    // The run no longer logs in: `record-login` and `finalize-auto-login` skip.
+    ctx.autoLogin = false;
+    return undefined;
+  }
+
+  /**
    * Thin dispatcher steps for the flow-specific lifecycle hooks. Each is its own
    * schema step (rather than an in-terminal call) because its flow's finalize
    * terminals are SHARED across flows (`finalize-auto-login` serves invite +
@@ -5359,6 +5807,14 @@ export class AuthWorkflow {
   @Public()
   async issue(@WorkflowParam("context") ctx: AuthWfCtx): Promise<void> {
     this.requireSubject(ctx);
+    // Defense in depth (`check-can-sign-in` runs first in the bundled schema):
+    // never a session for an account deactivated or locked meanwhile.
+    try {
+      await this.users.assertCanSignIn(ctx.subject);
+    } catch (err) {
+      if (err instanceof UserAuthError) throw new HttpError(403, "Account cannot sign in");
+      throw err;
+    }
     const issue = await this.issueForContext(ctx);
     const auth = useAuth();
     const envelope: WfFinished = {
@@ -5594,6 +6050,11 @@ export class AuthWorkflow {
       });
       return undefined;
     }
+    // `authz-consent` paused: the account may have been deactivated or locked since.
+    if (await this.loginAccountBlocked(ctx)) {
+      await pending.delete(handle);
+      return undefined;
+    }
     const { code } = await codes.mint({
       userId: ctx.subject,
       codeChallenge: req.codeChallenge,
@@ -5697,7 +6158,7 @@ export class AuthWorkflow {
           trigger: "auto",
           timeoutMs: 5000,
           action: { type: "redirect", target, reason: "reset-success" },
-          skipButton: { label: this.msg("GO_NOW") },
+          skipButton: { label: this.msg("AOOTH_GO_NOW") },
         },
       });
     }
@@ -5712,15 +6173,19 @@ export class AuthWorkflow {
    * tokens (WF-INVITE-020).
    *
    * It records NOTHING and guards NOTHING: `account.lastLogin` + the
-   * `afterLogin` hook are owned by the upstream `record-login` funnel step, and
-   * the admin-only-survived-lock guard by the upstream `recovery-lock-check`
-   * step — both of which `{ break }`/gate this step out when they apply, so a
-   * still-frozen account never reaches here.
+   * `afterLogin` hook are owned by the upstream `record-login` funnel step,
+   * the inactive-account guard by `auto-login-check`, and the
+   * admin-only-survived-lock guard by `recovery-lock-check` — all upstream, so
+   * an inactive or still-frozen account never reaches here.
    */
   @Step("finalize-auto-login")
   @Public()
   async finalizeAutoLogin(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     this.requireSubject(ctx);
+    // Defense in depth for custom schemas (`auto-login-check` runs first).
+    if (!(await this.users.getUser(ctx.subject)).account.active) {
+      throw new HttpError(403, "Account is not active");
+    }
     const issue = await this.issueForContext(ctx);
     const auth = useAuth();
     const previousMessage = (useWfFinished().get()?.value as WfFinished | undefined)?.message;
@@ -5847,7 +6312,7 @@ export class AuthWorkflow {
   /** Generic "you already have an account" finish for the signup existence collision (safe — only reached post-OTP). */
   private finishSignupAlreadyRegistered(): void {
     finishWf({
-      message: { level: "info", text: this.msg("ALREADY_HAVE_ACCOUNT") },
+      message: { level: "info", text: this.msg("AOOTH_ALREADY_HAVE_ACCOUNT") },
       next: {
         trigger: "immediate",
         action: { type: "redirect", target: this.opts.loginUrl, reason: "already-registered" },
@@ -5869,26 +6334,276 @@ export class AuthWorkflow {
     return undefined;
   }
 
-  // ── Alt-cred stubs (4; login-only, all condition: false placeholders) ──
+  // ── Magic links (recovery + sign-in) ──
 
+  /**
+   * Login's `magicLink` alt-action: the identifier form. Resolves the account
+   * (unknown, inactive or locked identifiers resolve to none — the answer is
+   * the same) and hands over to `magic-link-send`.
+   */
   @Step("magic-link-request")
   @Public()
-  // oxlint-disable-next-line typescript/no-redundant-type-constituents -- explicit sync|async override seam, see CLAUDE.md "Pure extension-point stubs"
-  magicLinkRequest(@WorkflowParam("context") _ctx: AuthWfCtx): unknown | Promise<unknown> {
+  async magicLinkRequest(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
+    const ml = ctx.magicLink;
+    if (!ml || ml.purpose !== "login" || ml.sentAt !== undefined) return undefined;
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.magicLinkRequest);
+    const { identifier } = wf.resolveInput() as { identifier: string };
+    const user = await this.users.findByHandle(identifier.trim());
+    if (user) ml.subject = user.id;
+    ml.identifier = identifier.trim().toLowerCase();
     return undefined;
   }
 
+  /**
+   * Send a magic link (recovery or sign-in) and pause until it is used. The
+   * pause is persisted under the `magic-link` strategy — a fresh, hashed,
+   * single-use handle that expires with the link (`magicLinkTtlMs`) — and the
+   * `magic-link` outlet hands the token to the email outlet only. Known and
+   * unknown identifiers take the same path and get the same answer; nothing is
+   * sent for an unknown identifier, an account without a proven inbox, a
+   * sign-in the account may not start (inactive, locked), or a repeat within
+   * `mfa.pincodeResendTimeoutMs`. The click resumes here and moves on to the
+   * purpose's verify step.
+   */
   @Step("magic-link-send")
   @Public()
-  // oxlint-disable-next-line typescript/no-redundant-type-constituents -- explicit sync|async override seam, see CLAUDE.md "Pure extension-point stubs"
-  magicLinkSend(@WorkflowParam("context") _ctx: AuthWfCtx): unknown | Promise<unknown> {
+  async magicLinkSend(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
+    const ml = ctx.magicLink;
+    if (!ml || ml.sentAt !== undefined) return undefined;
+    await enforceRateLimit(SEND_RATE_LIMIT);
+    const now = Date.now();
+    ml.sentAt = now;
+    ml.expiresAt = now + this.opts.magicLinkTtlMs;
+    const address = await this.magicLinkAddress(ctx, ml);
+    if (address) ml.address = address;
+    const cooldownKey = sha256url(`${ml.purpose}|${ml.subject ?? ml.identifier ?? ""}`);
+    const sends = await this.opts.lockoutShadowStore.hit(
+      `${MAGIC_LINK_SEND_PREFIX}${cooldownKey}`,
+      this.opts.mfa.pincodeResendTimeoutMs,
+    );
+    const deliver = !!address && sends === 1;
+    delete ml.identifier;
+    if (ml.purpose === "login" && ctx.alternateCredentials?.magicLinkSameBrowser) {
+      // Bind the link to this browser (set for every request alike).
+      ml.browser = this.bindMagicLinkBrowser();
+    }
+    swapStrategy(MAGIC_LINK_STRATEGY);
+    return {
+      ...outlet(MAGIC_LINK_OUTLET, {
+        target: deliver ? address : "",
+        template: ml.purpose === "recovery" ? "recovery.magicLink" : "login.magicLink",
+        context: { deliver, expiresAtMs: this.opts.magicLinkTtlMs },
+      }),
+      expires: ml.expiresAt,
+    };
+  }
+
+  /**
+   * Where a magic link may go — an inbox the account proved, or `undefined`
+   * (nothing is sent). Recovery with the typed identifier as destination (M1,
+   * email channel) sends to the typed address, like the recovery code; every
+   * other case sends to the account's proven inbox: `account.verifiedEmail`,
+   * else a confirmed email MFA method — never an unproven address. The account
+   * must be active; a sign-in link also needs it unlocked (a recovery link may
+   * go to a locked account — self-service unlock). Override to change the
+   * destination.
+   */
+  protected async magicLinkAddress(
+    ctx: AuthWfCtx,
+    ml: NonNullable<AuthWfCtx["magicLink"]>,
+  ): Promise<string | undefined> {
+    let user: UserCredentials;
+    try {
+      // An unknown identifier reads a placeholder row: the same reads either way.
+      user =
+        ml.purpose === "login"
+          ? await this.users.assertCanSignIn(ml.subject ?? UNKNOWN_ACCOUNT_ID)
+          : await this.users.getUser(ml.subject ?? UNKNOWN_ACCOUNT_ID);
+    } catch (err) {
+      if (err instanceof UserAuthError) return undefined;
+      throw err;
+    }
+    // Recovery, like the one-time code: an inactive (pending / deactivated)
+    // account gets nothing; a locked one may recover.
+    if (!ml.subject || !user.account.active) return undefined;
+    if (ml.purpose === "recovery" && (await this.recoveryDeliverySource(ctx)) === "typed") {
+      const typed = await this.recoveryPincodeTarget(ctx, "typed");
+      return typed.channel === "email" && typed.address ? typed.address : undefined;
+    }
+    return (
+      user.account.verifiedEmail ??
+      user.mfa.methods.find((m) => m.name === "email" && m.confirmed)?.value
+    );
+  }
+
+  /**
+   * The landing step of a clicked link: "Continue as a•••@example.com". Opening
+   * the link (or a mail scanner fetching it) only renders this step — the
+   * pause stays on the link's own handle, so the link still works; it is used
+   * up only when this form is submitted. The masked account lets the user see
+   * which account the link signs into (a forwarded link would be someone
+   * else's).
+   */
+  @Step("magic-link-confirm")
+  @Public()
+  magicLinkConfirm(@WorkflowParam("context") ctx: AuthWfCtx): unknown {
+    const ml = ctx.magicLink;
+    if (!ml?.sentAt || ml.confirmed) return undefined;
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.magicLinkConfirm);
+    try {
+      wf.resolveInput();
+    } catch (err) {
+      if (err instanceof StepRetriableError) {
+        // Same lifetime as the link; same handle (no strategy swap) — not used up.
+        (err as { expires?: number }).expires = ml.expiresAt;
+      }
+      throw err;
+    }
+    ml.confirmed = true;
     return undefined;
   }
 
+  /** Name of the cookie binding a sign-in link to the browser that asked for it. */
+  protected magicLinkBrowserCookie(): string {
+    return MAGIC_LINK_BROWSER_COOKIE;
+  }
+
+  /** Set the browser-binding cookie; returns the hash the link keeps. */
+  private bindMagicLinkBrowser(): string {
+    const nonce = randomBytes(24).toString("base64url");
+    useResponse(current()).setCookie(
+      this.magicLinkBrowserCookie(),
+      nonce,
+      authzBindingCookieAttrs({
+        secure: useAuth().options.cookie.secure,
+        maxAgeSec: Math.ceil(this.opts.magicLinkTtlMs / 1000),
+      }),
+    );
+    return sha256url(nonce);
+  }
+
+  /** Whether this request carries the browser-binding cookie the link was sent with. */
+  private sameMagicLinkBrowser(expected: string): boolean {
+    const cookie = useCookies(current()).getCookie(this.magicLinkBrowserCookie());
+    if (!cookie) return false;
+    return safeEqual(sha256url(cookie), expected);
+  }
+
+  /**
+   * A used sign-in link: the FIRST factor only. Re-checks the account
+   * (active, not locked), binds `ctx.subject` and leaves the second factor to
+   * the MFA loop, exactly as after a password. Refuses a link of another
+   * purpose, an expired one, and one sent for no account.
+   */
   @Step("magic-link-verified")
   @Public()
-  // oxlint-disable-next-line typescript/no-redundant-type-constituents -- explicit sync|async override seam, see CLAUDE.md "Pure extension-point stubs"
-  magicLinkVerified(@WorkflowParam("context") _ctx: AuthWfCtx): unknown | Promise<unknown> {
+  async magicLinkVerified(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
+    const ml = this.usedMagicLink(ctx, "login");
+    if (!ml) return undefined;
+    if (!ml.subject || (ml.browser && !this.sameMagicLinkBrowser(ml.browser))) {
+      this.finishMagicLinkInvalid(ctx);
+      return undefined;
+    }
+    let user: UserCredentials;
+    try {
+      user = await this.users.assertCanSignIn(ml.subject);
+    } catch (err) {
+      if (!(err instanceof UserAuthError)) throw err;
+      this.finishMagicLinkInvalid(ctx);
+      return undefined;
+    }
+    ctx.subject = user.id; // before the guards resolve (they may read it)
+    // A link proves the inbox, not the password policy: an initial or expired
+    // password must be changed, exactly as after a password sign-in.
+    const guardsResult = this.resolveGuards(ctx);
+    ctx.guards = guardsResult instanceof Promise ? await guardsResult : guardsResult;
+    await this.bindSignedInUser(ctx, user);
+    return undefined;
+  }
+
+  /**
+   * A used recovery link: proof of the inbox it went to, exactly like a
+   * verified recovery code — `ctx.otp.verified` set, the inbox recorded as
+   * the account's verified email, and the flow goes on to the new password.
+   * Refuses a link of another purpose, an expired one, one sent for no
+   * account, and one whose account is no longer active.
+   */
+  @Step("recovery-link-verified")
+  @Public()
+  async recoveryLinkVerified(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
+    const ml = this.usedMagicLink(ctx, "recovery");
+    if (!ml) return undefined;
+    // Re-read at click time: an account deactivated or deleted since the send
+    // gets no reset.
+    let active = false;
+    if (ml.subject && ml.address) {
+      try {
+        active = (await this.users.getUser(ml.subject)).account.active;
+      } catch (err) {
+        if (!(err instanceof UserAuthError)) throw err;
+      }
+    }
+    if (!active || !ml.subject || !ml.address) {
+      this.finishMagicLinkInvalid(ctx);
+      return undefined;
+    }
+    ctx.subject = ml.subject;
+    const otp = (ctx.otp ??= {});
+    otp.verified = true;
+    otp.deliveredTo = ml.address;
+    otp.deliveredChannel = "email";
+    await this.users.setVerifiedEmail(ml.subject, ml.address);
+    return undefined;
+  }
+
+  /**
+   * The magic link this run was resumed through, checked for `purpose` and
+   * expiry — or `undefined` after emitting the "invalid link" finish. Swaps
+   * off the `magic-link` strategy first, so the link's token is never the
+   * continuation (the next pause gets a fresh handle).
+   */
+  private usedMagicLink(
+    ctx: AuthWfCtx,
+    purpose: "recovery" | "login",
+  ): NonNullable<AuthWfCtx["magicLink"]> | undefined {
+    const ml = ctx.magicLink;
+    if (!ml?.sentAt) return undefined;
+    swapStrategy("store");
+    if (ml.purpose !== purpose || !ml.expiresAt || Date.now() > ml.expiresAt) {
+      this.finishMagicLinkInvalid(ctx);
+      return undefined;
+    }
+    return ml;
+  }
+
+  /** The finish of a link that cannot be used (wrong purpose, expired, no account). */
+  private finishMagicLinkInvalid(ctx: AuthWfCtx): void {
+    ctx.aborted = true;
+    finishWf({ message: { level: "error", text: this.msg("AOOTH_MAGIC_LINK_INVALID") } });
+  }
+
+  /**
+   * Recovery's `'choice'` delivery: the user picks a magic link or a one-time
+   * code. Shown for known and unknown identifiers alike. A one-time code for
+   * an unknown identifier runs the ghost OTP pause, like the default path.
+   */
+  @Step("select-recovery-mode")
+  @Public()
+  async selectRecoveryMode(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
+    const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.recoveryModeSelect);
+    let mode: string;
+    try {
+      ({ mode } = wf.resolveInput() as { mode: string });
+    } catch (err) {
+      if (err instanceof StepRetriableError) throw this.stampRecoveryExpiry(err);
+      throw err;
+    }
+    if (mode !== "magicLink" && mode !== "otp") {
+      throw this.throwPublic(ctx, wf, { errors: { mode: this.msg("AOOTH_CHOOSE_OPTION") } });
+    }
+    // Resolved only now, after the pick: the picker's state (client-held
+    // under an encapsulated strategy) holds nothing about the account.
+    await this.applyRecoveryMode(ctx, mode);
     return undefined;
   }
 
@@ -6001,7 +6716,7 @@ export class AuthWorkflow {
         throw err;
       }
       finishWf({
-        message: { level: "success", text: this.msg("ACCOUNT_LINKED") },
+        message: { level: "success", text: this.msg("AOOTH_ACCOUNT_LINKED") },
         next: {
           trigger: "immediate",
           action: { type: "redirect", target: redirect, reason: "oauth-linked" },
@@ -6229,17 +6944,22 @@ export class AuthWorkflow {
   private async deliverPendingLinkPin(
     candidate: UserCredentials,
     pending: NonNullable<AuthWfCtx["pendingLink"]>,
+    claimed?: boolean,
   ): Promise<string | null> {
     const method = candidate.mfa.methods.find((m) => m.name === pending.otpChannel && m.confirmed);
     if (!method) return null;
-    const code = this.mintPin(pending, this.opts.mfa.pincodeLength, this.opts.mfa.pincodeTtlMs);
-    await this.dispatch({
-      kind: "mfa-pincode",
-      channel: pending.otpChannel as "email" | "sms",
-      recipient: method.value,
-      code,
-      expiresInMs: this.opts.mfa.pincodeTtlMs,
-    });
+    const deliver =
+      claimed ?? (await this.claimCodeSend(this.linkTarget(pending), pending.candidateUserId));
+    const code = this.mintPin(pending, pending.candidateUserId);
+    if (deliver) {
+      await this.dispatch({
+        kind: "mfa-pincode",
+        channel: pending.otpChannel as "email" | "sms",
+        recipient: method.value,
+        code,
+        expiresInMs: this.opts.mfa.pincodeTtlMs,
+      });
+    }
     pending.resendAllowedAt = Date.now() + this.opts.mfa.pincodeResendTimeoutMs;
     return this.maskAddress(method.value, pending.otpChannel as "email" | "sms");
   }
@@ -6315,13 +7035,19 @@ export class AuthWorkflow {
     // form has no `resend` action, so this is unreachable in password mode.)
     if (isOtp && action === "resend") {
       const cooldown = pending.resendAllowedAt;
-      if (cooldown && Date.now() < cooldown) {
-        const waitSec = Math.ceil((cooldown - Date.now()) / 1000);
+      // The state's wait, then the server-side cooldown of the account (a
+      // replayed older state carries a stale wait).
+      if (
+        (cooldown && Date.now() < cooldown) ||
+        !(await this.claimCodeSend(this.linkTarget(pending), pending.candidateUserId))
+      ) {
         throw this.throwPublic(ctx, wf, {
-          formMessage: this.msg("RESEND_WAIT_ANOTHER", { seconds: waitSec }),
+          formMessage: this.msg("AOOTH_RESEND_WAIT_ANOTHER", {
+            seconds: this.resendWaitSeconds(cooldown),
+          }),
         });
       }
-      const sentTo = await this.deliverPendingLinkPin(candidate, pending);
+      const sentTo = await this.deliverPendingLinkPin(candidate, pending, true);
       if (sentTo === null) {
         delete ctx.pendingLink;
         return this.finishOAuth(ctx, "needs-link");
@@ -6334,7 +7060,12 @@ export class AuthWorkflow {
 
     // ── Verify proof of control (wrong proof → generic inline re-pause) ──
     if (isOtp) {
-      const pinErr = this.verifyPin(pending, input.code);
+      const pinErr = await this.verifyPin(
+        pending,
+        input.code,
+        pending.candidateUserId,
+        this.linkTarget(pending),
+      );
       if (pinErr) throw this.throwPublic(ctx, wf, { errors: pinErr });
     } else {
       try {
@@ -6342,7 +7073,7 @@ export class AuthWorkflow {
       } catch (err) {
         if (err instanceof UserAuthError && err.type === "LOCKED") {
           throw this.throwPublic(ctx, wf, {
-            formMessage: this.msg("ACCOUNT_LOCKED"),
+            formMessage: this.msg("AOOTH_ACCOUNT_LOCKED"),
           });
         }
         throw this.throwPublic(ctx, wf, { errors: { password: this.msg("INVALID_PASSWORD") } });
@@ -6407,7 +7138,18 @@ export class AuthWorkflow {
     // consent-only silent authorize path), in which case BOTH are skipped and
     // the run flows straight through the shared gates to `authz-consent`.
     { id: "sso-callback", condition: (ctx) => !!ctx.idpInbound },
-    { id: "credentials", condition: (ctx) => !ctx.idpInbound && !ctx.subject },
+    { id: "credentials", condition: (ctx) => !ctx.idpInbound && !ctx.subject && !ctx.magicLink },
+    // Magic-link sign-in (the `magicLink` alt-action): identifier → link → the
+    // click binds `ctx.subject`. First factor only — the MFA loop below still runs.
+    {
+      condition: (ctx) => ctx.magicLink?.purpose === "login" && !ctx.subject,
+      steps: [
+        { id: "magic-link-request" },
+        { id: "magic-link-send" },
+        { id: "magic-link-confirm" },
+        { id: "magic-link-verified", condition: (ctx) => !ctx.aborted },
+      ],
+    },
     // Federated `needs-link` interactive completion — runs only when
     // `sso-callback` matched the verified profile to an existing account and
     // stashed `ctx.pendingLink`. Must precede the `!ctx.subject` break because
@@ -6440,15 +7182,7 @@ export class AuthWorkflow {
     { break: (ctx) => !!ctx.aborted },
 
     // Alt-cred stub registration (always condition: false; consumer overrides)
-    {
-      condition: () => false,
-      steps: [
-        { id: "magic-link-request" },
-        { id: "magic-link-send" },
-        { id: "magic-link-verified" },
-        { id: "passkey" },
-      ],
-    },
+    { condition: () => false, steps: [{ id: "passkey" }] },
 
     // Forced channel enrolment. The email pair keys on `channel.email` — the
     // address `ask/email` actually collected and sent a code to — mirroring
@@ -6538,6 +7272,8 @@ export class AuthWorkflow {
       id: "check-password-unchanged",
       condition: (ctx) => ctx.passwordStamp !== undefined && !ctx.passwordChanged,
     },
+    // …nor on an account deactivated or locked while it was paused.
+    { id: "check-can-sign-in", condition: (ctx) => !!ctx.subject && !ctx.aborted },
     { break: (ctx) => !!ctx.aborted },
     { id: "record-login", condition: (ctx) => !!ctx.subject && !ctx.authz?.silent },
 
@@ -6651,6 +7387,7 @@ export class AuthWorkflow {
         // `record-login` runs only on the auto-login path (the fresh-login path
         // establishes no session, so it is not a login).
         { id: "finalize-fresh-login", condition: (ctx) => !ctx.autoLogin },
+        { id: "auto-login-check", condition: (ctx) => !!ctx.autoLogin },
         { id: "record-login", condition: (ctx) => !!ctx.autoLogin },
         { id: "finalize-auto-login", condition: (ctx) => !!ctx.autoLogin },
       ],
@@ -6659,20 +7396,33 @@ export class AuthWorkflow {
   inviteFlow(): void {}
 
   /**
-   * recovery.flow — OTP-via-email reset. `@Public()` on the body because
-   * anonymous users start recovery.
+   * recovery.flow — reset by a one-time code or a magic link
+   * (`resolveRecoveryDeliveryMode`). `@Public()` on the body because anonymous
+   * users start recovery.
    */
   @Workflow("auth/recovery/flow")
   @Public()
   @WorkflowSchema<AuthWfCtx>([
     { id: "init-recovery" },
     { id: "request" },
-    { break: (ctx) => !ctx.subject },
+    // `resolveRecoveryDeliveryMode`: 'choice' asks; 'magicLink' sends a link
+    // whose click stands for a verified code (`otp.verified`).
+    { id: "select-recovery-mode", condition: (ctx) => ctx.recoveryDelivery === "choice" },
+    {
+      condition: (ctx) => ctx.recoveryDelivery === "magicLink",
+      steps: [
+        { id: "magic-link-send" },
+        { id: "magic-link-confirm" },
+        { id: "recovery-link-verified" },
+      ],
+    },
+    // A link run continues only once its link bound the account; a code run
+    // continues for every identifier (the account is resolved at verification).
+    { break: (ctx) => !!ctx.aborted || (!ctx.subject && ctx.recoveryDelivery !== "otp") },
 
     { id: "prepare-post-reset" },
     { id: "prepare-recovery-alt-actions" },
     { id: "prepare-lockout" }, // self-service mode → unlock-account runs in the post-reset tail
-    { id: "prepare-consents" },
     { id: "prepare-semantic-flags" }, // sets ctx.password.changeReason = "reset"
 
     // OTP-via-email loop — spreads the shared pincode pair (same step pair as login MFA).
@@ -6688,7 +7438,14 @@ export class AuthWorkflow {
     // gated directly on OTP verification).
     {
       condition: (ctx) => !!ctx.otp?.verified,
-      steps: [{ id: "prepare-password-rules" }, { id: "create-password-form" }],
+      steps: [
+        // Pending consents depend on the account: staged only once the inbox
+        // is proven, so nothing before it differs between accounts (or from a
+        // ghost run).
+        { id: "prepare-consents" },
+        { id: "prepare-password-rules" },
+        { id: "create-password-form" },
+      ],
     },
     { break: (ctx) => !!ctx.aborted },
 
@@ -6711,6 +7468,7 @@ export class AuthWorkflow {
     // `opts.autoLoginOnRecover` by init-recovery). `record-login` runs only on
     // the auto-login path (fresh-login establishes no session).
     { id: "finalize-fresh-login", condition: (ctx) => !ctx.autoLogin },
+    { id: "auto-login-check", condition: (ctx) => !!ctx.autoLogin },
     { id: "record-login", condition: (ctx) => !!ctx.autoLogin },
     { id: "finalize-auto-login", condition: (ctx) => !!ctx.autoLogin },
     // Note: notify-new-device is NOT fired here in this pass — see §13.
@@ -6907,6 +7665,7 @@ export class AuthWorkflow {
     ...consentsPersistTailSchema,
     { id: "signup-extra-step" }, // customer extension point
     { id: "after-signup" }, // afterSignup hook (account created + activated)
+    { id: "auto-login-check" }, // the account is still active
     { id: "record-login" }, // stamp lastLogin + afterLogin (signup always auto-logins)
     { id: "finalize-auto-login" }, // v1 always auto-logins
   ])

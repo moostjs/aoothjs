@@ -5,7 +5,7 @@ import type {
   TDbWriteCheckContext,
   TDbWriteGuardContext,
 } from "@atscript/db";
-import { HttpError } from "@moostjs/event-http";
+import { notFoundError } from "@atscript/moost-db";
 
 import type { ArbacDbScope } from "./as-arbac-db-controller";
 import { hasPreImage, isPatchAction } from "./helpers";
@@ -38,7 +38,7 @@ export function assertNestedWritesAllowed(
       const dot = key.indexOf(".");
       const rel = dot === -1 ? key : key.slice(0, dot);
       if (navFields.has(rel) && !effectiveScope(scopes).nestedWrites.has(rel)) {
-        throw arbacHttpError(403, "NESTED_WRITE_NOT_ALLOWED", { relation: rel });
+        throw arbacHttpError(403, "ARBAC_NESTED_WRITE_NOT_ALLOWED", { relation: rel });
       }
     }
   }
@@ -69,7 +69,7 @@ export async function assertIdFiltersInScope(
     filter: filter ? { $and: [idFilter, filter] } : idFilter,
     controls: {},
   });
-  if (n < ids.length) throw new HttpError(404, "Not found");
+  if (n < ids.length) throw notFoundError();
 }
 
 /**
@@ -88,7 +88,7 @@ export async function assertCheckBeforeWrite(
   try {
     predicate = compileScopeCheck(check);
   } catch (error) {
-    if (error instanceof UnsupportedCheckError) throw arbacHttpError(403, "ROW_OUT_OF_SCOPE");
+    if (error instanceof UnsupportedCheckError) throw arbacHttpError(403, "ARBAC_ROW_OUT_OF_SCOPE");
     throw error;
   }
   const fields = isPatchAction(ctx.action) ? checkFields(check) : undefined;
@@ -98,7 +98,7 @@ export async function assertCheckBeforeWrite(
       )
     : ctx.rows;
   for (const image of images) {
-    if (!image || !predicate(image)) throw arbacHttpError(403, "ROW_OUT_OF_SCOPE");
+    if (!image || !predicate(image)) throw arbacHttpError(403, "ARBAC_ROW_OUT_OF_SCOPE");
   }
 }
 
@@ -110,7 +110,7 @@ export async function assertWrittenRowsInCheck(
   if (ctx.filters.length === 0) return;
   const written = ctx.filters.length === 1 ? ctx.filters[0] : { $or: [...ctx.filters] };
   const n = await ctx.count({ $and: [written, check] });
-  if (n !== ctx.filters.length) throw arbacHttpError(403, "ROW_OUT_OF_SCOPE");
+  if (n !== ctx.filters.length) throw arbacHttpError(403, "ARBAC_ROW_OUT_OF_SCOPE");
 }
 
 /**
@@ -142,7 +142,7 @@ export async function guardArbacWrite(
   if (eff.filter && hasPreImage(ctx.action)) {
     const targets = ctx.rows.map((_row, i) => {
       const filter = ctx.filterFor(i);
-      if (!filter) throw new HttpError(404, "Not found");
+      if (!filter) throw notFoundError();
       return filter;
     });
     await assertIdFiltersInScope(table, targets, eff.filter);
@@ -159,7 +159,7 @@ export async function guardArbacWrite(
     // hides them from it: fail closed.
     const verdict = insertRowsVerdict(ctx.rows, eff.check);
     if (verdict === false || (verdict === undefined && ignoreConflicts)) {
-      throw arbacHttpError(403, "ROW_OUT_OF_SCOPE");
+      throw arbacHttpError(403, "ARBAC_ROW_OUT_OF_SCOPE");
     }
   }
 }
@@ -190,5 +190,5 @@ export async function guardArbacRemove(
     filter: { $and: [ctx.filter as TScopeFilter, filter] },
     controls: {},
   });
-  if (n === 0) throw new HttpError(404, "Not found");
+  if (n === 0) throw notFoundError();
 }

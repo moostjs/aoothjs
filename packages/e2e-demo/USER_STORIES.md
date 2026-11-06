@@ -150,7 +150,7 @@ These stories prove the e2e demo is testing the new class shape, not the retired
 | WF-AUTH-UNIFIED-002 | P0   | Constructor merges variant `opts` and `authOpts` before `super(...)`                      | `mfa-fast-resend`, `recovery-fast-resend` affect their flows without separate workflow option providers                                   |
 | WF-AUTH-UNIFIED-003 | P0   | Resolver dispatch uses ctx/flow state, not class type                                     | Login policy overrides do not leak into invite/recovery; invite `adminForm` and recovery `postReset` resolve from the same class          |
 | WF-AUTH-UNIFIED-004 | P0   | `deliver(payload)` handles every auth delivery kind                                       | Mailbox receives `mfa-pincode`, `enroll-pincode`, `recovery-pincode`, and `invite-link` as mapped email/SMS events                        |
-| WF-AUTH-UNIFIED-005 | P1   | Shared pincode pair works for login MFA and recovery OTP                                  | Both flows enforce `ctx.pincode.resendAllowedAt`, set `ctx.otp.verified`, and clear `ctx.pin/pinExpire` after success                     |
+| WF-AUTH-UNIFIED-005 | P1   | Shared pincode pair works for login MFA and recovery OTP                                  | Both flows enforce `ctx.pincode.resendAllowedAt`, set `ctx.otp.verified`, and drop the code in flight after success                       |
 | WF-AUTH-UNIFIED-006 | P1   | Shared password form handles login initial, login expired, invite initial, recovery reset | `ctx.password.changeReason` is `"initial"`, `"expired"`, or `"reset"` and copy/policies render through `SetPasswordForm`                  |
 | WF-AUTH-UNIFIED-007 | P1   | Invite and login share the MFA enrolment loop                                             | Login and invite optional enrolment support skip, method switching, cleanup, and `ctx.otp.verified` loop exit                             |
 
@@ -229,7 +229,7 @@ Default process:
 Reduced recovery process:
 
 1. `init-recovery`.
-2. `request` asks for email and resolves username without enumeration.
+2. `request` asks for email and resolves the account without enumeration (an identifier no code can go to runs a ghost code step).
 3. Prepare post-reset policy, recovery alt-actions, consents, and semantic password copy (`changeReason="reset"`).
 4. OTP-via-email loop uses the shared `pincode-send` / `pincode-check` pair.
 5. `SetPasswordForm` runs after `ctx.otp.verified`.
@@ -242,7 +242,7 @@ Reduced recovery process:
 | ID                     | Tier | Variant                    | Story                                                                                                           | Assertions                                                                                            |
 | ---------------------- | ---- | -------------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | WF-RECOVERY-001        | P0   | default                    | Known email receives recovery pincode, enters OTP, resets password, fresh-login finish redirects without tokens | Email kind `recovery.pincode`; `SetPasswordForm` copy says reset; no `accessToken`; redirect to login |
-| WF-RECOVERY-002        | P0   | default                    | Unknown email finishes generically                                                                              | No enumeration; no token; no mailbox event for ghost address                                          |
+| WF-RECOVERY-002        | P0   | default                    | Unknown email gets the same code form as a known one (ghost run)                                                | Same answer (002b: byte-identical); no mailbox event; every code is "Invalid code"                    |
 | WF-RECOVERY-003        | P1   | default                    | Password mismatch re-renders `SetPasswordForm`                                                                  | Inline `confirmPassword` error                                                                        |
 | WF-RECOVERY-004        | P1   | `recovery-short-ttl`       | Expired recovery state cannot resume                                                                            | Error block visible; no `SetPasswordForm`                                                             |
 | WF-RECOVERY-005        | P0   | default                    | Email OTP happy path                                                                                            | `PincodeForm` hint visible; `ctx.otp.verified` permits password form                                  |
@@ -254,13 +254,20 @@ Reduced recovery process:
 | WF-RECOVERY-018        | P2   | default or policy override | `revokeAllSessions=true` rejects old token after reset                                                          | Old session returns 401                                                                               |
 | WF-RECOVERY-CONSENT-01 | P0   | `recovery-terms-bump`      | Recovery password form carries required terms consent                                                           | Consent log has `{id:"terms", version:"v2", accepted:true}`                                           |
 
-Removed legacy recovery rows:
+### Magic links (recovery + sign-in)
 
-- Magic-link delivery.
-- SMS OTP and transport switching.
-- `RecoveryModeSelectForm`.
-- `RecoveryFactorForm`.
-- Workflow audit assertions.
+Variants: `recovery-magic-link` / `recovery-choice` (`resolveRecoveryDeliveryMode`), `magic-link` / `magic-link-mfa` (login `magicLink` alt-action). Spec: `test-e2e/magic-link.spec.ts`.
+
+| ID             | Tier | Variant               | Story                                               | Assertions                                                                     |
+| -------------- | ---- | --------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------ |
+| ML-LOGIN-01    | P0   | `magic-link`          | User without MFA signs in by the emailed link       | `login.magicLink` to the proven inbox; session issued; second use 410          |
+| ML-LOGIN-02    | P0   | `magic-link-mfa`      | Link is the first factor only                       | MFA challenge after the click; session only after the code                     |
+| ML-LOGIN-03    | P0   | `magic-link`          | Unknown / locked / pending identifiers              | Same answer as a known one; no email                                           |
+| ML-LOGIN-04    | P1   | `magic-link`          | The emailed link resumes in the SPA                 | Finish envelope with a session                                                 |
+| ML-RECOVERY-01 | P0   | `recovery-magic-link` | Link → new password                                 | `recovery.magicLink`; `SetPasswordForm`; new password signs in; second use 410 |
+| ML-RECOVERY-02 | P0   | `recovery-magic-link` | Unknown identifier                                  | Same answer; no email                                                          |
+| ML-RECOVERY-03 | P1   | `recovery-choice`     | Delivery picker                                     | Same picker for known and unknown; `magicLink` sends a link                    |
+| ML-RECOVERY-04 | P1   | `recovery-magic-link` | The emailed link opens the password form in the SPA | Reset completes                                                                |
 
 ---
 

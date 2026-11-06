@@ -2,6 +2,101 @@
 
 What to check when you move to a newer aooth release. Each entry lists the changes that can break an app or change what users see, and links to the page that documents the current behaviour. All `@aooth/*` packages share one version number — upgrade them together.
 
+## To 0.2.6
+
+### Message codes no longer collide with other libraries
+
+Message codes share one process-wide registry with every library on the server (moost's `registerMessages`): when two catalogues register one code with different texts, the last one wins and one translation applies to both. aooth's generically named codes now carry a prefix ([One id space](/moost/messages#one-id-space-shared-with-other-libraries)). Rename them in your translator catalogue, in `AuthWorkflowOpts.messages` overrides, and wherever a client or test branches on an error body's `code`:
+
+| Before                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Now                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------- |
+| Workflow (`AOOTH_MESSAGES`): `ACCOUNT_LOCKED`, `INVALID_CODE`, `CODE_EXPIRED`, `TOO_MANY_CODE_ATTEMPTS`, `RESEND_WAIT`, `RESEND_WAIT_ANOTHER`, `RESEND_WAIT_CHANNEL`, `ADDRESS_REQUIRED`, `INVALID_EMAIL_ADDRESS`, `INVALID_PHONE_NUMBER`, `UNKNOWN_METHOD`, `METHOD_UNAVAILABLE`, `METHOD_NOT_CHANGEABLE`, `CHOOSE_OPTION`, `ACCOUNT_LINKED`, `ACCOUNT_CREATED`, `ALREADY_HAVE_ACCOUNT`, `INVALID_ROLE`, `USER_ALREADY_EXISTS` (also a 409 body code), `BACK`, `GO_NOW` | the same with an `AOOTH_` prefix |
+| HTTP (`AOOTH_HTTP_MESSAGES`): `AUTH_REQUIRED`, `CREDENTIAL_INVALID`, `NOT_AUTHENTICATED`, `MISSING_UID`, `UNKNOWN_PROVIDER`, `WORKFLOW_NOT_ALLOWED`                                                                                                                                                                                                                                                                                                                      | the same with an `AOOTH_` prefix |
+| ARBAC (`ARBAC_MESSAGES`): `INSUFFICIENT_PRIVILEGES`, `CONTROL_NOT_ALLOWED`, `CONTROL_VALUE_NOT_ALLOWED`, `NESTED_WRITE_NOT_ALLOWED`, `ROW_OUT_OF_SCOPE`, `REFERENCE_OUT_OF_SCOPE`, `INVALID_QUERY_STRING`                                                                                                                                                                                                                                                                | the same with an `ARBAC_` prefix |
+| `UserAuthError` (`USER_AUTH_ERROR_MESSAGES`): `ALREADY_EXISTS`, `LOCKED`, `INACTIVE`, `POLICY_VIOLATION`, `CAS_EXHAUSTED`                                                                                                                                                                                                                                                                                                                                                | `AOOTH_USER_<type>`              |
+
+- A `UserAuthError`'s `type` is unchanged — keep branching on it in code. Its message code is the new `err.code` (`USER_AUTH_ERROR_CODES` maps type → code); `USER_AUTH_ERROR_MESSAGES` is keyed by code, and `userAuthErrorToHttp()` bodies carry it as `code` ([Errors — HTTP mapping](/user/errors#http-mapping)).
+- `NOT_FOUND`, `INVALID_CREDENTIALS` and `RATE_LIMITED` keep their ids: they are shared with other libraries on purpose. `NOT_FOUND`'s English text is now the neutral `"Not found"` (was `"User not found"`), also as `UserAuthError("NOT_FOUND")`'s default message.
+- English texts are unchanged otherwise.
+
+### `POST /auth/refresh` is rate limited
+
+`AuthController.refresh` now declares two rate-limit policies, enforced when `rateLimitInterceptors` are installed: `aooth.refresh` — `150/5m` per client IP — and `aooth.refresh-token` — `10/1m` per presented refresh token, from any IP. A rejected call answers the usual coded `429` (`RATE_LIMITED`, `Retry-After`). Re-tune or switch them off with the new `rateLimitInterceptors({ policies })` option ([Rate Limiting — bundled limits](/moost/rate-limit#bundled-limits)). A client that refreshes in a loop, or behind a NAT shared by many users, may need a higher `aooth.refresh` budget.
+
+### Magic links for recovery and sign-in
+
+Recovery can send a single-use link instead of a code (`resolveRecoveryDeliveryMode` → `'magicLink'` or `'choice'`), and the login form's `magicLink` action now signs in by link (first factor only) instead of answering `501` — see [Workflows — Magic links](/moost/workflows#magic-links). Nothing changes until you enable one. If you do:
+
+- Both send through the `email` outlet (`createAuthEmailOutlet`) with the new kinds `recovery.magicLink` / `login.magicLink` — an `EmailSender` that switches over `AuthEmailKind` needs a `login.magicLink` case.
+- `WfTriggerProvider` registers a third outlet (`magic-link`) and a third state strategy (`magic-link`). If you replace `this.outlets` or override `stateRegistry()`, keep them (`createMagicLinkOutlet`, `MAGIC_LINK_STRATEGY`). With several instances, override `magicLinkStore()` with a shared store and pass a shared `lockoutShadowStore`.
+- The unused `magicLinkSkipsMfa` and `embedRecovery` fields are gone from the alternate-credentials policy (`ctx.alternateCredentials`): a sign-in link is always the first factor only, and recovery always runs as its own flow.
+- Opening a link shows `MagicLinkConfirmForm` ("Continue as a•••@example.com"); the link is used up only when that step is submitted, so a mail scanner that opens links does not spend it. Your SPA renders it like any other workflow form. Serve the landing page with `Referrer-Policy: no-referrer`.
+- `resolveAlternateCredentials` may return `magicLinkSameBrowser: true` to bind sign-in links to the browser that asked for them (a cookie); off by default.
+
+### `/auth/token` and `/auth/register` are rate limited
+
+The authorization server's token and registration endpoints declare bundled limits, enforced when `rateLimitInterceptors` are installed: `aooth.token` (`150/5m` per IP), `aooth.token-refresh` (`10/1m` per presented `refresh_token`) and `aooth.register` (`20/1h` per IP) — see [Authorization server — Rate limits](/moost/authorization-server#rate-limits). Tune them with `rateLimitInterceptors({ policies })`.
+
+### ARBAC: un-aliased inner aggregates of `$from`
+
+Under a `$groupBy` whitelist, the outer level of a two-level aggregate may now group by an inner aggregate that has no `$as` — by its default name (`count(*)` → `count_star`), like an aliased one. It answered `403` before.
+
+### ARBAC 404s carry `code: "NOT_FOUND"`
+
+Needs `@atscript/db` / `@atscript/moost-db` `^0.1.173`, `@atscript/typescript` `^0.2.9` and `@atscript/moost-wf` `^0.1.168` (the atscript-ui client packages at `^0.1.168` too). The 404s of ARBAC-scoped tables (a write or delete outside the scope, `assertRowsInScope`) now use moost-db's `notFoundError()`, so they are byte-identical with a missing row: `{ statusCode: 404, message: "Not found", code: "NOT_FOUND", error: "Not Found" }`. An action identifier that matches no row answers the same body (it said "Row not found for action identifier"). Branch on `code`.
+
+### Recovery no longer tells whether an account exists
+
+Before, an unknown identifier finished the one-time-code recovery at once ("If an account exists, …"), while a known one paused on the code form — a different response and token. Now every identifier gets the code form ([No enumeration](/auth/password-reset#no-enumeration)):
+
+- Unknown identifiers, **inactive accounts** (pending invitations, deactivated users) and, under M2, accounts without a deliverable channel run a ghost code step: nothing is sent and no code is accepted. Inactive accounts no longer receive a recovery code.
+- Under M2 (`resolveRecoveryDeliverySource` → `'registered'`) the code form no longer shows the masked destination (`ctx.public.pincode.sentTo` is absent).
+- Recovery stages pending consents only after the code is verified (`ctx.consents` is unset on the code form).
+- The `RECOVERY_INSTRUCTIONS_SENT` message code is gone (nothing renders it any more). Drop it from your translations.
+- Recovery keeps nothing about the account in its state before the code is verified: `ctx.subject` is unset for **every** run until then, so a resolver override that reads it in recovery (`resolvePostReset`, `resolveLockout`, …) sees it unset. The account is looked up from the typed identifier when a code is sent and when one is checked.
+
+### One-time codes: server-side limits, bound and single-use
+
+Applies to every emailed or texted code — recovery, the email/SMS second factor, signup, enrolment, the federated link proof ([One-time codes](/moost/workflows#one-time-codes)).
+
+- The attempt limit (`mfa.pincodeMaxAttempts`) is counted on the server, in `lockoutShadowStore`, and holds against replayed older tokens. **With several instances, pass a shared `lockoutShadowStore`** (e.g. `RateLimitStoreRedis`) — the in-memory default counts per instance.
+- Past the limit every submit for that code answers `AOOTH_TOO_MANY_CODE_ATTEMPTS` (it answered `AOOTH_CODE_EXPIRED` after the first). A code that verified is spent: replaying the earlier state with it answers `AOOTH_CODE_EXPIRED`.
+- The state holds a keyed digest of the code instead of the code: `ctx.pin` and `ctx.pinAttempts` are gone (the code in flight is `ctx.pinNonce` + `ctx.pinDigest`). A code sent before the upgrade answers `AOOTH_CODE_EXPIRED`; the user requests a new one.
+- The digests are keyed with the new `WfTriggerProvider.pincodeSecret()` — the wf-state secret by default, so nothing to configure. A workflow run outside `WfTriggerProvider` derives the same key as a default provider; with a credential store that has no derivable secret, or a provider whose `wfStateSecret()` / `pincodeSecret()` is overridden, it overrides `AuthWorkflow.pincodeKey()`.
+- A recovery code works only for the account the identifier resolved to when it was sent; if the identifier resolves to another account by the time it is entered, the code reads as wrong.
+- To keep recovery reads equal for every identifier, `resolvePincodeTarget` now also runs for an unknown or inactive identifier, with the placeholder subject `00000000-0000-4000-8000-000000000000`; its result, or any error it throws, is discarded there.
+- A recovery code is bound to the account **and the address** it went to: with registered-channel delivery, a code sent to a channel that changed before the check answers `AOOTH_INVALID_CODE`.
+- The resend wait is enforced on the server, per destination (the typed identifier for recovery and signup, the account and address otherwise) and client IP: a resend inside it answers `AOOTH_RESEND_WAIT` from any state, and a new run inside it pauses on the code form without sending. Two recovery requests for the same identifier from one IP within `mfa.pincodeResendTimeoutMs` send one code. New option `mfa.pincodeMaxSendsGlobal` (10) caps the codes per destination from all IPs per `mfa.pincodeFailureWindowMs`; past it a request sends nothing.
+- New failure budgets per destination, across its codes, per `mfa.pincodeFailureWindowMs` (1 h): `mfa.pincodeMaxFailures` (10) per client IP and `mfa.pincodeMaxFailuresGlobal` (100) from all IPs. Past one, every send and check answers `429 AOOTH_CODE_LIMIT_REACHED` (new code in `AOOTH_HTTP_MESSAGES` — add it to your translations). Behind a proxy, install `rateLimitInterceptors({ trustProxy: true })` so the client IP is the forwarded one.
+- New bundled limit `aooth.send-user` (`10/1h` per account) on codes sent after a first factor (second factor, enrolment, link proof), enforced with `rateLimitInterceptors`. Re-tune or switch it off with `policies`.
+- Subclass overrides: `mintPin(ctx, binding, length?, ttlMs?)` takes the binding, and `verifyPin(ctx, code, binding, target)` takes the binding and the destination key and is async; a custom send calls `await claimCodeSend(target, account?)` first and sends only when it returns `true`.
+
+### Auto-login stops before the login stamp for an inactive account
+
+A new `auto-login-check` step runs ahead of `record-login` on the invite, recovery and signup auto-login paths. An account deactivated meanwhile is no longer stamped with `lastLogin` and no longer fires `afterLogin`: invite and recovery finish with the fresh-login redirect, signup answers `403`. `finalize-auto-login` still refuses an inactive account itself (403), for custom schemas.
+
+The login flow does the same: a new `check-can-sign-in` step before `record-login` finishes a run whose account was deactivated or locked while it was paused (second factor, enrolment, consent) with an error — `AOOTH_ACCOUNT_LOCKED` for a lock (unless `lockoutDisclosure: 'generic'`), else `INVALID_CREDENTIALS` — without a `lastLogin` stamp, `afterLogin` or session. `issue` and `mint-authz-code` re-check it too.
+
+### Recommended: hash the `store` strategy's handles
+
+aooth stores the [magic-link](/moost/workflows#magic-links) handles hashed; the `store` strategy is yours. Pass `hashHandles: true` to the `HandleStateStrategy` you return from `storeStrategy()`, so a read of the wf-state table yields no resumable invite link or paused recovery run ([state strategy](/moost/workflows#workflow-state-strategy)). Runs paused before the switch keep working: their plain (UUID) handles are still found until they are used. In production, also return a durable `magicLinkStore()`: the bounded in-memory default can be flooded.
+
+### Rate limits: declared ids, a send limit
+
+- `rateLimitInterceptors({ policies })` accepts only declared policy ids — the bundled ones and every `@RateLimit({ id })` — and throws on an unknown one. Import your controllers before you configure the interceptors.
+- The `GET /auth/invite/post-redemption` policy is now named `aooth.invite-post-redemption` (its 429's `params.policy`; before, `AuthController.invitePostRedemption`).
+- A new bundled limit, `aooth.send` (`20/15m` per IP), counts every anonymous send request of the auth workflow — recovery codes, magic links, signup codes. Over it the request answers the coded `429` and the run ends. Re-tune or switch it off with `policies`.
+
+### Workflow state
+
+- Every strategy `WfTriggerProvider` registers now records itself in the states it stores and refuses to resume another strategy's state (`410`). Tokens issued before the upgrade keep working. If you override `stateRegistry()`, you lose this.
+- Encapsulated workflow tokens are padded to 256-byte buckets, so they are longer than before.
+- `CredentialStoreEncapsulated` (`@aooth/auth`) accepts only the canonical base64url spelling of a token; a token with added `=` padding, whitespace or `+/` characters no longer validates.
+
+### `RecoveryFactorForm` removed
+
+The `RecoveryFactorForm` model is gone from `@aooth/auth-moost/atscript`. No workflow step ever rendered it: the recovery flow verifies the OTP and goes straight to the new password. Drop any `extends RecoveryFactorForm` and imports of it.
+
 ## To 0.2.5
 
 The moost-facing packages need `moost` / `@moostjs/*` `^0.7.3` (its translator API), `@wooksjs/*` `^0.8.1`, `@atscript/typescript` `^0.2.8`, `@atscript/moost-wf` `^0.1.167` and `@atscript/db` / `@atscript/moost-db` `^0.1.171`. The SPA that renders the bundled workflow forms needs the atscript-ui client packages (`@atscript/ui-fns`, `@atscript/vue-form`, `@atscript/vue-wf`) at `^0.1.167`: the forms' expressions call `t`, the argument those versions pass. **Clients below 0.1.165 fail to render the sign-in and other workflow forms** — upgrade the client packages together with the server. An app that compiles the forms itself (an `extends` of a bundled form, or the `.as` source) needs `@atscript/ui-fns` ≥ 0.1.166 in its atscript config; with 0.1.165 the paragraph texts (`fn.value`) are not served translated and stay English.

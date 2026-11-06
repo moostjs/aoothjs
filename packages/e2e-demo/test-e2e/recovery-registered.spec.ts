@@ -136,39 +136,37 @@ test.describe("recovery — registered-channel (M2)", () => {
     expect((await getSms(request)).find((e) => e.kind === "recovery.pincode")).toBeFalsy();
   });
 
-  test("WF-RECOVERY-REGISTERED-04: TOTP-only account → generic finish, no OTP (anti-enumeration)", async ({
+  test("WF-RECOVERY-REGISTERED-04: TOTP-only account → the same code form, no OTP (anti-enumeration)", async ({
     page,
     request,
   }) => {
     // t1_grace's only factor is TOTP, which carries no deliverable address. M2
-    // must NOT leak that the account exists-but-is-unrecoverable: it emits the
-    // SAME generic envelope as an unknown identifier and sends no OTP on either
-    // channel.
+    // must NOT leak that the account exists-but-is-unrecoverable: it runs the
+    // same ghost code pause as an unknown identifier and sends no OTP.
     await page.goto(wfUrl("auth/recovery/flow", "recovery-registered"));
 
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", USERS.grace.username);
     await submitForm(page);
 
-    await expect(page.getByText("Workflow finished.")).toBeVisible();
-    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
-    expect(envelope.data?.accessToken, "generic finish must not issue tokens").toBeFalsy();
+    await waitForFormInput(page, "code", 15_000);
+    // M2 shows no destination, for any account.
+    await expect(page.getByText("Enter your verification code.")).toBeVisible();
 
     // No OTP delivered on EITHER channel — TOTP is not a recovery channel.
     expect((await getSms(request)).find((e) => e.kind === "recovery.pincode")).toBeFalsy();
     expect((await getEmails(request)).find((e) => e.kind === "recovery.pincode")).toBeFalsy();
   });
 
-  test("WF-RECOVERY-REGISTERED-05: method deleted between request and resend → generic finish, no 500", async ({
+  test("WF-RECOVERY-REGISTERED-05: method deleted between request and resend → the code form stays, no 500, no OTP", async ({
     page,
     request,
   }) => {
     // The request→send TOCTOU. ivy has a deliverable SMS method, so the FIRST
     // send succeeds and pauses on the PincodeForm. We then delete her MFA method
     // mid-flow (admin/user action) and resend: pincode-send re-resolves the
-    // target, finds nothing deliverable, and MUST degrade to the same generic
-    // anti-enumeration finish as an unknown identifier — never a distinguishable
-    // 500 — so a known account can't be told apart from an unknown one.
+    // target, finds nothing deliverable, and degrades to the ghost run — the
+    // same code form, never a distinguishable 500 or finish.
     await page.goto(wfUrl("auth/recovery/flow", "recovery-registered-fast-resend"));
 
     await waitForFormInput(page, "email", 15_000);
@@ -176,7 +174,7 @@ test.describe("recovery — registered-channel (M2)", () => {
     await submitForm(page);
 
     // First OTP delivered (deliverable method present at request time).
-    await waitForSms(
+    const sms = await waitForSms(
       request,
       (e) => e.kind === "recovery.pincode" && (e.recipient ?? "").startsWith("+1555"),
       15_000,
@@ -189,15 +187,20 @@ test.describe("recovery — registered-channel (M2)", () => {
 
     // Wait past the 1s resend cooldown, then resend.
     await page.waitForTimeout(1200);
+    const resent = page.waitForResponse((r) => r.url().includes("/auth/trigger"));
     await clickAction(page, "Resend code");
+    expect((await resent).status(), "the resend is answered, not a 500").toBeLessThan(400);
 
-    // Graceful generic finish — NOT a 500/error block, NOT a new OTP.
-    await expect(page.getByText("Workflow finished.")).toBeVisible();
-    await expect(page.locator(".as-wf-form-error, .scope-error")).toHaveCount(0);
-    const envelope = (await readFinishEnvelope(page)) as { data?: { accessToken?: string } };
-    expect(envelope.data?.accessToken, "generic finish must not issue tokens").toBeFalsy();
+    // Still the code form — NOT a 500/error block, NOT a finish, NOT a new OTP —
+    // and the earlier code no longer works.
+    await waitForFormInput(page, "code", 15_000);
+    await expect(page.locator(".scope-error")).toHaveCount(0);
+    const checked = page.waitForResponse((r) => r.url().includes("/auth/trigger"));
+    await fillField(page, "code", sms.code);
+    await submitForm(page);
+    await checked;
+    await expect(page.getByText("Invalid code")).toBeVisible();
 
-    // Still exactly one SMS — the resend delivered nothing.
     expect(
       (await getSms(request)).filter((e) => e.kind === "recovery.pincode"),
       "resend after method deletion must not deliver a second OTP",

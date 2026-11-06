@@ -4,7 +4,7 @@
 
 | `@Workflow` method   | Workflow id                 | Covers                                                                     |
 | -------------------- | --------------------------- | -------------------------------------------------------------------------- |
-| `loginFlow`          | `auth/login/flow`           | credentials → enrollment → MFA → finalize                                  |
+| `loginFlow`          | `auth/login/flow`           | credentials (password, SSO or magic link) → enrollment → MFA → finalize    |
 | `inviteFlow`         | `auth/invite/start`         | admin invite → anonymous magic-link accept                                 |
 | `recoveryFlow`       | `auth/recovery/flow`        | magic-link **or** OTP password reset                                       |
 | `changePasswordFlow` | `auth/change-password/flow` | authenticated self-service password change                                 |
@@ -118,6 +118,7 @@ Every `protected` member below is an override seam — change behavior by subcla
 | `resolveRecoveryAltActions`                                                      | recovery alt-actions (backToLogin)                                                      | on                          | recovery                                                                                         |
 | `resolveRecoveryChannel`                                                         | M1 OTP transport for the typed identifier                                               | `email`                     | recovery → [guide](./recovery-and-handles#recovery-channel-m1)                                   |
 | `resolveRecoveryDeliverySource`                                                  | M1 (`typed`) vs M2 (`registered`) OTP delivery                                          | `typed`                     | recovery → [guide](./recovery-and-handles#registered-channel-recovery-m2)                        |
+| `resolveRecoveryDeliveryMode`                                                    | one-time code (`otp`), magic link (`magicLink`) or the user's pick (`choice`)           | `otp`                       | recovery → [magic links](#magic-links)                                                           |
 | `resolvePromoteHandleField`                                                      | which login-handle column a confirmed channel promotes into                             | `undefined` (off)           | login, invite, add-mfa → [guide](./recovery-and-handles#promote-a-confirmed-channel-to-a-handle) |
 | `resolveEnrollPreConfirmed`                                                      | skip the enrol pincode for a verified-by-construction address                           | `false` (always prove)      | login, invite, add-mfa → [recipe](#pre-seeded-enrolment)                                         |
 | `resolveEnrollAddress`                                                           | pin the sms/email enrolment address to an account record (free-text form never renders) | `'collect'` (free-text)     | login, invite, add-mfa → [recipe](#pin-enrolment-address)                                        |
@@ -136,13 +137,12 @@ Every `protected` member below is an override seam — change behavior by subcla
 
 ### Step extension-point stubs — no-op `@Step`s you override for new behavior
 
-| `@Step`                                                          | Override to                                                                                                                                               | Reached from           |
-| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| `extra-step`                                                     | add input pauses / persistence to the login + invite-accept tail (invite: runs BEFORE the acceptance write — prefer `afterInvitationAccepted` for writes) | login, invite          |
-| `signup-extra-step`                                              | seed app rows / welcome email after self-signup creates the user                                                                                          | signup                 |
-| `promote-to-handle`                                              | (usually leave as-is; gate via `resolvePromoteHandleField`)                                                                                               | login, invite, add-mfa |
-| `magic-link-request` / `magic-link-send` / `magic-link-verified` | implement a magic-link login credential (bundled stubs are no-ops)                                                                                        | login                  |
-| `passkey`                                                        | implement a passkey credential (bundled stub is a no-op)                                                                                                  | login                  |
+| `@Step`             | Override to                                                                                                                                               | Reached from           |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| `extra-step`        | add input pauses / persistence to the login + invite-accept tail (invite: runs BEFORE the acceptance write — prefer `afterInvitationAccepted` for writes) | login, invite          |
+| `signup-extra-step` | seed app rows / welcome email after self-signup creates the user                                                                                          | signup                 |
+| `promote-to-handle` | (usually leave as-is; gate via `resolvePromoteHandleField`)                                                                                               | login, invite, add-mfa |
+| `passkey`           | implement a passkey credential (bundled stub is a no-op)                                                                                                  | login                  |
 
 ### Lifecycle hooks
 
@@ -175,7 +175,7 @@ Six `after*` seams fire **once** at the single completion point of each flow —
 | `afterPasswordChanged(ctx)`    | an authenticated user changed their own password (change-password)                                               | no — it's a rotation, not a login       |
 | `afterMfaChanged(ctx)`         | a factor was added / changed / removed (add-mfa) — **not** on cancel/no-change                                   | no — the session is kept, not re-issued |
 
-**`afterLogin` is the login funnel.** It fires at the one `record-login` step every login flow routes through, right after `account.lastLogin` is stamped and before the terminal that issues the session (`issue`) or auth code (`mint-authz-code`). Because the funnel — not the delivery terminals — owns the stamp + hook, a login can't reach delivery without firing `afterLogin` exactly once, regardless of credential type (password / SSO / passwordless). It does **not** fire for finalize paths that establish no session: the invite/recovery _fresh-login_ redirect (the user signs in separately afterwards), nor for change-password's token rotation. Stamp-at-authenticated: an authorization-server login the user later **denies** at the consent screen still counts (they proved identity at the AS).
+**`afterLogin` is the login funnel.** It fires at the one `record-login` step every login flow routes through, right after `account.lastLogin` is stamped and before the terminal that issues the session (`issue`) or auth code (`mint-authz-code`). Because the funnel — not the delivery terminals — owns the stamp + hook, a login can't reach delivery without firing `afterLogin` exactly once, regardless of credential type (password / SSO / passwordless). It does **not** fire for finalize paths that establish no session: the invite/recovery _fresh-login_ redirect (the user signs in separately afterwards), nor for change-password's token rotation, nor for an invite, recovery or signup auto-login whose account is no longer active by then (that run finishes without a session). Stamp-at-authenticated: an authorization-server login the user later **denies** at the consent screen still counts (they proved identity at the AS).
 
 ```ts
 class AppAuthWorkflow extends AuthWorkflow {
@@ -194,7 +194,7 @@ class AppAuthWorkflow extends AuthWorkflow {
 
 A login run pauses on one or more of these forms before issuing tokens. Which pauses appear is driven by account state + your resolver overrides:
 
-1. **Credentials** — username + password. Always. Alt-actions (`forgotPassword`, `signup`, `magicLink`, per-SSO `sso-${id}`) finish the run early via a redirect envelope.
+1. **Credentials** — username + password. Alt-actions `forgotPassword`, `signup` and per-SSO `sso-${id}` finish the run early via a redirect envelope; `magicLink` replaces this step with the [magic-link sign-in](#magic-links) (identifier → link → the click is the first factor).
 2. **Channel enrollment** — email/phone, when `resolveEnrollment` requires a confirmed address the account lacks.
 3. **MFA challenge** — when the user has a confirmed method (picker shown for multiple).
 4. **MFA enrollment** — pick-method → address (sms/email) **or** TOTP QR step → confirm, when `resolveMfaPolicy` requires it and the user has none. TOTP shows its QR on a dedicated step _before_ code entry (see [SPA Components — AsQrCode](./spa-components#asqrcode-totp-enrollment)). The authenticator entry reads "issuer: account" — the issuer half is `opts.totpIssuer` / `resolveMfaPolicy().issuer`, the account half comes from `resolveTotpAccountLabel(ctx)` (default: `ctx.email`, else the user's `username`) and is baked into the `otpauth://` URI **forever** (re-labeling requires re-enrolment), so override it early if you want anything fancier than the username.
@@ -325,7 +325,7 @@ If you persist credentials through the atscript-db store, note the credential-me
 
 **Admin phase** (ARBAC-gated by the `auth.invite` resource): the admin fills the invite form (email, optional roles — server-validated against `getAvailableRoles()`; extend it via `forms.invite`), a pending user is created, and the link is delivered — by the email outlet, through `deliver()`, or returned to the issuer as a shareable link (`inviteDelivery`). Re-entry never double-sends.
 
-**Re-inviting a pending user** is the "resend": submit the same email again. The default `duplicateInviteCheck` verdict `'reuse'` refreshes the pending row (roles and `prepareUser` extras are **replaced**) and sends a new full-TTL link; **since 0.2 every earlier link of that account answers `410 INVITE_REPLACED`**. An accepted account rejects (`USER_ALREADY_EXISTS`).
+**Re-inviting a pending user** is the "resend": submit the same email again. The default `duplicateInviteCheck` verdict `'reuse'` refreshes the pending row (roles and `prepareUser` extras are **replaced**) and sends a new full-TTL link; **since 0.2 every earlier link of that account answers `410 INVITE_REPLACED`**. An accepted account rejects (`AOOTH_USER_ALREADY_EXISTS`).
 
 **Invitee phase** (anonymous resume of the link): cancelled / replaced / already-accepted checks → optional username pick (`inviteUsername: 'choose'`) → set initial password → MFA enrolment when required → optional confirmation banner → finish (auto-login when `autoLoginOnInvite`, else redirect to `loginUrl`). A re-clicked link whose state row was already evicted falls through to `GET /auth/invite/post-redemption`, which rebuilds the same idempotent "already accepted" envelope from the `uid` in the URL.
 
@@ -333,7 +333,7 @@ App context (`resolveInviteContext`), required columns, delivery modes, re-invit
 
 ### Pre-seeded enrolment & verified-by-construction addresses {#pre-seeded-enrolment}
 
-The shared MFA enrol trio splits collection from dispatch: `enroll-address` only **stages** the typed address, and the dedicated **`enroll-send`** step (gated `!ctx.pin`, the same canonical "send if no pin" pattern as the challenge pair) mints + delivers the one verification code — in the same engine pass, so the user experience is unchanged. The split is what makes **pre-seeding** safe: a consumer that already knows the address — typically `resolveAccept` staging the invited email — sets `ctx.mfaEnroll.address` up front, `enroll-address` self-skips (no redundant ask), and `enroll-send` still fires exactly once:
+The shared MFA enrol trio splits collection from dispatch: `enroll-address` only **stages** the typed address, and the dedicated **`enroll-send`** step (gated on no code being in flight, the same "send once" pattern as the challenge pair) mints + delivers the one verification code — in the same engine pass, so the user experience is unchanged. The split is what makes **pre-seeding** safe: a consumer that already knows the address — typically `resolveAccept` staging the invited email — sets `ctx.mfaEnroll.address` up front, `enroll-address` self-skips (no redundant ask), and `enroll-send` still fires exactly once:
 
 ```ts
 protected override resolveAccept(ctx: AuthWfCtx) {
@@ -368,9 +368,67 @@ A pinned address composes with everything above untouched: `enroll-address` self
 
 ### Recovery (`auth/recovery/flow`)
 
-Identifier (anti-enumeration: unknown identifiers get the same response) → delivery mode (magic-link / OTP) → OTP entry or magic-link click → optional known-factor verification → new password (revokes existing sessions) → finish (auto-login when `autoLoginOnRecover`, else fresh-login redirect).
+Identifier (anti-enumeration: an identifier no code can go to runs a ghost of the code step with the same responses — see [No enumeration](/auth/password-reset#no-enumeration)) → delivery mode (with `resolveRecoveryDeliveryMode` → `'choice'`, `RecoveryModeSelectForm` asks: magic link or one-time code) → OTP entry or magic-link click → new password (revokes existing sessions) → finish (auto-login when `autoLoginOnRecover`, else fresh-login redirect). The default is the one-time code; [Magic links](#magic-links) covers the link.
 
 Where the OTP is **delivered** is itself an extension seam: M1 sends it to the identifier the user typed (transport picked by `resolveRecoveryChannel`), M2 sends it to a channel already verified on the resolved row (`resolveRecoveryDeliverySource` + `selectRecoveryRegisteredMethod`). Logging in _by phone_ and auto-promoting a confirmed channel into a login handle (`resolvePromoteHandleField`) live alongside these — see [Phone, recovery channels & handle promotion](./recovery-and-handles).
+
+### Magic links {#magic-links}
+
+Two flows can send a single-use link instead of asking for a code or a password:
+
+- **Recovery** — `resolveRecoveryDeliveryMode(ctx)` returns `'magicLink'` (always a link) or `'choice'` (the user picks on `RecoveryModeSelectForm`, shown after the identifier). Using the link stands for a verified recovery code: the flow goes on to `SetPasswordForm`, and the inbox the link went to becomes the account's verified email.
+- **Sign-in** — `resolveAlternateCredentials(ctx)` returns `magicLink: true`, which shows the login form's `magicLink` action. It opens `MagicLinkRequestForm` (email or username); using the link is the **first factor only**: the run continues exactly as after a password — a forced password change (initial or expired password), enrolment, the MFA challenge for a user with MFA, then the session.
+
+```ts
+class AppAuth extends AuthWorkflow {
+  protected override resolveRecoveryDeliveryMode() {
+    return "magicLink" as const; // or "choice"
+  }
+  protected override async resolveAlternateCredentials(ctx: AuthWfCtx) {
+    return { ...(await super.resolveAlternateCredentials(ctx)), magicLink: true };
+  }
+}
+```
+
+The link is sent through the `email` outlet — append [`createAuthEmailOutlet`](#createauthemailoutlet-deps) to `WfTriggerProvider.outlets` — with the kind `recovery.magicLink` or `login.magicLink`; your `buildMagicLinkUrl` turns the token into the URL (the token is a `wfs`, resumed like any other).
+
+**Opening a link does not use it up.** It shows `MagicLinkConfirmForm` — "Continue as a•••@example.com", the masked inbox the link went to — and only submitting that step uses the link. A mail scanner that opens links renders the step and leaves the link working; the masked account shows the user which account the link is for.
+
+What the tests pin:
+
+| Property               | How                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Single use             | The link is a workflow pause of its own (`magic-link` state strategy). Opening it re-renders the confirm step on the same link; continuing uses it up and the run goes on with a fresh token. The link then answers `410`.                                                                                                                                                                                                                                                                                                                                                      |
+| Short-lived            | It expires after `magicLinkTtlMs` (default 15 minutes), confirm step included.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Hashed at rest         | The store keeps a hash of the link's handle, never the handle. (This covers the link pauses; for the `store` strategy pass `hashHandles: true` yourself — see [state strategy](#workflow-state-strategy).)                                                                                                                                                                                                                                                                                                                                                                      |
+| Resumed only as a link | Every stored state records the strategy that stored it, and a resume through another strategy is refused (`410`) without consuming it — so a link's key read from the database cannot be opened as a `store.` token, even when the links share the `store` table.                                                                                                                                                                                                                                                                                                               |
+| No account oracle      | The requester gets `{ sent: true, outlet: "email" }` for every identifier and never the link's token. Known and unknown identifiers make the same reads (an identifier lookup and an account read — of a placeholder for an unknown one) and store one link pause each. Nothing is sent for an unknown identifier, an inactive or pending account, an account without a proven inbox, or — for sign-in — a locked one. A failed delivery is logged, not reported. In `'choice'` mode the account is resolved only after the pick, so the picker's token holds nothing about it. |
+| Rate limited           | At most one link per account and purpose per `mfa.pincodeResendTimeoutMs` (default 60 s; a repeat gets the same answer and sends nothing; the counter lives in `lockoutShadowStore`), and the bundled per-IP [`aooth.send`](./rate-limit#bundled-limits) limit on anonymous sends.                                                                                                                                                                                                                                                                                              |
+| Bound to its purpose   | A recovery link only resumes recovery; a sign-in link only resumes the sign-in. Each verify step also checks the link's purpose.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Re-checked when used   | A recovery link refuses an account that became inactive or was deleted; a sign-in link refuses one that became inactive or locked. Both finish with `AOOTH_MAGIC_LINK_INVALID`.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Proven inboxes only    | A link goes to `account.verifiedEmail`, else a confirmed email MFA method. Recovery with the typed identifier as destination (M1, email channel) sends to the typed address, like the recovery code.                                                                                                                                                                                                                                                                                                                                                                            |
+
+Override `magicLinkAddress(ctx, link)` to change the destination.
+
+**Login CSRF and forwarded links.** Whoever opens a sign-in link is signed into the account it was sent to — a link forwarded to someone else signs _them_ into the sender's account. The confirm step names the account; for a stricter posture return `magicLinkSameBrowser: true` from `resolveAlternateCredentials`: the request sets an httpOnly cookie (`aooth_magic_link`, name: `magicLinkBrowserCookie()`) and the link then works only in that browser. A link confirmed on another device is spent all the same: that run finishes with `AOOTH_MAGIC_LINK_INVALID`, and the user requests a new link from the browser they will use. It is off by default, because opening the email on another device is legitimate.
+
+**The landing page.** Serve the page the link opens with `Referrer-Policy: no-referrer`, so the token in its URL does not leak to third-party resources it loads.
+
+The state of the link pauses lives in `WfTriggerProvider.magicLinkStore()` — in memory by default (one process, at most 10,000 links, the oldest dropped first). Every link request stores a pause, known identifier or not, so a flood spread over many addresses — about 500 IPs within the per-IP `aooth.send` limit of 20 per 15 minutes — pushes out links before they are used. In production, and with several instances, return a durable shared `WfStateStore`, e.g. the `AsWfStore` of your wf-state table:
+
+```ts
+class AppWfTriggerProvider extends WfTriggerProvider {
+  protected override magicLinkStore(): WfStateStore {
+    return new AsWfStore({ table: db.tables.wfStates });
+  }
+}
+```
+
+Whatever store you return, the link handles are stored hashed, consumed on use and resumable only as links. Sharing the table with the `store` strategy is safe; give that strategy `hashHandles: true` too (as in the [state strategy](#workflow-state-strategy) example), or a read of the table yields usable `store.` tokens of the other runs. The send cooldown needs a shared `lockoutShadowStore` as well (e.g. `RateLimitStoreRedis`).
+
+::: warning Delivery time is the one difference
+A known identifier also waits for the email to be sent. Use an `EmailSender` that queues (returns before the mail goes out) if response time must not depend on delivery.
+:::
 
 ### Change password (`auth/change-password/flow`) {#change-password-auth-change-password-flow}
 
@@ -417,6 +475,35 @@ Open self-registration for anonymous users — the reciprocal of login (signup i
 **Anti-enumeration by construction.** Every submitted email gets the _same_ OTP pause — account existence is resolved only at `signup-create-user`, _after_ proof-of-ownership. A new email creates the user (inactive → password set → activated) and auto-logs-in; an already-registered email finishes with a redirect to `loginUrl` (reason `already-registered`) and **never** issues tokens. An attacker on the wire sees identical behavior either way.
 
 **Off by default.** `resolveSignupPolicy(ctx)` returns `allowSignup: false` (invite-only is the safe default); a deployment opts into open self-serve by overriding it to `true` (and flips the login form's `signup` alt-action on via `resolveAlternateCredentials`). Required app columns (e.g. a NOT-NULL `tenantId`) come from the **same `prepareUser` hook invite uses** — an override distinguishes signup by the absence of `invitedBy` + empty `roles`. `signup-extra-step` is the post-creation extension seam (seed app rows, welcome email, etc.). It IS in `DEFAULT_AUTH_WORKFLOWS`, so it runs via the public `/auth/trigger`.
+
+### One-time codes {#one-time-codes}
+
+Every emailed or texted code — recovery, the email/SMS second factor at sign-in, signup verification, MFA enrolment and channel verification, the proof code of a federated account link — follows the same rules. Length, lifetime, resend wait, attempt limit and failure budget come from `mfa.pincodeLength` / `pincodeTtlMs` / `pincodeResendTimeoutMs` / `pincodeMaxAttempts` / `pincodeMaxFailures` + `pincodeFailureWindowMs` ([config](./config)).
+
+Each code goes to a **destination**: the typed identifier for recovery and signup (known or not — so the limits below answer alike for every identifier), the account and address for the second factor and enrolment, the account for a federated link proof.
+
+| Property            | How                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Not in the state    | The state holds a random id and a keyed digest of the code, never the code — a read of a stored or decrypted state does not reveal it.                                                                                                                                                                                                                                                                                                                                   |
+| Bound to its target | A code verifies only for what it was sent for: a recovery code for the account the identifier resolved to at the send and the address it went to, the others for the account and address they went to. A changed target answers `AOOTH_INVALID_CODE`.                                                                                                                                                                                                                    |
+| Attempt limit       | Counted on the server per sent code, before the comparison — in `lockoutShadowStore`. A replayed older token or parallel submits share the count. From the `pincodeMaxAttempts`-th wrong code on, every submit for that code answers `AOOTH_TOO_MANY_CODE_ATTEMPTS`; only a resend gives a usable code.                                                                                                                                                                  |
+| Single use          | A code that verified is spent: the same code through a replayed earlier state answers `AOOTH_CODE_EXPIRED`.                                                                                                                                                                                                                                                                                                                                                              |
+| Resend wait         | At most one code per destination and **client IP** per `pincodeResendTimeoutMs`, counted on the server, and at most `pincodeMaxSendsGlobal` (10) per destination from all IPs together per `pincodeFailureWindowMs` (1 h). A resend inside the wait answers `AOOTH_RESEND_WAIT`, whatever state it comes from; a new run inside the wait or past the cap pauses on the code form and sends nothing. Another IP's requests never delay yours.                             |
+| Failure budget      | At most `pincodeMaxFailures` (10) wrong codes per destination **and client IP**, and `pincodeMaxFailuresGlobal` (100) per destination from all IPs together, per `pincodeFailureWindowMs` (1 h), across all its codes and runs. Past one of them every send and check for the destination (from that IP, or from anywhere) answers `429 AOOTH_CODE_LIMIT_REACHED` until the window passes. The IP is derived like the [rate limiter](./rate-limit)'s (its `trustProxy`). |
+| Per-account sends   | Codes sent after a first factor (second factor, enrolment, link proof) also count against [`aooth.send-user`](./rate-limit#bundled-limits) (`10/1h` per account); anonymous ones (recovery, signup) against the per-IP `aooth.send`.                                                                                                                                                                                                                                     |
+
+The digests are keyed with a subkey of `WfTriggerProvider.pincodeSecret()` — by default the wf-state secret, so a setup that overrides `wfStateSecret()` needs nothing more. A workflow driven outside `WfTriggerProvider` derives the same key as a default provider, so a code minted on one path verifies on the other. If the provider's `wfStateSecret()` or `pincodeSecret()` is overridden, or the credential store has no derivable secret (`INVALID_CONFIG`), that workflow overrides `AuthWorkflow.pincodeKey()` to return the provider's key.
+
+::: warning Several instances
+Pass a shared `lockoutShadowStore` (e.g. `RateLimitStoreRedis`) and the same secret to every instance. With the default in-memory store each instance counts on its own, so a client spreading submits across instances gets every limit once per instance.
+:::
+
+::: tip What the budget does not stop
+- **A distributed attacker** can spend a global cap from many IPs — `pincodeMaxSendsGlobal` sends or `pincodeMaxFailuresGlobal` wrong codes — and so keep codes from a destination for everyone until the window passes: the price of bounding mail-bombing, SMS pumping and total guesses. Raise the caps if that weighs more for you.
+- **A password holder** can spend a user's email/SMS second-factor budgets and `aooth.send-user` for the window; other factors (TOTP) are unaffected.
+:::
+
+**Budgets follow the identifier, not the account.** Recovery and signup key on the typed identifier, trimmed and lower-cased: an account reachable by several identifiers (its username and its email, or spellings your store's collation treats as equal) has one budget per identifier, and two accounts whose identifiers differ only in case — on a case-sensitive store — share one.
 
 ## Outbound delivery — `deliver(payload)`
 
@@ -472,9 +559,9 @@ Default outlets: the HTTP (form) outlet and the `invite` outlet (`createInviteOu
 
 #### Workflow state strategy
 
-State is a **named-strategy registry**, not a single strategy. Every workflow **starts** on the `encapsulated` strategy (the registry default): state rides inside the SPA-held token, so opening a login form persists **zero** server-side rows before the first validated input — a restart or eviction can no longer `410 Gone` an idle form. A later step calls `swapStrategy('store')` to move durable once there is real state worth persisting.
+State is a **named-strategy registry**, not a single strategy. Every workflow **starts** on the `encapsulated` strategy (the registry default): state rides inside the SPA-held token, so opening a login form persists **zero** server-side rows before the first validated input — a restart or eviction cannot `410 Gone` an idle form. A later step calls `swapStrategy('store')` to move durable once there is real state worth persisting. A third entry, `magic-link`, holds the pauses of [magic links](#magic-links) (its store is `magicLinkStore()`); it is not meant for your own steps.
 
-Both registry entries default to `EncapsulatedStateStrategy`. **To make `store` durable, override `storeStrategy()`** — do not assign a `this.state` field (it no longer exists):
+Both registry entries default to `EncapsulatedStateStrategy`. **To make `store` durable, override `storeStrategy()`** — there is no `this.state` field to assign:
 
 ```ts
 import { WfTriggerProvider, createAuthEmailOutlet } from "@aooth/auth-moost";
@@ -499,14 +586,19 @@ class MyWfTriggerProvider extends WfTriggerProvider {
     ];
   }
   protected override storeStrategy(): WfStateStrategy {
-    return new HandleStateStrategy({ store: new AsWfStore({ table: db.tables.wfStates }) });
+    return new HandleStateStrategy({
+      store: new AsWfStore({ table: db.tables.wfStates }),
+      hashHandles: true,
+    });
   }
 }
 
 app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, MyWfTriggerProvider]));
 ```
 
-The encapsulated token's secret defaults to `auth.deriveStateKey("wf-state")` (HKDF-derived from the auth secret, stable across restarts) — override `wfStateSecret()` for a dedicated secret, or `wfStateEncapsulatedTtlMs()` to expire idle forms. `HandleStateStrategy` / `EncapsulatedStateStrategy` come from `@moostjs/event-wf`; `AsWfStore` (a `@atscript/db`-table-backed store) from `@atscript/moost-wf`.
+**Pass `hashHandles: true`.** The store then keeps a hash of each handle, so a read of the table yields no resumable token — an unaccepted invite link, a recovery run paused on its password form. aooth hashes the [magic-link](#magic-links) pauses itself; the `store` strategy is yours to configure.
+
+The encapsulated token's secret defaults to `auth.deriveStateKey("wf-state")` (HKDF-derived from the auth secret, stable across restarts) — override `wfStateSecret()` for a dedicated secret, or `wfStateEncapsulatedTtlMs()` to expire idle forms. The same secret keys the [one-time code](#one-time-codes) digests unless `pincodeSecret()` is overridden. `HandleStateStrategy` / `EncapsulatedStateStrategy` come from `@moostjs/event-wf`; `AsWfStore` (a `@atscript/db`-table-backed store) from `@atscript/moost-wf`.
 
 ### `WfTrigger({ allow?, token?, ...hooks })`
 
@@ -564,7 +656,7 @@ Exact semantics: the wooks outlets guide — [Transactions and envelopes](https:
 
 ### `createAuthEmailOutlet(deps)`
 
-Builds the email outlet that delivers the invite magic link. `deps.buildMagicLinkUrl` is the 3-arg `BuildMagicLinkUrl` — `(kind, token, ctx?: { userId? }) => string` — where the `{ userId }` arg is supplied for the `invite.magicLink` kind so the URL can carry the invitee id for the post-redemption side route. Add the outlet to `WfTriggerProvider.outlets`. See [`createAuthEmailOutlet`](/api/auth-moost#createauthemailoutlet).
+Builds the email outlet that delivers magic links: the invite link, and the [recovery and sign-in links](#magic-links) (`recovery.magicLink` / `login.magicLink`, handed over by the bundled `magic-link` outlet). `deps.buildMagicLinkUrl` is the 3-arg `BuildMagicLinkUrl` — `(kind, token, ctx?: { userId? }) => string` — where the `{ userId }` arg is supplied for the `invite.magicLink` kind so the URL can carry the invitee id for the post-redemption side route. Add the outlet to `WfTriggerProvider.outlets`. See [`createAuthEmailOutlet`](/api/auth-moost#createauthemailoutlet).
 
 ## Finish + error envelopes
 

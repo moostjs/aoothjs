@@ -15,7 +15,7 @@ import { inLocale, localizedHttpApp, type PreparedFlowApp, prepareFlowApp } from
 // answers in the language of the request at hand.
 
 const DE = {
-  ACCOUNT_CREATED: "Dein Konto wurde erstellt.",
+  AOOTH_ACCOUNT_CREATED: "Dein Konto wurde erstellt.",
   SET_PASSWORD_INVITE_HEADING: "Willkommen — Passwort festlegen",
   SET_PASSWORD_INVITE_INTRO: "Wähle ein Passwort, um dein Konto zu aktivieren.",
   SET_PASSWORD_INITIAL_HEADING: "Lege dein erstes Passwort fest",
@@ -23,9 +23,9 @@ const DE = {
   CHANGE_PASSWORD_HEADING: "Passwort ändern",
   CHANGE_PASSWORD_INTRO: "Gib dein aktuelles Passwort ein und wähle ein neues.",
   INVALID_CREDENTIALS: "Ungültige Anmeldedaten",
-  CODE_EXPIRED: "Code abgelaufen",
-  ADDRESS_REQUIRED: "Pflichtfeld",
-  INVALID_EMAIL_ADDRESS: "Gib eine gültige E-Mail-Adresse ein",
+  AOOTH_CODE_EXPIRED: "Code abgelaufen",
+  AOOTH_ADDRESS_REQUIRED: "Pflichtfeld",
+  AOOTH_INVALID_EMAIL_ADDRESS: "Gib eine gültige E-Mail-Adresse ein",
   MFA_METHOD_TOTP: "Authenticator-App",
   MFA_METHOD_REMOVED: "{method} entfernt.",
   OTP_DISCLOSURE_EMAIL: "Mit deiner E-Mail-Adresse willigst du ein, Codes per E-Mail zu erhalten.",
@@ -94,7 +94,7 @@ describe("persisted workflow state stays untranslated", () => {
     if (res.body.inputRequired?.payload?.id === "EnrollPickMethodForm") {
       res = await app.submit(res.body.wfs, { action: "skip" }, de);
     }
-    expect(res.body.message?.text).toBe(DE.ACCOUNT_CREATED);
+    expect(res.body.message?.text).toBe(DE.AOOTH_ACCOUNT_CREATED);
     expectEnglishState(app);
   });
 
@@ -197,7 +197,8 @@ describe("ctx.public: a per-response projection, stripped at persist time", () =
 
 class Exposed extends AuthWorkflow {
   project = (ctx: AuthWfCtx) => this.populatePublic(ctx);
-  pin = (ctx: { pin?: string; pinExpire?: number }, code: string) => this.verifyPin(ctx, code);
+  pin = (ctx: { pinNonce?: string; pinExpire?: number }, code: string) =>
+    this.verifyPin(ctx, code, "", "target");
   address = (method: "email" | "sms", value: string) => this.validateMfaAddress({}, method, value);
   addMfaFinish = (ctx: AuthWfCtx) => this.buildAddMfaFinishEnvelope(ctx);
   disclosure = (channel: "email" | "phone") => this.resolveOtpDisclosure({}, channel);
@@ -211,18 +212,18 @@ describe("workflow texts that bypassed the catalogue", () => {
     new ConsentStore(),
   );
 
-  it("pincode, address checks, add-MFA finish and the OTP disclosure are translated", () => {
+  it("pincode, address checks, add-MFA finish and the OTP disclosure are translated", async () => {
     setTranslator({ en: {}, de: DE });
-    inLocale("de", () => {
-      expect(wf.pin({}, "123456")).toEqual({ code: DE.CODE_EXPIRED });
-      expect(wf.address("email", "")).toBe(DE.ADDRESS_REQUIRED);
-      expect(wf.address("email", "nope")).toBe(DE.INVALID_EMAIL_ADDRESS);
+    await inLocale("de", async () => {
+      expect(await wf.pin({}, "123456")).toEqual({ code: DE.AOOTH_CODE_EXPIRED });
+      expect(wf.address("email", "")).toBe(DE.AOOTH_ADDRESS_REQUIRED);
+      expect(wf.address("email", "nope")).toBe(DE.AOOTH_INVALID_EMAIL_ADDRESS);
       const removed = wf.addMfaFinish({ addMfa: { removed: "totp" } });
       expect(removed.message?.text).toBe("Authenticator-App entfernt.");
       expect(wf.disclosure("email")).toBe(DE.OTP_DISCLOSURE_EMAIL);
     });
-    inLocale("en", () => {
-      expect(wf.pin({}, "123456")).toEqual({ code: "Code expired" });
+    await inLocale("en", async () => {
+      expect(await wf.pin({}, "123456")).toEqual({ code: "Code expired" });
       expect(wf.address("sms", "abc")).toBe("Enter a valid phone number");
       const removed = wf.addMfaFinish({ addMfa: { removed: "totp" } });
       expect(removed.message?.text).toBe("Authenticator app removed.");

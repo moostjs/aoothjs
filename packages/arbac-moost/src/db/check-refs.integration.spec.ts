@@ -276,7 +276,10 @@ describe("checkRefs — configuration and union", () => {
     const bad = await send("POST", "/wr-notes", { id: 2, body: "n", tenant: "a", docId: 2 });
     expect(bad.status).toBe(403);
     expect(bad.body.message).toBe('Referenced row "docId" is outside your scope');
-    expect(bad.body).toMatchObject({ code: "REFERENCE_OUT_OF_SCOPE", params: { fields: "docId" } });
+    expect(bad.body).toMatchObject({
+      code: "ARBAC_REFERENCE_OUT_OF_SCOPE",
+      params: { fields: "docId" },
+    });
   });
 });
 

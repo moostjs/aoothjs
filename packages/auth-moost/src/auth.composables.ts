@@ -20,6 +20,7 @@ import type { WfFinishedResponse } from "@wooksjs/event-wf";
 import type { ResolvedAuthOptions } from "./auth.config";
 import type { AuthLoginResponse } from "./auth.dto";
 import { aoothHttpError } from "./http-messages";
+import { tryParseBody } from "./rate-limit/subjects";
 
 // `null` means the guard ran on a `@Public()` route with no valid credential.
 // Absent means the guard never ran.
@@ -154,7 +155,7 @@ export const useAuth = defineWook((ctx: EventContext): AuthBindings => {
 
   const getUserId = (): string => {
     const auth = getAuthContext();
-    if (!auth) throw aoothHttpError(401, "NOT_AUTHENTICATED");
+    if (!auth) throw aoothHttpError(401, "AOOTH_NOT_AUTHENTICATED");
     return auth.userId;
   };
 
@@ -329,4 +330,37 @@ export function setAuthContext<TPayload extends object>(
  */
 export function setAuthCredential(ctx: EventContext, value: AuthCredential): void {
   ctx.set(authCredentialKey, value);
+}
+
+/**
+ * Internal: the refresh token a request presents — an explicit body
+ * `refreshToken` first, else the refresh cookie when the guard enables
+ * cookies. Shared by `AuthController.refresh/logout` and the `'refresh-token'`
+ * rate-limit subject, so both read the same token.
+ */
+export function resolveRefreshToken(
+  options: ResolvedAuthOptions | undefined,
+  body: unknown,
+  ctx: EventContext = current(),
+): string | undefined {
+  const fromBody = (body as { refreshToken?: unknown } | undefined)?.refreshToken;
+  if (typeof fromBody === "string") return fromBody;
+  if (!options?.enableCookie) return undefined;
+  return useCookies(ctx).getCookie(options.refreshCookie.name) ?? undefined;
+}
+
+/**
+ * Internal: {@link resolveRefreshToken} for code that runs before the handler
+ * (the rate limiter): parses the body itself (moost's `@Body()` reuses the
+ * parse), treats an unparsable body as none, and reads the cookie only once
+ * `authGuardInterceptor` has published its options.
+ */
+export async function readPresentedRefreshToken(
+  ctx: EventContext = current(),
+): Promise<string | undefined> {
+  return resolveRefreshToken(
+    ctx.has(authOptionsKey) ? ctx.get(authOptionsKey) : undefined,
+    await tryParseBody(ctx),
+    ctx,
+  );
 }

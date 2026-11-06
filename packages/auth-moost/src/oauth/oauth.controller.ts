@@ -221,7 +221,7 @@ export class OAuthController {
       return this.registry.require(providerId);
     } catch (err) {
       if (err instanceof OAuthError && err.type === "UNKNOWN_PROVIDER") {
-        throw aoothHttpError(404, "UNKNOWN_PROVIDER", { provider: providerId });
+        throw aoothHttpError(404, "AOOTH_UNKNOWN_PROVIDER", { provider: providerId });
       }
       throw err;
     }

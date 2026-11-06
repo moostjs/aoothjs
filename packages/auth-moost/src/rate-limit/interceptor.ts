@@ -8,7 +8,7 @@ import {
   type RateLimitRuleInput,
 } from "@aooth/auth";
 import type { EventContext } from "@wooksjs/event-core";
-import { current, eventTypeKey } from "@wooksjs/event-core";
+import { current, eventTypeKey, tryGetCurrent } from "@wooksjs/event-core";
 import { resolveForwarded, useRequest, useResponse } from "@wooksjs/event-http";
 import {
   defineBeforeInterceptor,
@@ -19,8 +19,16 @@ import {
   useControllerContext,
 } from "moost";
 
-import { useAuth } from "../auth.composables";
-import { getRateLimitSubject, rateLimitDecisionKey, rateLimitPhasesKey } from "./composables";
+import { readPresentedRefreshToken, useAuth } from "../auth.composables";
+import {
+  getRateLimitSubject,
+  rateLimitDecisionKey,
+  rateLimitPhasesKey,
+  type RateLimitRuntime,
+  rateLimitRuntimeKey,
+} from "./composables";
+import { tokenSubject } from "./subjects";
+import { type BundledRateLimit, declaredRateLimitIds, isDeclaredRateLimitId } from "./registry";
 import type { RateLimitKeyStrategy, TRateLimitMeta, TRateLimitPolicy } from "./mate";
 import { codedHttpError } from "../http-messages";
 
@@ -50,6 +58,15 @@ export interface RateLimitInterceptorOptions {
   trustProxy?: boolean;
   /** Emit draft `RateLimit-*` headers on every response of a limited route. Default: `true`. */
   headers?: boolean;
+  /**
+   * Re-tune declared policies without redeclaring their routes, by policy id
+   * (the `id` a `@RateLimit` names, or a bundled id such as `aooth.refresh` /
+   * `aooth.send`): new rules replace the declared ones — the key strategy, id
+   * and message stay — and `false` switches the policy off. E.g.
+   * `{ "aooth.refresh": "300/5m", "aooth.refresh-token": false }`. Parsed at
+   * registration, like `rules`; an id no policy declared throws.
+   */
+  policies?: Record<string, RateLimitRuleInput | RateLimitRuleInput[] | false>;
   /**
    * App-wide default 429 message template (placeholders `{{limit}}`,
    * `{{window}}`, `{{delta}}` humanized; `{limit}`, `{window}`, `{retryAfter}`
@@ -122,6 +139,21 @@ interface RouteConfig {
 export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInterceptorDef[] {
   // Parse eagerly — invalid default rules fail at registration, not per request.
   const defaultRules = opts?.rules?.map((r) => parseRateLimitRule(r));
+  const overrides = new Map<string, RateLimitRule[] | false>();
+  for (const [id, value] of Object.entries(opts?.policies ?? {})) {
+    if (!isDeclaredRateLimitId(id)) {
+      throw new Error(
+        `rateLimitInterceptors: unknown policy id "${id}" in policies — known ids: ${declaredRateLimitIds().join(", ")}. Give a @RateLimit an { id } to re-tune it here (declare it before configuring).`,
+      );
+    }
+    const rules = value === false ? false : Array.isArray(value) ? value : [value];
+    if (rules !== false && rules.length === 0) {
+      throw new Error(
+        `rateLimitInterceptors: policies["${id}"] has no rules — pass false to switch it off`,
+      );
+    }
+    overrides.set(id, rules && rules.map((r) => parseRateLimitRule(r)));
+  }
   // Stable fallback created once per factory call (RL.spec.md §5.2) — never
   // per event, which would silently give every request a fresh empty budget.
   const limiter = opts?.limiter ?? new RateLimiter();
@@ -158,19 +190,20 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
       const baseScope = `${ctor.name}.${method}`;
       const route: RouteConfig = { pre: [], post: [] };
       for (const [i, policy] of declared.entries()) {
+        // Each stacked policy gets its own bucket unless it names one.
+        const scope = policy.options?.id ?? (i === 0 ? baseScope : `${baseScope}#${i}`);
+        const rules = effectiveRules(overrides, scope, policy.rules);
+        if (!rules) continue;
         const rawKey = policy.options?.key ?? opts?.key ?? "ip";
         const keyStrategy = rawKey === "auto" ? "user" : rawKey;
         const message = policy.options?.message ?? opts?.message;
         const postGuardKeyed = typeof keyStrategy === "string" && keyStrategy !== "ip";
         route[postGuardKeyed ? "post" : "pre"].push({
-          rules: policy.rules,
+          rules,
           keyStrategy,
-          // Each stacked policy gets its own bucket unless it names one.
-          scope: policy.options?.id ?? (i === 0 ? baseScope : `${baseScope}#${i}`),
+          scope,
           ...(message !== undefined && { defaultMessage: message }),
-          policyHeader: policy.rules
-            .map((p) => `${p.limit};w=${Math.max(1, Math.round(p.window / 1000))}`)
-            .join(", "),
+          policyHeader: policyHeader(rules),
         });
       }
       config = route;
@@ -179,9 +212,14 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
     return config;
   };
 
+  const runtime: RateLimitRuntime = { limiter, overrides, trustProxy, emitHeaders };
+
   const evaluate = async (phase: "pre" | "post"): Promise<void> => {
     const ctx = current();
     if (ctx.get(eventTypeKey) !== "http") return;
+    // Policies enforced from inside a handler (the auth workflow's sends) use
+    // the same limiter and overrides — see `enforceRateLimit`.
+    if (!ctx.has(rateLimitRuntimeKey)) ctx.set(rateLimitRuntimeKey, runtime);
     // Another registration of the pair already evaluated this phase.
     const done = ctx.has(rateLimitPhasesKey) ? ctx.get(rateLimitPhasesKey) : [];
     if (done.includes(phase)) return;
@@ -210,25 +248,7 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
     const decision = pickGoverning(decisions, (d) => !d.allowed);
     ctx.set(rateLimitDecisionKey, decision);
 
-    const response = useResponse(ctx);
-    if (emitHeaders) {
-      const prior = response.getHeader("ratelimit-policy");
-      if (typeof prior === "string" && prior) headers.unshift(prior);
-      response.setHeader("ratelimit-limit", String(decision.limit));
-      response.setHeader("ratelimit-remaining", String(decision.remaining));
-      response.setHeader("ratelimit-reset", String(Math.ceil(decision.resetAfterMs / 1000)));
-      response.setHeader("ratelimit-policy", headers.join(", "));
-    }
-
-    if (!decision.allowed) {
-      response.setHeader("retry-after", String(Math.ceil(decision.resetAfterMs / 1000)));
-      throw codedHttpError(
-        429,
-        decision.code ?? "RATE_LIMITED",
-        decision.message ?? formatMessage(RATE_LIMIT_MESSAGES.RATE_LIMITED, decision.params),
-        decision.params,
-      );
-    }
+    answerDecision(decision, headers, emitHeaders, ctx);
   };
 
   return [
@@ -250,6 +270,13 @@ async function resolveSubject(
     // regardless of guard registration order.
     const subject = getRateLimitSubject(strategy, ctx);
     if (subject !== undefined) return subject;
+    if (strategy === "refresh-token") {
+      // The presented refresh token — never the raw bearer secret, which would
+      // otherwise sit in the counter store's keys. No token: skip the policy
+      // (the refresh handler answers 401), rather than share an IP budget.
+      const token = await readPresentedRefreshToken(ctx);
+      return token === undefined ? null : tokenSubject(token);
+    }
     // Built-in kinds derive lazily from the auth context — only routes
     // actually keyed by them pay this read.
     const auth =
@@ -274,4 +301,89 @@ const trustOneHop = (_addr: string, hop: number): boolean => hop < 1;
 function clientIp(trustProxy: boolean, ctx: EventContext): string {
   const req = useRequest(ctx);
   return trustProxy ? resolveForwarded(req.raw, trustOneHop).ip : req.getIp();
+}
+
+/**
+ * Internal: the client IP of the current HTTP event, derived like the rate
+ * limiter does (its `trustProxy` when `rateLimitInterceptors` are installed,
+ * else the socket peer / the wooks app's own `trustProxy`). `""` outside an
+ * HTTP event.
+ */
+export function requestClientIp(ctx: EventContext | undefined = tryGetCurrent()): string {
+  if (!ctx) return "";
+  try {
+    const trustProxy = ctx.has(rateLimitRuntimeKey) && ctx.get(rateLimitRuntimeKey).trustProxy;
+    return clientIp(trustProxy, ctx);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Write the decision's `RateLimit-*` headers (with `emitHeaders`) and, when it
+ * rejects, `Retry-After` and the coded 429.
+ */
+function answerDecision(
+  decision: RateLimitDecision,
+  policyHeaders: string[],
+  emitHeaders: boolean,
+  ctx: EventContext,
+): void {
+  const response = useResponse(ctx);
+  if (emitHeaders) {
+    const prior = response.getHeader("ratelimit-policy");
+    if (typeof prior === "string" && prior) policyHeaders.unshift(prior);
+    response.setHeader("ratelimit-limit", String(decision.limit));
+    response.setHeader("ratelimit-remaining", String(decision.remaining));
+    response.setHeader("ratelimit-reset", String(Math.ceil(decision.resetAfterMs / 1000)));
+    response.setHeader("ratelimit-policy", policyHeaders.join(", "));
+  }
+  if (!decision.allowed) {
+    response.setHeader("retry-after", String(Math.ceil(decision.resetAfterMs / 1000)));
+    throw codedHttpError(
+      429,
+      decision.code ?? "RATE_LIMITED",
+      decision.message ?? formatMessage(RATE_LIMIT_MESSAGES.RATE_LIMITED, decision.params),
+      decision.params,
+    );
+  }
+}
+
+/**
+ * Internal: check a bundled policy from inside a handler — per client IP
+ * unless `key` names another subject (e.g. `user:<id>`), with the limiter and
+ * `policies` overrides of the installed `rateLimitInterceptors` (none
+ * installed → nothing is enforced, like any `@RateLimit`). Over the limit it
+ * throws the same coded 429 as the interceptors. Used by the auth workflow
+ * for code and link sends (`aooth.send`, `aooth.send-user`).
+ */
+export async function enforceRateLimit(
+  policy: BundledRateLimit,
+  key?: string,
+  ctx: EventContext | undefined = tryGetCurrent(),
+): Promise<void> {
+  if (!ctx?.has(rateLimitRuntimeKey)) return;
+  const runtime = ctx.get(rateLimitRuntimeKey);
+  const rules = effectiveRules(runtime.overrides, policy.id, policy.rules);
+  if (!rules) return;
+  const decision = await runtime.limiter.check(
+    policy.id,
+    key ?? `ip:${clientIp(runtime.trustProxy, ctx)}`,
+    rules,
+  );
+  answerDecision(decision, [policyHeader(rules)], runtime.emitHeaders, ctx);
+}
+
+/** The rules of policy `id` after `policies` overrides — `false` when switched off. */
+function effectiveRules(
+  overrides: ReadonlyMap<string, RateLimitRule[] | false>,
+  id: string,
+  declared: RateLimitRule[],
+): RateLimitRule[] | false {
+  return overrides.get(id) ?? declared;
+}
+
+/** The draft `RateLimit-Policy` value of `rules` (`<limit>;w=<seconds>`, comma-joined). */
+function policyHeader(rules: RateLimitRule[]): string {
+  return rules.map((p) => `${p.limit};w=${Math.max(1, Math.round(p.window / 1000))}`).join(", ");
 }

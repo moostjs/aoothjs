@@ -1,4 +1,4 @@
-import type { RateLimitDecision } from "@aooth/auth";
+import type { RateLimitDecision, RateLimiter, RateLimitRule } from "@aooth/auth";
 import type { EventContext } from "@wooksjs/event-core";
 import { current, key } from "@wooksjs/event-core";
 
@@ -7,6 +7,17 @@ import { current, key } from "@wooksjs/event-core";
  * evaluated so far), written by `rateLimitInterceptors`.
  */
 export const rateLimitDecisionKey = key<RateLimitDecision>("aooth.rateLimit.decision");
+
+/** Internal: what `rateLimitInterceptors` was configured with, for `enforceRateLimit`. */
+export interface RateLimitRuntime {
+  limiter: RateLimiter;
+  overrides: Map<string, RateLimitRule[] | false>;
+  trustProxy: boolean;
+  emitHeaders: boolean;
+}
+
+/** Internal: the installed interceptors' runtime, published on every HTTP event. */
+export const rateLimitRuntimeKey = key<RateLimitRuntime>("aooth.rateLimit.runtime");
 
 /** Internal: phases (`pre` / `post`) that already evaluated this event — the double-count guard. */
 export const rateLimitPhasesKey = key<Array<"pre" | "post">>("aooth.rateLimit.phases");

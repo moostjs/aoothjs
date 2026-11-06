@@ -165,6 +165,10 @@ export class CredentialStoreEncapsulated<
   private decrypt(token: string): EncryptedPayload<TPayload> | null {
     try {
       const blob = Buffer.from(token, "base64url");
+      // Node's decoder skips characters outside the alphabet (and accepts
+      // `+/=`), so several strings would decode to one token. Accept only the
+      // canonical encoding — one credential, one string.
+      if (blob.toString("base64url") !== token) return null;
       // Need at least IV + 1 byte ciphertext + tag.
       if (blob.length < IV_LEN + 1 + TAG_LEN) return null;
       const iv = blob.subarray(0, IV_LEN);

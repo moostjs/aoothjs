@@ -293,7 +293,13 @@ describe("useArbacDbScope", () => {
         for (const ids of ["2", "1,2", "99", "1,99"]) {
           const { status, body } = await get(`assert/${ids}`);
           expect(status, ids).toBe(404);
-          expect(body, ids).toMatchObject({ message: "Not found" });
+          // moost-db's coded body: identical for missing and out-of-scope ids
+          expect(body, ids).toEqual({
+            statusCode: 404,
+            message: "Not found",
+            code: "NOT_FOUND",
+            error: "Not Found",
+          });
         }
       });
 

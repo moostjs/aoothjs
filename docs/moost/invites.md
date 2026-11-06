@@ -93,7 +93,7 @@ By default the invited email is the login handle. With `inviteUsername: 'choose'
 
 ## Re-invites {#re-invites}
 
-Inviting an email that is still pending is the "resend" — there is no separate resend flow. The default `duplicateInviteCheck` verdict for a pending row is `'reuse'`; an accepted account is `'reject'` (`USER_ALREADY_EXISTS`).
+Inviting an email that is still pending is the "resend" — there is no separate resend flow. The default `duplicateInviteCheck` verdict for a pending row is `'reuse'`; an accepted account is `'reject'` (`AOOTH_USER_ALREADY_EXISTS`).
 
 ::: warning Since 0.2: a re-invite supersedes every earlier link
 Each issued link carries a fresh marker, stored on the account as `account.inviteNonce`; a `'reuse'` rotates it. A link issued **before** the re-invite then answers **`410` with `code: "INVITE_REPLACED"`** ("This invite was replaced by a newer one") — also when it was opened before the re-invite and is still paused, and also after the newer link was accepted. It never sets a password, a username, an MFA factor or a consent record, and never activates the account: every bundled accept-phase write re-checks that the link is still the current one, and the final acceptance is a single compare-and-set (`UserService.acceptInvitation`), so two links of one account can never both complete. Before 0.2 the old link stayed valid until its own TTL. `'reuse'` still **replaces** the pending row's roles and `prepareUser` extras with the new invite's — nothing is merged.
@@ -163,7 +163,7 @@ The invitee opens the link (an anonymous resume of the same run): already-accept
 | a newer invite replaced this link      | `410`, `code: "INVITE_REPLACED"`                                                       |
 | already accepted (state still present) | "already accepted" finish envelope — the run ends there (no password step, no session) |
 | accepted by another run while paused   | `410`, `code: "INVITE_ALREADY_ACCEPTED"`                                               |
-| reuse forced onto an accepted account  | `409`, `code: "USER_ALREADY_EXISTS"`                                                   |
+| reuse forced onto an accepted account  | `409`, `code: "AOOTH_USER_ALREADY_EXISTS"`                                             |
 
 Your own `extra-step` override runs in the accept phase **before** the acceptance write (`unset-pending-invitation`), so whatever it writes can still belong to a link that turns out to be superseded. Keep such writes idempotent, or move them to `afterInvitationAccepted()`, which runs only after the acceptance succeeded.
 

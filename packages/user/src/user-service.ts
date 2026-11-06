@@ -303,6 +303,19 @@ export class UserService<T extends object = object> {
   }
 
   /**
+   * The account checks `login` runs before the password, without one — for a
+   * sign-in that proves the first factor another way (a magic link): throws
+   * `NOT_FOUND`, `INACTIVE` (incl. a pending invitation) or `LOCKED`, and
+   * lifts an expired lock like `login` does. Returns the fresh row.
+   */
+  async assertCanSignIn(id: string): Promise<UserCredentials & T> {
+    const user = await this.getUser(id);
+    if (!user.account.active) throw new UserAuthError("INACTIVE");
+    await this.ensureNotLockedOrThrow(user.id, user.account);
+    return user;
+  }
+
+  /**
    * Stamp a successful login on the user record: `account.lastLogin = now` and
    * reset `account.failedLoginAttempts = 0`. The single writer of `lastLogin`.
    *
@@ -606,14 +619,7 @@ export class UserService<T extends object = object> {
     config?: TotpConfig,
     lockoutOverride?: Partial<LockoutConfig>,
   ): Promise<void> {
-    const user = await this.getUser(id);
-
-    if (!user.account.active) {
-      throw new UserAuthError("INACTIVE");
-    }
-
-    await this.ensureNotLockedOrThrow(id, user.account);
-
+    const user = await this.assertCanSignIn(id);
     const totp = user.mfa.methods.find((m) => m.name === "totp" && m.confirmed);
     if (!totp) throw new UserAuthError("MFA_NOT_CONFIGURED");
 

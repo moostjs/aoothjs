@@ -16,6 +16,7 @@ import { Wooks } from "wooks";
 import { AuthController } from "../auth.controller";
 import type { AuthOptions } from "../auth.config";
 import { authGuardInterceptor } from "../auth.guard";
+import { rateLimitInterceptors, type RateLimitInterceptorOptions } from "../rate-limit/interceptor";
 import { requestVia, setTestArbacUserRoles, TestArbacUserProvider } from "./test-harness";
 
 export interface MyClaims extends Record<string, unknown> {
@@ -61,6 +62,8 @@ export interface PrepareControllerOpts extends AuthOptions {
    * silently no-ops on the HTTP adapter (the route table is frozen).
    */
   extraControllers?: Array<new (...args: never[]) => unknown>;
+  /** When set, installs `rateLimitInterceptors(rateLimit)` globally next to the guard. */
+  rateLimit?: RateLimitInterceptorOptions;
   /**
    * When set, wires `MoostArbac` + a test `ArbacUserProvider` + the
    * `arbacAuthorizeInterceptor` globally. The provider resolves the current
@@ -120,6 +123,7 @@ export async function prepareControllerApp(
     controllerClass,
     arbac: arbacOpts,
     extraControllers,
+    rateLimit,
     ...cfg
   } = opts;
   const providers: Parameters<typeof createProvideRegistry> = [[AuthCredential, () => auth]];
@@ -128,6 +132,7 @@ export async function prepareControllerApp(
   }
   moost.setProvideRegistry(createProvideRegistry(...providers));
   moost.applyGlobalInterceptors(authGuardInterceptor(cfg));
+  if (rateLimit) moost.applyGlobalInterceptors(...rateLimitInterceptors(rateLimit));
 
   if (arbacOpts) {
     // Set the active user→roles map BEFORE the moost wiring runs. The

@@ -15,30 +15,30 @@ import { formatMessage, registerMessages, useTranslate } from "moost";
 export const AOOTH_MESSAGES = {
   // ── Sign-in ──
   INVALID_CREDENTIALS: "Invalid credentials",
-  ACCOUNT_LOCKED: "Account locked, please try again later",
+  AOOTH_ACCOUNT_LOCKED: "Account locked, please try again later",
   INVALID_PASSWORD: "Invalid password",
   INCORRECT_PASSWORD: "Incorrect password",
   SESSION_LIMIT_REACHED: "Session limit reached",
   PASSWORD_CHANGED_SIGN_IN_AGAIN: "Your password was changed. Please sign in again.",
 
   // ── Codes (MFA / OTP) ──
-  INVALID_CODE: "Invalid code",
-  CODE_EXPIRED: "Code expired",
-  TOO_MANY_CODE_ATTEMPTS: "Too many invalid attempts. Please request a new code.",
+  AOOTH_INVALID_CODE: "Invalid code",
+  AOOTH_CODE_EXPIRED: "Code expired",
+  AOOTH_TOO_MANY_CODE_ATTEMPTS: "Too many invalid attempts. Please request a new code.",
   /** Params: `seconds`. */
-  RESEND_WAIT: "Please wait {seconds}s before requesting a new code.",
+  AOOTH_RESEND_WAIT: "Please wait {seconds}s before requesting a new code.",
   /** Params: `seconds`. */
-  RESEND_WAIT_ANOTHER: "Please wait {seconds}s before requesting another code",
+  AOOTH_RESEND_WAIT_ANOTHER: "Please wait {seconds}s before requesting another code",
   /** Params: `seconds`, `channel` (`SMS` / `email`). */
-  RESEND_WAIT_CHANNEL: "Please wait {seconds}s before requesting another {channel} code",
+  AOOTH_RESEND_WAIT_CHANNEL: "Please wait {seconds}s before requesting another {channel} code",
   TOTP_RESEND_NOT_APPLICABLE: "Resend is not applicable for TOTP",
   /** HTTP 400 — a TOTP code submitted for an account without TOTP. */
   TOTP_NOT_CONFIGURED: "No TOTP MFA configured",
 
   // ── Contact addresses (MFA / channel enrolment) ──
-  ADDRESS_REQUIRED: "This field is required",
-  INVALID_EMAIL_ADDRESS: "Enter a valid email address",
-  INVALID_PHONE_NUMBER: "Enter a valid phone number",
+  AOOTH_ADDRESS_REQUIRED: "This field is required",
+  AOOTH_INVALID_EMAIL_ADDRESS: "Enter a valid email address",
+  AOOTH_INVALID_PHONE_NUMBER: "Enter a valid phone number",
   OTP_DISCLOSURE_EMAIL:
     "By providing your email address, you consent to receive one-time security codes from us via email. Standard email delivery may apply.",
   OTP_DISCLOSURE_PHONE:
@@ -46,11 +46,11 @@ export const AOOTH_MESSAGES = {
 
   // ── MFA management ──
   UNKNOWN_MFA_METHOD: "Unknown MFA method",
-  UNKNOWN_METHOD: "Unknown method",
-  METHOD_UNAVAILABLE: "That method isn't available",
-  METHOD_NOT_CHANGEABLE: "That method can't be changed here.",
+  AOOTH_UNKNOWN_METHOD: "Unknown method",
+  AOOTH_METHOD_UNAVAILABLE: "That method isn't available",
+  AOOTH_METHOD_NOT_CHANGEABLE: "That method can't be changed here.",
   KEEP_ONE_MFA_METHOD: "You must keep at least one two-factor method.",
-  CHOOSE_OPTION: "Choose an option",
+  AOOTH_CHOOSE_OPTION: "Choose an option",
   ALL_MFA_METHODS_SET_UP: "You've already set up every available authentication method.",
   NO_MFA_CHANGES: "No changes were made to your two-factor methods.",
   LAST_MFA_METHOD_NOT_REMOVABLE:
@@ -88,18 +88,19 @@ export const AOOTH_MESSAGES = {
     "Your account was created without a password. Choose one to continue.",
 
   // ── Recovery / signup ──
-  RECOVERY_INSTRUCTIONS_SENT: "If an account exists, you will receive instructions.",
+  /** A magic link that cannot be used: expired, of another purpose, or already used up. */
+  AOOTH_MAGIC_LINK_INVALID: "This link is invalid or has expired. Please request a new one.",
   SIGNUP_DISABLED: "Self-signup is currently disabled.",
-  ALREADY_HAVE_ACCOUNT: "You already have an account. Please sign in.",
-  ACCOUNT_LINKED: "Account linked.",
+  AOOTH_ALREADY_HAVE_ACCOUNT: "You already have an account. Please sign in.",
+  AOOTH_ACCOUNT_LINKED: "Account linked.",
   /** HTTP 400 — the SSO alt action named a provider that is not offered. */
   UNKNOWN_SSO_PROVIDER: "Unknown SSO provider",
 
   // ── Invites ──
-  ACCOUNT_CREATED: "Your account has been created.",
-  INVALID_ROLE: "Invalid role",
+  AOOTH_ACCOUNT_CREATED: "Your account has been created.",
+  AOOTH_INVALID_ROLE: "Invalid role",
   INVITE_ALREADY_PENDING: "Invite already pending",
-  USER_ALREADY_EXISTS: "User already exists",
+  AOOTH_USER_ALREADY_EXISTS: "User already exists",
   DUPLICATE_INVITE_REJECTED: "Duplicate invite rejected",
   INVITE_CANCELLED: "This invite has been cancelled",
   INVITE_REPLACED: "This invite was replaced by a newer one",
@@ -117,8 +118,8 @@ export const AOOTH_MESSAGES = {
   GO_TO_SIGN_IN: "Go to sign-in",
   BACK_TO_SIGN_IN: "Back to sign-in",
   REQUEST_NEW_INVITE: "Request a new invite",
-  BACK: "Back",
-  GO_NOW: "Go now",
+  AOOTH_BACK: "Back",
+  AOOTH_GO_NOW: "Go now",
 } as const;
 
 registerMessages(AOOTH_MESSAGES);

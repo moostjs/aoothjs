@@ -339,6 +339,20 @@ export function createTestMailboxController(
      * the post-clear method count (always 0 on success) so the caller can
      * assert.
      */
+    /**
+     * Record the user's `email` handle as its PROVEN inbox
+     * (`account.verifiedEmail`) — the precondition of a magic-link sign-in for
+     * a seeded user without email MFA (seeded rows prove no inbox).
+     */
+    @Post("verified-email/:username")
+    async verifiedEmail(@Param("username") username: string): Promise<{ ok: true; email: string }> {
+      const user = await resolveUser(username);
+      const email = (user as { email?: string }).email;
+      if (!email) throw new Error(`${username} has no email`);
+      await userService.setVerifiedEmail(user.id, email);
+      return { ok: true, email };
+    }
+
     @Post("reset-mfa/:username")
     async resetMfa(@Param("username") username: string): Promise<{ ok: true; methods: number }> {
       const user = await resolveUser(username);
@@ -417,6 +431,17 @@ export function createTestMailboxController(
      * lets a spec prove a pause carries the TTL it expects before
      * fast-forwarding past it.
      */
+    /**
+     * The stored handles (row keys) of the `wf_states` table — what an attacker
+     * with read access to the database (a backup, an injection) would see. The
+     * magic-link spec proves such a key cannot be redeemed.
+     */
+    @Get("wf-states/handles")
+    async wfStatesHandles(): Promise<{ handles: string[] }> {
+      const rows = await wfStates.findMany({ filter: {}, controls: { $select: ["handle"] } });
+      return { handles: rows.map((r) => String(r.handle)) };
+    }
+
     @Get("wf-states/expiries")
     async wfStatesExpiries(): Promise<{ now: number; expiresAt: (number | null)[] }> {
       const rows = await wfStates.findMany({ filter: {}, controls: { $select: ["expiresAt"] } });

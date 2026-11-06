@@ -294,14 +294,15 @@ class AppWfTriggerProvider extends WfTriggerProvider {
       createAuthEmailOutlet({
         emailSender,
         buildMagicLinkUrl: (kind, token, ctx) =>
-          `${process.env.FRONTEND_URL}/${kind === 'recovery.magicLink' ? 'recover' : 'accept-invite'}?wfs=${token}${ctx?.userId ? `&uid=${ctx.userId}` : ''}`,
+          `${process.env.FRONTEND_URL}/${kind === 'recovery.magicLink' ? 'recover' : kind === 'login.magicLink' ? 'login' : 'accept-invite'}?wfs=${token}${ctx?.userId ? `&uid=${ctx.userId}` : ''}`,
         magicLinkTtlMs: () => 60 * 60_000,
       }),
     ]
   }
   // Make the durable `store` strategy real — override storeStrategy(), do NOT assign `this.state`.
   protected override storeStrategy(): WfStateStrategy {
-    return new HandleStateStrategy({ store: new AsWfStore({ table: tables.wfStates }) })
+    // hashHandles: a read of the table yields no resumable token
+    return new HandleStateStrategy({ store: new AsWfStore({ table: tables.wfStates }), hashHandles: true })
   }
 }
 ```
@@ -450,28 +451,42 @@ A request from a user whose `@arbac.attribute tenantId` is `'t1'` will see `scop
 
 ### Password reset (recovery flow)
 
-The recovery flow (`auth/recovery/flow`) is a multi-step run that pauses on each user interaction. The envelope's `wfs` is the **workflow-session handle** — the same value is reused across every step until the flow finishes. The magic-link email carries a distinct token because it crosses an out-of-band boundary; once clicked, the FE posts that token back as the new `wfs`.
+The recovery flow (`auth/recovery/flow`) is a multi-step run that pauses on each user interaction. The envelope's `wfs` is the **workflow-session handle** you send back with the next step. By default recovery mails a one-time code; this recipe sends a **magic link** instead — add the resolver to `AppAuth`:
+
+```ts
+class AppAuth extends AuthWorkflow {
+  // …
+  protected override resolveRecoveryDeliveryMode() {
+    return "magicLink" as const; // 'otp' (default) or 'choice' (the user picks)
+  }
+}
+```
 
 ```bash
-# 1. Start: name the workflow with `wfid`; server returns wfs + the identifier form
+# 1. Start: name the workflow with `wfid`; the server returns wfs + the identifier form
 curl -X POST http://localhost:3000/auth/trigger \
   -H 'content-type: application/json' \
   -d '{"wfid":"auth/recovery/flow"}'
 
-# 2. Submit identifier (username or email) — server emits the magic-link email.
-#    Same wfs from step 1 — the handle stays live across the pause.
+# 2. Submit the account's email. The answer is always { "sent": true, "outlet": "email" } —
+#    whether or not the account exists; the link goes only to an existing account's inbox.
 curl -X POST http://localhost:3000/auth/trigger \
   -H 'content-type: application/json' \
-  -d '{"wfs":"<wfs-from-step-1>","input":{"formData":{"identifier":"alice"}}}'
+  -d '{"wfs":"<wfs-from-step-1>","input":{"formData":{"email":"alice@example.com"}}}'
 
-# 3. User clicks the magic-link URL from email; FE posts that token back as wfs
-#    (this one IS a fresh token — it crossed the email outlet)
+# 3. The user clicks the emailed link (…/recover?wfs=<token>); the FE posts that token as wfs.
+#    The link works once and expires after 15 minutes. → the new-password form + a new wfs
 curl -X POST http://localhost:3000/auth/trigger \
   -H 'content-type: application/json' \
-  -d '{"wfs":"<token-from-magic-link>","input":{"formData":{"newPassword":"NewCorrectHorse42!"}}}'
+  -d '{"wfs":"<token-from-the-link>"}'
+
+# 4. Set the new password with the wfs from step 3 → finished: a redirect to /login
+curl -X POST http://localhost:3000/auth/trigger \
+  -H 'content-type: application/json' \
+  -d '{"wfs":"<wfs-from-step-3>","input":{"formData":{"newPassword":"NewCorrectHorse42!","confirmPassword":"NewCorrectHorse42!","consents":[]}}}'
 ```
 
-Wire `createAuthEmailOutlet({ emailSender, buildMagicLinkUrl })` into your `WfTriggerProvider` (step 7c above) — the outlet receives the kind `'recovery.magicLink'` and turns it into a clickable URL.
+The link is sent by the `createAuthEmailOutlet({ emailSender, buildMagicLinkUrl })` you wired in step 7c, with the kind `'recovery.magicLink'`. See [Workflows — Magic links](../moost/workflows#magic-links) for the guarantees (single use, expiry, no account-existence oracle).
 
 ### Refresh-token flow
 
@@ -494,24 +509,40 @@ With `refresh: { rotation: 'always' }` (the Quick Start setting) every call mint
 
 ### Magic-link login
 
-The login flow supports passwordless entry through the same email outlet — the recovery recipe above doubles as the magic-link primitive; the only difference is which `kind` the outlet receives (`recovery.magicLink` vs the invite kind). Your `buildMagicLinkUrl` callback branches on `kind` (and reads the optional `{ userId }` third arg for invites):
+The login form can offer "Sign in with a magic link": enable it in `AppAuth`, and the link goes out through the same email outlet with the kind `'login.magicLink'` (the step-7c `buildMagicLinkUrl` sends it to `/login`):
 
 ```ts
-buildMagicLinkUrl: (kind, token, ctx) => {
-  const path = kind === "invite.magicLink" ? "accept-invite" : "recover";
-  return `${process.env.FRONTEND_URL}/${path}?wfs=${token}${ctx?.userId ? `&uid=${ctx.userId}` : ""}`;
-};
+class AppAuth extends AuthWorkflow {
+  // …
+  protected override async resolveAlternateCredentials(ctx: AuthWfCtx) {
+    return { ...(await super.resolveAlternateCredentials(ctx)), magicLink: true };
+  }
+}
 ```
-
-The clicked URL's `wfs` query parameter is resumed identically (it's a resume token, so no `wfid`):
 
 ```bash
+# 1. Start the login flow → the credentials form + wfs
 curl -X POST http://localhost:3000/auth/trigger \
   -H 'content-type: application/json' \
-  -d '{"wfs":"<token-from-clicked-link>"}'
+  -d '{"wfid":"auth/login/flow"}'
+
+# 2. Choose the magic link → the identifier form + a new wfs
+curl -X POST http://localhost:3000/auth/trigger \
+  -H 'content-type: application/json' \
+  -d '{"wfs":"<wfs-from-step-1>","input":{"action":"magicLink"}}'
+
+# 3. Submit the email or username → always { "sent": true, "outlet": "email" }
+curl -X POST http://localhost:3000/auth/trigger \
+  -H 'content-type: application/json' \
+  -d '{"wfs":"<wfs-from-step-2>","input":{"formData":{"identifier":"alice@example.com"}}}'
+
+# 4. The user clicks the link (…/login?wfs=<token>); the FE posts the token as wfs
+curl -X POST http://localhost:3000/auth/trigger \
+  -H 'content-type: application/json' \
+  -d '{"wfs":"<token-from-the-link>"}'
 ```
 
-A successful resume sets the same cookies as the password path.
+The link is the **first factor only**: from step 4 the run continues exactly as after a password — the MFA challenge (or enrolment) your `resolveMfaPolicy` asks for, then the session with the same cookies as the password path. The link goes only to an inbox the account proved (its verified email or a confirmed email MFA method).
 
 ## Next steps
 

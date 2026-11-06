@@ -81,7 +81,7 @@ test.describe("phone-as-handle — login + SMS recovery", () => {
     expect(envelope.finished).toBe(true);
   });
 
-  test("WF-RECOVERY-SMS-02: unknown phone → generic finish, no SMS (anti-enumeration)", async ({
+  test("WF-RECOVERY-SMS-02: unknown phone → the same code form, no SMS (anti-enumeration)", async ({
     page,
     request,
   }) => {
@@ -91,7 +91,7 @@ test.describe("phone-as-handle — login + SMS recovery", () => {
     await fillField(page, "email", "+15555559999"); // not a registered handle
     await submitForm(page);
 
-    await expect(page.getByText("Workflow finished.")).toBeVisible();
+    await waitForFormInput(page, "code", 15_000);
     const events = await getSms(request);
     expect(
       events.find((e) => e.kind === "recovery.pincode"),

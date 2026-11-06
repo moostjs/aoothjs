@@ -12,7 +12,7 @@ import type { AuthWfCtx } from "./auth-workflow.ctx";
  * sequencing as one canonical pattern; changes to the pattern propagate to both call sites.
  */
 export const pincodeSendCheckPair: TWorkflowSchema<AuthWfCtx> = [
-  { id: "pincode-send", condition: (ctx) => !ctx.pin },
+  { id: "pincode-send", condition: (ctx) => !ctx.pinNonce },
   // `!ctx.aborted` lets `pincode-send` terminate the loop in-place: registered-
   // channel recovery (M2) aborts here when the confirmed method vanished between
   // `request` and this send (the request→send TOCTOU), staging the generic
@@ -60,7 +60,7 @@ export const enrollTrioSteps: TWorkflowSchema<AuthWfCtx> = [
   // engine pass, or pre-seeded by a consumer (e.g. `resolveAccept` staging the
   // invited email), which skips `enroll-address` entirely — collection AND
   // dispatch — and previously stranded the user on a code form no code was ever
-  // sent for. `!ctx.pin` makes re-pauses send-once; `resolveEnrollPreConfirmed`
+  // sent for. `!ctx.pinNonce` makes re-pauses send-once; `resolveEnrollPreConfirmed`
   // may skip the dispatch altogether (verified-by-construction address).
   {
     id: "enroll-send",
@@ -69,7 +69,7 @@ export const enrollTrioSteps: TWorkflowSchema<AuthWfCtx> = [
       !!ctx.mfaEnroll.address &&
       !ctx.mfaEnroll.done &&
       !ctx.mfaEnroll.preConfirmed &&
-      !ctx.pin,
+      !ctx.pinNonce,
   },
   {
     id: "enroll-confirm",
@@ -132,7 +132,7 @@ export const mfaStepUpLoop: TWorkflowSchema<AuthWfCtx> = [
       // with zero user interaction otherwise). Skipped once consent exists:
       // a `select-2fa` pick counts (choosing "Email (ma•••@x)" IS consent),
       // and `resolveStepUpConfirmBeforeSend` can opt the deployment out.
-      // `!ctx.pin` keeps it from re-firing once a code is already in flight.
+      // `!ctx.pinNonce` keeps it from re-firing once a code is already in flight.
       // TOTP needs no consent — its challenge dispatches nothing.
       {
         id: "manage-stepup-confirm",
@@ -140,7 +140,7 @@ export const mfaStepUpLoop: TWorkflowSchema<AuthWfCtx> = [
           !ctx.otp?.verified &&
           (ctx.mfa?.method === "sms" || ctx.mfa?.method === "email") &&
           !ctx.addMfa?.stepUpConfirmed &&
-          !ctx.pin,
+          !ctx.pinNonce,
       },
       // A consent-form `cancel` sets `aborted` with `mfa.method` still bound —
       // without this break the pincode pair below would dispatch the very code

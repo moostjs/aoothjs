@@ -1,5 +1,5 @@
-import type { Clock, RateLimitDecision } from "@aooth/auth";
-import { RateLimiter } from "@aooth/auth";
+import type { Clock, RateLimitDecision, RateLimitStore } from "@aooth/auth";
+import { RateLimiter, RateLimitStoreMemory } from "@aooth/auth";
 import { current } from "@wooksjs/event-core";
 import { HttpError, useRequest, useResponse } from "@wooksjs/event-http";
 import type { TInterceptorDef } from "moost";
@@ -7,6 +7,7 @@ import { getMoostMate } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
 import { Public } from "../auth.decorator";
+import "../auth.controller"; // declares the bundled policy ids
 import { setRateLimitSubject, useRateLimit } from "../rate-limit/composables";
 import { RateLimit, RateLimited } from "../rate-limit/decorator";
 import { rateLimitInterceptors } from "../rate-limit/interceptor";
@@ -60,6 +61,13 @@ class RlController {
   @TestHandler()
   @RateLimit("1/1m", { key: "session" })
   sessionKeyed() {
+    return "ok";
+  }
+
+  @TestHandler()
+  @Public()
+  @RateLimit("2/1m", { key: "refresh-token" })
+  refreshKeyed() {
     return "ok";
   }
 
@@ -146,7 +154,7 @@ async function runChain(
   pair: TInterceptorDef[],
   controllerName: string,
   method: string,
-  httpOpts: { headers?: Record<string, string> } = {},
+  httpOpts: { headers?: Record<string, string>; cookies?: string; rawBody?: string } = {},
   /** Simulated custom GUARD-priority interceptors (e.g. an external IAM). */
   guards: { beforeAuthGuard?: () => void; afterAuthGuard?: () => void } = {},
 ): Promise<RunResult> {
@@ -183,6 +191,14 @@ async function runChain(
   } finally {
     app.auth.validate = validate;
   }
+}
+
+/** A JSON body presenting `token` as `refreshToken`, from client `ip`. */
+function refreshBody(token: string, ip: string) {
+  return {
+    headers: { "content-type": "application/json", "x-forwarded-for": ip },
+    rawBody: JSON.stringify({ refreshToken: token }),
+  };
 }
 
 describe("rateLimitInterceptors", () => {
@@ -541,5 +557,144 @@ describe("rateLimitInterceptors", () => {
     expect(rejected.headers["ratelimit-limit"]).toBeUndefined();
     // Retry-After is part of the 429 contract itself, not the headers option.
     expect(rejected.headers["retry-after"]).toBe("60");
+  });
+  it("'refresh-token' keys on the presented refresh token — body or cookie, any IP — stored hashed", async () => {
+    // WHY: one refresh token's budget must follow the token (not the caller's
+    // IP), and the bearer secret must never become a counter-store key.
+    const keys: string[] = [];
+    const memory = new RateLimitStoreMemory();
+    const store: RateLimitStore = {
+      hit: (key, ttl) => (keys.push(key), memory.hit(key, ttl)),
+      get: (key) => memory.get(key),
+    };
+    const app = await prepareTestApp([RlController]);
+    const pair = rateLimitInterceptors({ limiter: new RateLimiter({ store }), trustProxy: true });
+
+    expect(
+      (
+        await runChain(
+          app,
+          pair,
+          "RlController",
+          "refreshKeyed",
+          refreshBody("rt-secret", "1.1.1.1"),
+        )
+      ).thrown,
+    ).toBeUndefined();
+    expect(
+      (
+        await runChain(
+          app,
+          pair,
+          "RlController",
+          "refreshKeyed",
+          refreshBody("rt-secret", "2.2.2.2"),
+        )
+      ).thrown,
+    ).toBeUndefined();
+    // Third presentation from yet another IP — and via the cookie — shares the budget.
+    const viaCookie = await runChain(app, pair, "RlController", "refreshKeyed", {
+      cookies: "aooth_refresh=rt-secret",
+      headers: { "x-forwarded-for": "3.3.3.3" },
+      rawBody: "",
+    });
+    expect(viaCookie.thrown?.body.statusCode).toBe(429);
+    // Another token: its own budget.
+    expect(
+      (
+        await runChain(
+          app,
+          pair,
+          "RlController",
+          "refreshKeyed",
+          refreshBody("rt-other", "1.1.1.1"),
+        )
+      ).thrown,
+    ).toBeUndefined();
+
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys.some((k) => k.includes("rt-secret") || k.includes("rt-other"))).toBe(false);
+  });
+
+  it("'refresh-token' skips the policy when the request presents no refresh token", async () => {
+    const app = await prepareTestApp([RlController]);
+    const pair = rateLimitInterceptors({ limiter: new RateLimiter({ clock: fakeClock() }) });
+    for (let i = 0; i < 3; i++) {
+      const res = await runChain(app, pair, "RlController", "refreshKeyed", {
+        headers: { "content-type": "application/json" },
+        rawBody: "{}",
+      });
+      expect(res.thrown).toBeUndefined();
+      expect(res.decision).toBeNull();
+    }
+    // An unparsable body is no token either — not an error from the limiter.
+    const garbled = await runChain(app, pair, "RlController", "refreshKeyed", {
+      headers: { "content-type": "application/json" },
+      rawBody: "{not json",
+    });
+    expect(garbled.thrown).toBeUndefined();
+  });
+
+  it("policies re-tunes a declared policy by id (rules replaced, key + id kept) or switches it off", async () => {
+    // WHY: apps must be able to change bundled limits (e.g. /auth/refresh)
+    // without subclassing the controller that declares them.
+    const app = await prepareTestApp([RlController]);
+    const pair = rateLimitInterceptors({
+      limiter: new RateLimiter({ clock: fakeClock() }),
+      policies: { "shared-bucket": ["3/1m"] },
+    });
+    for (let i = 0; i < 3; i++) {
+      expect((await runChain(app, pair, "RlController", "sharedA")).thrown).toBeUndefined();
+    }
+    const rejected = await runChain(app, pair, "RlController", "sharedB");
+    expect(rejected.thrown?.body).toMatchObject({ params: { policy: "shared-bucket", limit: 3 } });
+    expect(rejected.headers["ratelimit-policy"]).toBe("3;w=60");
+
+    const off = rateLimitInterceptors({
+      limiter: new RateLimiter({ clock: fakeClock() }),
+      policies: { "shared-bucket": false },
+    });
+    for (let i = 0; i < 4; i++) {
+      const res = await runChain(app, off, "RlController", "sharedA");
+      expect(res.thrown).toBeUndefined();
+      expect(res.decision).toBeNull();
+    }
+  });
+
+  it("policies rejects an empty rule list at registration", () => {
+    expect(() => rateLimitInterceptors({ policies: { "shared-bucket": [] } })).toThrow(
+      /pass false/,
+    );
+    expect(() => rateLimitInterceptors({ policies: { "shared-bucket": "nonsense" } })).toThrow();
+  });
+
+  it("policies refuses an unknown policy id at configuration time (L3)", () => {
+    // WHY: a typo ("aooth.refesh") silently left the bundled limit in force.
+    expect(() => rateLimitInterceptors({ policies: { "aooth.refesh": "1/1m" } })).toThrow(
+      /unknown policy id "aooth\.refesh"/,
+    );
+    // Declared ids — the bundled ones and any @RateLimit({ id }) — are accepted.
+    expect(() =>
+      rateLimitInterceptors({
+        policies: { "aooth.refresh": "1/1m", "aooth.send": false, "shared-bucket": "2/1m" },
+      }),
+    ).not.toThrow();
+  });
+
+  it("'refresh-token' counts lenient base64url spellings of one token as that token (L1)", async () => {
+    // WHY: `tok=`, `tok `, `tok\n`, a `+/` spelling or `tok!` decode to the
+    // same bytes; each was its own bucket.
+    const app = await prepareTestApp([RlController]);
+    const pair = rateLimitInterceptors({ limiter: new RateLimiter({ clock: fakeClock() }) });
+    const token = "abc-def_ghij";
+    const hit = (t: string) =>
+      runChain(app, pair, "RlController", "refreshKeyed", {
+        headers: { "content-type": "application/json" },
+        rawBody: JSON.stringify({ refreshToken: t }),
+      });
+    expect((await hit(token)).thrown).toBeUndefined();
+    expect((await hit(`${token}=`)).thrown).toBeUndefined();
+    const third = await hit("abc+def/ghij!");
+    expect(third.thrown?.body.statusCode).toBe(429);
   });
 });

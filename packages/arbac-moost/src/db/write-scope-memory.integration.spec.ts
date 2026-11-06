@@ -79,6 +79,11 @@ async function send(method: string, body: unknown): Promise<{ status: number; bo
   return { status: res!.status, body: await res!.json() };
 }
 
+const del = async (id: number) => {
+  const res = await http.request(`/mem-docs/${id}`, { method: "DELETE" });
+  return { status: res!.status, body: await res!.json() };
+};
+
 beforeEach(async () => {
   await docs().deleteMany({ id: { $gt: 0 } });
   await docs().insertMany([
@@ -116,7 +121,7 @@ describe("non-transactional WITH CHECK (validated before the write)", () => {
     const res = await send("PATCH", { id: 1, tenant: "b" });
     expect(res.status).toBe(403);
     expect(res.body.message).toBe("Row outside your write scope");
-    expect(res.body.code).toBe("ROW_OUT_OF_SCOPE");
+    expect(res.body.code).toBe("ARBAC_ROW_OUT_OF_SCOPE");
     expect(await doc(1)).toMatchObject({ tenant: "a" });
   });
 
@@ -129,6 +134,20 @@ describe("non-transactional WITH CHECK (validated before the write)", () => {
 
   it("USING still applies: an out-of-scope PATCH → 404", async () => {
     expect((await send("PATCH", { id: 2, title: "x" })).status).toBe(404);
+  });
+
+  it("an out-of-scope row and a missing row answer the same coded 404 (PATCH and DELETE)", async () => {
+    // WHY: a different body for "exists, not yours" would reveal foreign rows;
+    // both must be moost-db's own `notFoundError()` body.
+    const NOT_FOUND = {
+      status: 404,
+      body: { statusCode: 404, message: "Not found", code: "NOT_FOUND", error: "Not Found" },
+    };
+    expect(await send("PATCH", { id: 2, title: "x" })).toEqual(NOT_FOUND);
+    expect(await send("PATCH", { id: 99, title: "x" })).toEqual(NOT_FOUND);
+    expect(await del(2)).toEqual(NOT_FOUND);
+    expect(await del(99)).toEqual(NOT_FOUND);
+    expect(await doc(2)).toMatchObject({ tenant: "b" });
   });
 
   it("an explicit check is evaluated over pre-image + patch", async () => {

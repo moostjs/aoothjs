@@ -28,11 +28,14 @@ describe("$from: the controls gate", () => {
     expect((await get("/read-accounts/meta")).body).toMatchObject({ nestedAggregates: true });
   });
 
-  it("$from: false → 403 CONTROL_NOT_ALLOWED; /meta drops nestedAggregates and `from`", async () => {
+  it("$from: false → 403 ARBAC_CONTROL_NOT_ALLOWED; /meta drops nestedAggregates and `from`", async () => {
     const get = await bootWith({ accounts: { controls: { $from: false } } });
     const r = await get(BY_COUNT);
     expect(r.status).toBe(403);
-    expect(r.body).toMatchObject({ code: "CONTROL_NOT_ALLOWED", params: { control: "$from" } });
+    expect(r.body).toMatchObject({
+      code: "ARBAC_CONTROL_NOT_ALLOWED",
+      params: { control: "$from" },
+    });
     // a single-level aggregate is still fine
     const single = await get("/read-accounts/query?$groupBy=deptId&$select=deptId,count(*):n");
     expect(single.status, single.text).toBe(200);
@@ -80,7 +83,7 @@ describe("$from under a $groupBy whitelist", () => {
     );
     expect(r.status).toBe(403);
     expect(r.body).toMatchObject({
-      code: "CONTROL_VALUE_NOT_ALLOWED",
+      code: "ARBAC_CONTROL_VALUE_NOT_ALLOWED",
       params: { control: "$groupBy", value: "owner" },
     });
   });
@@ -97,5 +100,39 @@ describe("$from under a $groupBy whitelist", () => {
       code: "INVALID_QUERY",
       errors: [{ path: "$groupBy", code: "AGG_NESTED_UNKNOWN_COLUMN" }, expect.anything()],
     });
+  });
+  it("an un-aliased inner aggregate (count(*) → count_star) groups the outer level like an alias", async () => {
+    // The inner column's name is uniqu's default alias (the unit tests of
+    // `extractUsedControlValues` cover controls that arrive without a `$as`).
+    const get = await bootWith(WHITELIST);
+    const r = await get(
+      "/read-accounts/query?$from=($groupBy=deptId&$select=count(*))&$groupBy=count_star&$select=count_star,count(*):depts&$sort=count_star",
+    );
+    expect(r.status, r.text).toBe(200);
+    expect(r.body).toEqual([
+      { count_star: 1, depts: 1 },
+      { count_star: 2, depts: 1 },
+    ]);
+  });
+
+  it("a table field off the whitelist is still refused as a grouping key", async () => {
+    const get = await bootWith(WHITELIST);
+    const r = await get("/read-accounts/query?$groupBy=owner&$select=owner,count(*):n");
+    expect(r.status).toBe(403);
+    expect(r.body).toMatchObject({ params: { control: "$groupBy", value: "owner" } });
+  });
+
+  it("an inner alias named like an off-whitelist field groups on the inner value, never the field", async () => {
+    // The outer level reads only inner columns: `owner` here is the inner
+    // count, so the off-whitelist `owner` column is not grouped on (or shown).
+    const get = await bootWith(WHITELIST);
+    const r = await get(
+      "/read-accounts/query?$from=($groupBy=deptId&$select=count(*):owner)&$groupBy=owner&$select=owner,count(*):depts&$sort=owner",
+    );
+    expect(r.status, r.text).toBe(200);
+    expect(r.body).toEqual([
+      { owner: 1, depts: 1 },
+      { owner: 2, depts: 1 },
+    ]);
   });
 });

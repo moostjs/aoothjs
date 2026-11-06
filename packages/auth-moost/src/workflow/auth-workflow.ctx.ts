@@ -230,12 +230,34 @@ export interface AuthWfSessionState {
   riskStepUpEvaluated?: boolean;
 }
 
+/** How recovery delivers its proof of inbox: a one-time code, a magic link, or the user's pick. */
+export type AuthWfRecoveryDeliveryMode = "otp" | "magicLink" | "choice";
+
+/** Server-only state of a magic link (recovery or sign-in). */
+export interface AuthWfMagicLinkState {
+  /** What the link may do: reset the password, or sign in (first factor only). */
+  purpose: "recovery" | "login";
+  /** The account the identifier resolved to — unset for an unknown identifier. */
+  subject?: string;
+  /** The typed identifier, normalised — kept only until the send (the cooldown key of an unknown one). */
+  identifier?: string;
+  /** Where the link went (an inbox the account proved) — unset when nothing was sent. */
+  address?: string;
+  /** Set when the link pause was persisted; the resume (the click) skips the send. */
+  sentAt?: number;
+  /** When the link stops working. */
+  expiresAt?: number;
+  /** Set once the landing step ("Continue as …") was submitted — the link is then used up. */
+  confirmed?: boolean;
+  /** Sign-in links bound to the requesting browser: a hash of the binding cookie's nonce. */
+  browser?: string;
+}
+
 /** Alt-credential mirror flags (login). */
 export interface AuthWfAltActionsState {
   forgotPassword?: boolean;
   signup?: boolean;
   magicLink?: boolean;
-  usedMagicLink?: boolean;
   /** SSO providers offered on the login form — each renders a `sso-<id>` button. */
   ssoProviders?: SsoProvider[];
 }
@@ -245,11 +267,15 @@ export interface AuthWfAltCredsPolicy {
   forgotPassword: boolean;
   signup: boolean;
   magicLink: boolean;
-  magicLinkSkipsMfa: boolean;
+  /**
+   * Bind sign-in links to the browser that asked for them (a cookie nonce):
+   * the link then works only there. Default `false` — opening the email on
+   * another device is legitimate.
+   */
+  magicLinkSameBrowser?: boolean;
   ssoProviders: SsoProvider[];
   recoveryUrl: string;
   signupUrl: string;
-  embedRecovery: boolean;
 }
 
 /** Device-trust policy (login). */
@@ -382,7 +408,7 @@ export interface AuthWfAcceptState {
   alreadyAcceptedRedirectUrl?: string;
   loginUrl?: string;
   showConfirmation?: boolean;
-  /** The app's own confirmation text, shown as is; default: `ACCOUNT_CREATED`, rendered per request. */
+  /** The app's own confirmation text, shown as is; default: `AOOTH_ACCOUNT_CREATED`, rendered per request. */
   confirmationMessage?: string;
   alreadyAccepted?: boolean;
   /** `inviteUsername: 'choose'` — the invitee picks their username at accept. */
@@ -522,7 +548,7 @@ export interface AuthWfOAuthState {
  * (the schema gate right after `sso-callback`) is what keeps an unproven user
  * out of the token-issuing tail. The `snapshot` has `profile.raw` stripped (raw
  * claims are never persisted — RFC §7). The OTP-proof code lives HERE, not on the
- * shared top-level `ctx.pin`, so it cannot collide with the post-link MFA loop's
+ * shared top-level code fields (`ctx.pinNonce` …), so it cannot collide with the post-link MFA loop's
  * own pincode in the same run.
  */
 export interface AuthWfPendingLinkState {
@@ -548,10 +574,10 @@ export interface AuthWfPendingLinkState {
   hint?: string;
   /** OTP mode only — masked delivery target for the "code sent to …" copy. Safe to expose. */
   sentTo?: string;
-  // ── OTP proof code — isolated from the MFA-loop's top-level `ctx.pin` ──
-  pin?: string;
+  // ── OTP proof code — isolated from the MFA-loop's top-level code fields ──
+  pinNonce?: string;
+  pinDigest?: string;
   pinExpire?: number;
-  pinAttempts?: number;
 }
 
 /**
@@ -680,6 +706,8 @@ export interface AuthWfSignupState {
 export interface AuthWfPublicState {
   /** Mirrors `ctx.consents` — pending descriptor list + decision marker. */
   consents?: { pending?: ConsentDescriptorLike[]; decidedAt?: number };
+  /** The account a clicked magic link signs into / resets, masked (`MagicLinkConfirmForm`). */
+  magicLink?: { account?: string };
   /** Mirrors `ctx.altActions` — which alt-action buttons render on login (incl. SSO providers). */
   altActions?: {
     forgotPassword?: boolean;
@@ -779,10 +807,11 @@ export interface AuthWfCtx {
   defaults?: AuthWfDefaults;
 
   // ── Server-only secrets (never @wf.context.pass) ──
-  pin?: string;
+  /** Random id of the code currently in flight — keys its server-side attempt counter and single-use marker. Set by `mintPin`. */
+  pinNonce?: string;
+  /** Keyed digest of the code in flight, bound to who it was sent for — never the code itself. */
+  pinDigest?: string;
   pinExpire?: number;
-  /** Wrong-code attempt counter for the currently minted pincode. Reset by `mintPin`; incremented by `verifyPin`; cleared when the cap is hit (which also clears `pin`/`pinExpire` so the user must request a fresh code). */
-  pinAttempts?: number;
   aborted?: boolean;
 
   // ── Semantic flags ──
@@ -855,6 +884,10 @@ export interface AuthWfCtx {
   accept?: AuthWfAcceptState; // [invite accept]
   postReset?: AuthWfPostResetState; // [recovery]
   recoveryAltActions?: AuthWfRecoveryAltActions; // [recovery]
+  /** How the recovery code goes out: `'choice'` until the user picks on `RecoveryModeSelectForm`. [recovery] */
+  recoveryDelivery?: AuthWfRecoveryDeliveryMode;
+  /** Server-only state of a recovery or sign-in magic link — never projected to the wire. [recovery, login] */
+  magicLink?: AuthWfMagicLinkState;
   // Note: `ctx.audit` REMOVED — audit handled at interceptor level.
 
   // ── Per-event state groups ──

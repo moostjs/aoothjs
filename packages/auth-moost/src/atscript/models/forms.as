@@ -840,9 +840,10 @@ export interface ConcurrencyLimitForm {
 }
 
 /**
- * Identifier form for the magic-link login path — same shape as
- * {@link EmailIdentifierForm} but kept separate because future iterations may
- * accept either email or username.
+ * Identifier form of the login flow's `magicLink` alt-action
+ * (`forms.magicLinkRequest`): an email or username. The link goes to an inbox
+ * the account proved; the answer is the same whether or not an account
+ * matches.
  */
 @meta.label 'Sign in with a magic link'
 @meta.description 'Enter your account email or username and we will send you a one-time sign-in link.'
@@ -856,8 +857,25 @@ export interface MagicLinkRequestForm {
 }
 
 /**
- * Recovery delivery-mode picker — rendered only when
- * `RecoveryWorkflowOptions.deliveryMode === 'choice'`.
+ * Landing step of a clicked magic link (`forms.magicLinkConfirm`): "Continue
+ * as a•••@example.com". Opening the link only renders this form — the link is
+ * used up when it is submitted — so a mail scanner that opens links does not
+ * spend it, and the masked account shows which account the link is for.
+ */
+@meta.label 'Continue with your link'
+@wf.context.pass 'public'
+@ui.form.submit.text 'Continue'
+export interface MagicLinkConfirmForm {
+    @ui.form.order 1
+    @ui.form.fn.value '(_, _d, ctx, _e, t) => ctx.public?.magicLink?.account ? t("Continue as {account}.", { account: ctx.public.magicLink.account }) : t("Continue with the link from your email.")'
+    notice: ui.paragraph
+}
+
+/**
+ * Recovery delivery-mode picker (`forms.recoveryModeSelect`) — rendered after
+ * the identifier when `resolveRecoveryDeliveryMode()` returns `'choice'`, for
+ * known and unknown identifiers alike. `magicLink` sends a single-use link,
+ * `otp` a one-time code.
  */
 @meta.label 'Choose how to verify'
 @meta.description 'Pick how you would like to recover access.'
@@ -870,37 +888,6 @@ export interface RecoveryModeSelectForm {
     @meta.required
     mode: string
 
-}
-
-/**
- * Recovery factor-verification form — used when
- * `RecoveryWorkflowOptions.requireKnownRecoveryFactor` is true. The user
- * picks a factor type and supplies its value; the server validates against
- * the enrolled factor (phone last-4 or current TOTP code). Options are
- * built from `ctx.public.preReset.availableRecoveryFactors` (workflow whitelist ∩
- * user's enrolled factors), so users only see factors they can actually
- * verify AND that the admin hasn't disabled via `opts.preReset.allowedFactors`.
- * The staged options are shown as given — not passed through `t` — so whoever
- * stages them supplies labels already in the request's language.
- */
-@meta.label 'Verify your identity'
-@meta.description 'Confirm a detail we have on file before resetting your password.'
-@wf.context.pass 'public'
-export interface RecoveryFactorForm {
-    @ui.form.order 10
-    @ui.form.type 'radio'
-    @ui.form.fn.options '(_, _d, ctx) => Array.isArray(ctx.public?.preReset?.availableRecoveryFactors) ? ctx.public.preReset.availableRecoveryFactors : []'
-    @meta.label 'Factor'
-    @meta.required
-    factor: string
-
-    @ui.form.order 20
-    @ui.form.type 'text'
-    @meta.label 'Value'
-    @meta.required
-    @expect.minLength 4
-    @expect.maxLength 12
-    value: string
 }
 
 /**

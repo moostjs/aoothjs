@@ -22,11 +22,7 @@ import { authGuardInterceptor } from "../auth.guard";
  * controllers without requiring `@moostjs/event-http` (not a dep of this package).
  */
 export function TestHandler(): MethodDecorator {
-  return getMoostMate().decorate(
-    "handlers" as never,
-    { type: "TEST", path: "" } as never,
-    true,
-  ) as MethodDecorator;
+  return getMoostMate().decorate("handlers" as never, { type: "TEST", path: "" } as never, true);
 }
 
 // Typed credential payload — flat root fields (replacing the dropped `claims`
@@ -55,8 +51,8 @@ export class TestAdapter implements TMoostAdapter<unknown> {
       this.handlers.push({
         method: String(opts.method),
         controllerName: opts.controllerName,
-        getInstance: async () => (await opts.getInstance()) as object,
-        fakeInstance: opts.fakeInstance as object,
+        getInstance: async () => await opts.getInstance(),
+        fakeInstance: opts.fakeInstance,
       });
     }
   }
@@ -118,6 +114,8 @@ export async function withHandlerContext<T>(
   httpOpts: {
     headers?: Record<string, string>;
     cookies?: string;
+    /** Pre-seeded request body (sent as a POST). */
+    rawBody?: string;
   },
   fn: () => Promise<T>,
 ): Promise<T> {
@@ -128,7 +126,12 @@ export async function withHandlerContext<T>(
   const instance = await entry.getInstance();
   const headers: Record<string, string> = { ...httpOpts.headers };
   if (httpOpts.cookies) headers.cookie = httpOpts.cookies;
-  const run = prepareTestHttpContext({ url: "/test", method: "GET", headers });
+  const run = prepareTestHttpContext({
+    url: "/test",
+    method: httpOpts.rawBody === undefined ? "GET" : "POST",
+    headers,
+    ...(httpOpts.rawBody !== undefined && { rawBody: httpOpts.rawBody }),
+  });
   return await run(async (): Promise<T> => {
     setControllerContext(instance, entry.method as never, "/test", { prefix: "", ctx: current() });
     return fn();

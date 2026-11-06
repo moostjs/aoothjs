@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vite-plus/test";
-import { USER_AUTH_ERROR_MESSAGES, UserAuthError } from "./errors";
-import { USER_AUTH_ERROR_MESSAGES as EXPORTED } from "./index";
+import { USER_AUTH_ERROR_CODES, USER_AUTH_ERROR_MESSAGES, UserAuthError } from "./errors";
+import {
+  USER_AUTH_ERROR_CODES as EXPORTED_CODES,
+  USER_AUTH_ERROR_MESSAGES as EXPORTED,
+} from "./index";
 
 describe("UserAuthError", () => {
   it("should set type and default message", () => {
     const err = new UserAuthError("NOT_FOUND");
     expect(err.type).toBe("NOT_FOUND");
-    expect(err.message).toBe("User not found");
+    expect(err.code).toBe("NOT_FOUND");
+    expect(err.message).toBe("Not found");
     expect(err.name).toBe("UserAuthError");
     expect(err).toBeInstanceOf(Error);
   });
@@ -39,14 +43,30 @@ describe("UserAuthError", () => {
     expect(new UserAuthError("MFA_NOT_CONFIGURED").message).toBe("MFA method is not configured");
   });
 
-  it("USER_AUTH_ERROR_MESSAGES is the exported, type-keyed catalogue of the default messages", () => {
-    // The type is the message code a translator keys on; the catalogue is
-    // the English source list registered for $i18n.
+  it("USER_AUTH_ERROR_MESSAGES is the exported, code-keyed catalogue of the default messages", () => {
+    // The message code is what a translator keys on; the catalogue is the
+    // English source list registered for $i18n.
     expect(EXPORTED).toBe(USER_AUTH_ERROR_MESSAGES);
+    expect(EXPORTED_CODES).toBe(USER_AUTH_ERROR_CODES);
     expect(Object.isFrozen(USER_AUTH_ERROR_MESSAGES)).toBe(true);
-    for (const [type, text] of Object.entries(USER_AUTH_ERROR_MESSAGES)) {
-      expect(new UserAuthError(type as keyof typeof USER_AUTH_ERROR_MESSAGES).message).toBe(text);
+    for (const [type, code] of Object.entries(USER_AUTH_ERROR_CODES)) {
+      const err = new UserAuthError(type as keyof typeof USER_AUTH_ERROR_CODES);
+      expect(err.code).toBe(code);
+      expect(err.message).toBe(USER_AUTH_ERROR_MESSAGES[code]);
     }
     expect(Object.keys(USER_AUTH_ERROR_MESSAGES)).toHaveLength(12);
+  });
+
+  it("generic types get AOOTH_USER_ codes; NOT_FOUND / INVALID_CREDENTIALS stay shared with neutral texts", () => {
+    // WHY: message codes share moost's process-wide registry with every other
+    // library — a generic id like LOCKED or ALREADY_EXISTS would override (or
+    // be overridden by) another library's template.
+    expect(new UserAuthError("LOCKED").code).toBe("AOOTH_USER_LOCKED");
+    expect(new UserAuthError("ALREADY_EXISTS").code).toBe("AOOTH_USER_ALREADY_EXISTS");
+    expect(new UserAuthError("INACTIVE").code).toBe("AOOTH_USER_INACTIVE");
+    expect(new UserAuthError("POLICY_VIOLATION").code).toBe("AOOTH_USER_POLICY_VIOLATION");
+    expect(new UserAuthError("CAS_EXHAUSTED").code).toBe("AOOTH_USER_CAS_EXHAUSTED");
+    expect(USER_AUTH_ERROR_MESSAGES.NOT_FOUND).toBe("Not found");
+    expect(USER_AUTH_ERROR_MESSAGES.INVALID_CREDENTIALS).toBe("Invalid credentials");
   });
 });

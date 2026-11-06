@@ -16,9 +16,9 @@ export function installDemoTranslator(): void {
     de: {
       // aooth message codes (AOOTH_MESSAGES, AOOTH_HTTP_MESSAGES, USER_AUTH_ERROR_MESSAGES)
       INVALID_CREDENTIALS: "Ungültige Anmeldedaten",
-      NOT_AUTHENTICATED: "Nicht angemeldet",
+      AOOTH_NOT_AUTHENTICATED: "Nicht angemeldet",
       PASSWORDS_DO_NOT_MATCH: "Die Passwörter stimmen nicht überein",
-      LOCKED: "Konto gesperrt",
+      AOOTH_USER_LOCKED: "Konto gesperrt",
       // validator messages (atscript VALIDATOR_MESSAGES)
       REQUIRED: "Darf nicht leer sein",
       MIN_LENGTH: "Mindestens {min} Zeichen",

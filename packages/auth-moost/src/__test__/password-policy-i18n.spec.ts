@@ -87,7 +87,7 @@ describe("PP_* codes", () => {
       { policies },
     );
     expect(inLocale("de", () => userAuthErrorToHttp(err)).body).toMatchObject({
-      code: "POLICY_VIOLATION",
+      code: "AOOTH_USER_POLICY_VIOLATION",
       message: "Das Passwort muss mindestens 12 Zeichen lang sein; Must not contain the username",
       params: { policies },
     });

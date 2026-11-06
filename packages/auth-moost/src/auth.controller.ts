@@ -4,7 +4,6 @@ import { UserAuthError, type UserCredentials, UserService } from "@aooth/user";
 import type { WfFinished } from "@atscript/moost-wf";
 import { current } from "@wooksjs/event-core";
 import { Body, Get, HttpError, Post, Query } from "@moostjs/event-http";
-import { useCookies } from "@wooksjs/event-http";
 import {
   Controller,
   HandlerPaths,
@@ -15,7 +14,7 @@ import {
   useControllerContext,
 } from "moost";
 
-import { type AuthBindings, useAuth } from "./auth.composables";
+import { resolveRefreshToken, useAuth } from "./auth.composables";
 import { Public } from "./auth.decorator";
 import { normalizeCookiePath, RefreshCookiePathHolder } from "./auth.route";
 import { RateLimit } from "./rate-limit/decorator";
@@ -62,12 +61,16 @@ function inviteNotFound(): HttpError {
   return aoothHttpError(404, "INVITE_NOT_FOUND");
 }
 
-/** Prefer an explicit body field, fall back to the refresh cookie when enabled. */
-function resolveRefreshToken(auth: AuthBindings, body: { refreshToken?: string } | undefined) {
-  if (typeof body?.refreshToken === "string") return body.refreshToken;
-  if (!auth.options.enableCookie) return undefined;
-  return useCookies(current()).getCookie(auth.options.refreshCookie.name) ?? undefined;
-}
+/**
+ * Default rate limits of `POST /auth/refresh` (see `refresh()`), by policy id —
+ * re-tune or switch one off with `rateLimitInterceptors({ policies })`.
+ */
+export const REFRESH_RATE_LIMITS = {
+  /** Per client IP — bounds the token lookups any one caller can force. */
+  "aooth.refresh": "150/5m",
+  /** Per presented refresh token, from any IP — bounds re-presenting one token. */
+  "aooth.refresh-token": "10/1m",
+} as const;
 
 /**
  * Public REST endpoints for credential management. Four endpoints total:
@@ -135,7 +138,7 @@ export class AuthController {
   async logout(@Body() body: AuthLogoutBody | undefined): Promise<AuthOkResponse> {
     const auth = useAuth();
     if (!auth.getAuthContext()) {
-      throw aoothHttpError(401, "NOT_AUTHENTICATED");
+      throw aoothHttpError(401, "AOOTH_NOT_AUTHENTICATED");
     }
     // End THIS device's whole session — every token in the family (access +
     // refresh + all rotations), keyed by sessionId — on stores that can
@@ -157,7 +160,7 @@ export class AuthController {
     // and an explicit refresh token in the body. Harmless no-ops once the
     // family is already gone.
     const accessToken = auth.extractToken();
-    const refreshToken = resolveRefreshToken(auth, body);
+    const refreshToken = resolveRefreshToken(auth.options, body);
     if (accessToken) {
       try {
         await this.auth.revoke(accessToken);
@@ -176,11 +179,24 @@ export class AuthController {
     return { ok: true };
   }
 
+  /**
+   * Rotate the access/refresh pair. Rate limited by two policies, enforced
+   * when `rateLimitInterceptors` are installed ({@link REFRESH_RATE_LIMITS}):
+   * `aooth.refresh` per client IP (checked before the auth guard, so a flood
+   * of junk tokens costs no lookups), and `aooth.refresh-token` per presented
+   * refresh token from any IP (a request without one skips it — the handler
+   * answers 401).
+   */
   @Post("refresh")
   @Public()
+  @RateLimit(REFRESH_RATE_LIMITS["aooth.refresh"], { id: "aooth.refresh" })
+  @RateLimit(REFRESH_RATE_LIMITS["aooth.refresh-token"], {
+    key: "refresh-token",
+    id: "aooth.refresh-token",
+  })
   async refresh(@Body() body: AuthRefreshBody | undefined): Promise<AuthLoginResponse> {
     const auth = useAuth();
-    const refreshToken = resolveRefreshToken(auth, body);
+    const refreshToken = resolveRefreshToken(auth.options, body);
     if (!refreshToken) throw aoothHttpError(401, "MISSING_REFRESH_TOKEN");
     const fromBody = typeof body?.refreshToken === "string";
 
@@ -219,7 +235,7 @@ export class AuthController {
   status(): AuthContext {
     const auth = useAuth().getAuthContext();
     if (!auth) {
-      throw aoothHttpError(401, "NOT_AUTHENTICATED");
+      throw aoothHttpError(401, "AOOTH_NOT_AUTHENTICATED");
     }
     return auth;
   }
@@ -293,12 +309,12 @@ export class AuthController {
    */
   @Get("invite/post-redemption")
   @Public()
-  @RateLimit("30/5m")
+  @RateLimit("30/5m", { id: "aooth.invite-post-redemption" })
   async invitePostRedemption(@Query("uid") uid: string | undefined): Promise<WfFinished> {
     // One answer for "switched off", "unknown id" and "still pending": the
     // route must not tell an anonymous caller which ids exist.
     if (!this.invitePostRedemptionEnabled()) throw inviteNotFound();
-    if (!uid) throw aoothHttpError(400, "MISSING_UID");
+    if (!uid) throw aoothHttpError(400, "AOOTH_MISSING_UID");
     if (!this.users) {
       throw new HttpError(500, "UserService not wired — cannot resolve post-redemption state");
     }

@@ -9,6 +9,9 @@
  *   RL-003 — undecorated routes are untouched (no default rules configured).
  *   RL-004 — session-keyed route: the auth-context-derived sessionId subject
  *            gives each login its own budget (named-subject keying end-to-end).
+ *   RL-005 — the bundled POST /auth/refresh limits: one presented refresh
+ *            token is capped (`aooth.refresh-token`, 10/1m) with the coded 429,
+ *            while another token keeps its own budget.
  */
 import { expect, test } from "@playwright/test";
 
@@ -99,5 +102,25 @@ test.describe("RL: HTTP rate limiting (@RateLimit)", () => {
     expect((await request.get("/rl-demo/per-session", { headers: auth(login2) })).status()).toBe(
       200,
     );
+  });
+  test("RL-005: /auth/refresh caps re-presenting one refresh token — coded 429, other tokens unaffected", async ({
+    request,
+  }) => {
+    const refresh = (refreshToken: string) =>
+      request.post("/auth/refresh", { data: { refreshToken } });
+    for (let i = 0; i < 10; i++) {
+      const res = await refresh("rl-005-junk");
+      expect(res.status()).toBe(401);
+      expect(res.headers()["ratelimit-policy"]).toBe("150;w=300, 10;w=60");
+    }
+    const limited = await refresh("rl-005-junk");
+    expect(limited.status()).toBe(429);
+    expect(Number(limited.headers()["retry-after"])).toBeGreaterThan(0);
+    expect(await limited.json()).toMatchObject({
+      code: "RATE_LIMITED",
+      params: { policy: "aooth.refresh-token", limit: 10, window: 60 },
+    });
+    // A different token is its own subject — still the handler's 401.
+    expect((await refresh("rl-005-other")).status()).toBe(401);
   });
 });

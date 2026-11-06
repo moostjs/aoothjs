@@ -7,7 +7,7 @@ import type {
   TRowResolveOptions,
   TWriteOptions,
 } from "@atscript/db";
-import { HttpError } from "@moostjs/event-http";
+import { notFoundError } from "@atscript/moost-db";
 
 import type { ArbacDbScope } from "./as-arbac-db-controller";
 import { navFieldsOf } from "./helpers";
@@ -143,7 +143,7 @@ export async function useArbacDbScope<T = unknown>(): Promise<ArbacDbScopeHelper
       const idFilters = await Promise.all(
         ids.map(async (id) => {
           const f = await table.resolveRowFilter(id, { isFieldVisible, scope });
-          if (!f) throw new HttpError(404, "Not found");
+          if (!f) throw notFoundError();
           return f;
         }),
       );

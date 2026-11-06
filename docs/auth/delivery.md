@@ -25,6 +25,7 @@ Both return `Promise<void>`. Workflows **`await`** the call — it's part of the
 | Kind                   | Meaning                                            | Carries                          |
 | ---------------------- | -------------------------------------------------- | -------------------------------- |
 | `'recovery.magicLink'` | Password recovery — click-through reset link       | `url`, `expiresAt`, `username?`  |
+| `'login.magicLink'`    | Passwordless sign-in — click-through sign-in link  | `url`, `expiresAt`               |
 | `'invite.magicLink'`   | Account invitation — click-through onboarding link | `url`, `expiresAt`, `username?`  |
 | `'mfa.code'`           | Step-up MFA challenge code                         | `code`, `expiresAt`, `username?` |
 | `'login.pincode'`      | Login via pincode (email-OTP)                      | `code`, `expiresAt`, `username?` |
@@ -273,7 +274,7 @@ The trade-off: a delivery failure no longer surfaces to the request. Build a dea
 
 `@aooth/auth-moost` does **not** ship `EmailSender` / `SmsSender` as DI tokens — the unified `AuthWorkflow` routes direct sends through a single `protected deliver(payload: AuthDeliveryPayload)` override (branch on `payload.kind` + `payload.channel`). Senders are wired by closure into that override on your `AuthWorkflow` subclass.
 
-The magic-link outlet (`createAuthEmailOutlet`) is the one place that takes an `EmailSender` directly — as a constructor dep on `WfTriggerProvider`, not via DI. It sends the invite link under the default `inviteDelivery: 'outlet-email'`; with `'deliver'` the invite link reaches your `deliver()` override as `kind: 'invite-link'` instead (see [Invites — delivery modes](../moost/invites#delivery-modes)). Its `buildMagicLinkUrl` is the 3-arg `BuildMagicLinkUrl`:
+The magic-link outlet (`createAuthEmailOutlet`) is the one place that takes an `EmailSender` directly — as a constructor dep on `WfTriggerProvider`, not via DI. It sends the invite link under the default `inviteDelivery: 'outlet-email'` (with `'deliver'` the invite link reaches your `deliver()` override as `kind: 'invite-link'` instead — see [Invites — delivery modes](../moost/invites#delivery-modes)), and the recovery and sign-in [magic links](../moost/workflows#magic-links) (`recovery.magicLink`, `login.magicLink`). `magicLinkTtlMs(kind)` is only the fallback for the email's `expiresAt`: the recovery and sign-in links carry their own lifetime (`AuthWorkflowOpts.magicLinkTtlMs`). Its `buildMagicLinkUrl` is the 3-arg `BuildMagicLinkUrl`:
 
 ```ts
 import { createAuthEmailOutlet } from "@aooth/auth-moost";

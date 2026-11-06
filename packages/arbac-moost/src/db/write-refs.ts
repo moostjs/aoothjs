@@ -115,7 +115,7 @@ function readPath(row: Record<string, unknown>, path: string): unknown {
 }
 
 function outOfScope(fk: RefForeignKey): HttpError {
-  return arbacHttpError(403, "REFERENCE_OUT_OF_SCOPE", { fields: fk.fields.join(", ") });
+  return arbacHttpError(403, "ARBAC_REFERENCE_OUT_OF_SCOPE", { fields: fk.fields.join(", ") });
 }
 
 /** A patch row touches `fk` in part only — its tuple is completed from the pre-image. */

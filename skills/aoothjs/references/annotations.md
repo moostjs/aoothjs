@@ -88,5 +88,5 @@ field), `LoginCredentialsForm`, `Select2faForm`, `MfaCodeForm`, `PincodeForm`,
 `EmailIdentifierForm`, `SetPasswordForm`, `EnrollPickMethodForm`,
 `EnrollAddressForm`, `EnrollConfirmForm`, `AskEmailForm`, `AskPhoneForm`,
 `TermsBumpForm`, `ConcurrencyLimitForm`, `InviteForm`, `MagicLinkRequestForm`,
-`RecoveryModeSelectForm`, `RecoveryFactorForm`.
+`RecoveryModeSelectForm`.
 Every form is replaceable per-workflow via `opts.forms.<slot>`.

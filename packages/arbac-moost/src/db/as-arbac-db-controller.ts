@@ -17,7 +17,7 @@ import type {
   TSerializedAnnotatedType,
 } from "@atscript/typescript/utils";
 import { HttpError } from "@moostjs/event-http";
-import { groupByFields } from "@uniqu/core";
+import { groupByFields, resolveAlias } from "@uniqu/core";
 import { Inherit } from "moost";
 
 import { ARBAC_DELEGATED_AUTH } from "../arbac.mate";
@@ -532,13 +532,13 @@ export function enforceControlsPolicy(
     if (Array.isArray(used) && used.length === 0 && key !== "$groupBy") continue;
 
     if (gate === false) {
-      throw arbacHttpError(403, "CONTROL_NOT_ALLOWED", { control: key });
+      throw arbacHttpError(403, "ARBAC_CONTROL_NOT_ALLOWED", { control: key });
     }
     if (Array.isArray(gate)) {
       const usedValues = extractUsedControlValues(key, used, controls);
       for (const v of usedValues) {
         if (!gate.includes(v)) {
-          throw arbacHttpError(403, "CONTROL_VALUE_NOT_ALLOWED", { control: key, value: v });
+          throw arbacHttpError(403, "ARBAC_CONTROL_VALUE_NOT_ALLOWED", { control: key, value: v });
         }
       }
     }
@@ -588,7 +588,13 @@ export function extractUsedControlValues(
   return [];
 }
 
-/** The columns a two-level aggregate's inner level (`$from`) yields: its `$groupBy` keys and `$select` aliases. */
+/**
+ * The columns a two-level aggregate's inner level (`$from`) yields: its
+ * `$groupBy` keys and its computed `$select` columns by output name — the
+ * `$as`, else uniqu's default alias (`count(*)` → `count_star`, as moost-db
+ * and the db core name them). The outer level reads only these, so a name
+ * here is the inner column even when a table field has the same name.
+ */
 function innerColumns(from: unknown): Set<string> | undefined {
   if (!from || typeof from !== "object" || Array.isArray(from)) return undefined;
   const { $groupBy, $select } = from as { $groupBy?: unknown; $select?: unknown };
@@ -598,8 +604,9 @@ function innerColumns(from: unknown): Set<string> | undefined {
   }
   if (Array.isArray($select)) {
     for (const entry of $select) {
-      const alias = (entry as { $as?: unknown } | null)?.$as;
-      if (typeof alias === "string") out.add(alias);
+      if (entry === null || typeof entry !== "object") continue;
+      const alias = resolveAlias(entry as Parameters<typeof resolveAlias>[0]) as unknown;
+      if (typeof alias === "string" && alias) out.add(alias);
     }
   }
   return out;
@@ -636,5 +643,5 @@ function remapUniquUrlSyntaxError(err: unknown): unknown {
   if (!(err instanceof SyntaxError)) return err;
   const msg = err.message;
   if (!/at (?:pos )?\d+/.test(msg)) return err;
-  return arbacHttpError(400, "INVALID_QUERY_STRING", { error: msg });
+  return arbacHttpError(400, "ARBAC_INVALID_QUERY_STRING", { error: msg });
 }

@@ -76,7 +76,7 @@ export function authGuardInterceptor(opts?: AuthOptions): TInterceptorDef {
         setAuthContext(ctx, null);
         return;
       }
-      throw aoothHttpError(401, "AUTH_REQUIRED");
+      throw aoothHttpError(401, "AOOTH_AUTH_REQUIRED");
     }
 
     const credential = await cc.instantiate(AuthCredential);
@@ -89,7 +89,7 @@ export function authGuardInterceptor(opts?: AuthOptions): TInterceptorDef {
         setAuthContext(ctx, null);
         return;
       }
-      throw aoothHttpError(401, "CREDENTIAL_INVALID");
+      throw aoothHttpError(401, "AOOTH_CREDENTIAL_INVALID");
     }
 
     setAuthContext(ctx, authContext);

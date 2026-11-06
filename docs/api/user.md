@@ -12,7 +12,7 @@ new UserService<T>(store: UserStore<T>, config?: UserServiceConfig)
 
 Orchestrator for credential CRUD, login, lockout, password policy, MFA, and trusted devices. Generic `T` adds custom user columns to every result. See [UserService](/user/service).
 
-Async methods (selected): `createUser`, `getUser(id)`, `getUserSnapshot(id, scope)` (since 0.1.78 — `getUser` memoized per scope until a write; see [UserService](/user/service#getusersnapshot-onuserwrite)), `findByHandle(handle)`, `findByIdentifier(value)`, `login(handle, password, lockoutOverride?)` (every early exit — unknown / inactive / locked — still spends one password hash, so timing does not reveal the account), `recordLogin(id) → Promise<number>` (stamp `lastLogin` + reset `failedLoginAttempts`; the single login-stamp writer — called by `login`, and by passwordless sign-ins that bypass it), `verifyPassword(id, …)`, `changePassword(id, …)`, `setPassword(id, …)`, `deleteUser(id)`, `update(id, patch)`, `activateAccount(id)`, `acceptInvitation(id, nonce) → Promise<boolean>` (since 0.2 — compare-and-set acceptance of a pending invite), `revokeInvitation(id) → Promise<boolean>` (delete a still-pending invited account; `false` when already accepted — see [Invites](/moost/invites#revoking-an-invite)), `deactivateAccount(id)`, `lockAccount(id, …)`, `unlockAccount(id)`, `checkPolicies`, `addMfaMethod(id, …)`, `confirmMfaMethod(id, …)`, `removeMfaMethod(id, …)`, `setDefaultMfaMethod(id, …)`, `setMfaAutoSend(id, …)`, `verifyMfa(id, code, config?, lockoutOverride?)`, `verifyTotpSetupCode(id, …)`, `addTrustedDevice(id, …)`, `verifyTrustedDevice(userId, …)`, `revokeTrustedDevice(id, …)`, `listTrustedDevices(id)`. Sync: `onUserWrite(listener) → unsubscribe` (since 0.1.78 — settled writes with the user id).
+Async methods (selected): `createUser`, `getUser(id)`, `getUserSnapshot(id, scope)` (since 0.1.78 — `getUser` memoized per scope until a write; see [UserService](/user/service#getusersnapshot-onuserwrite)), `findByHandle(handle)`, `findByIdentifier(value)`, `login(handle, password, lockoutOverride?)` (every early exit — unknown / inactive / locked — still spends one password hash, so timing does not reveal the account), `assertCanSignIn(id)` (since 0.2.6 — `login`'s account checks without a password, for a magic-link sign-in: throws `NOT_FOUND` / `INACTIVE` / `LOCKED`, lifts an expired lock, returns the row), `recordLogin(id) → Promise<number>` (stamp `lastLogin` + reset `failedLoginAttempts`; the single login-stamp writer — called by `login`, and by passwordless sign-ins that bypass it), `verifyPassword(id, …)`, `changePassword(id, …)`, `setPassword(id, …)`, `deleteUser(id)`, `update(id, patch)`, `activateAccount(id)`, `acceptInvitation(id, nonce) → Promise<boolean>` (since 0.2 — compare-and-set acceptance of a pending invite), `revokeInvitation(id) → Promise<boolean>` (delete a still-pending invited account; `false` when already accepted — see [Invites](/moost/invites#revoking-an-invite)), `deactivateAccount(id)`, `lockAccount(id, …)`, `unlockAccount(id)`, `checkPolicies`, `addMfaMethod(id, …)`, `confirmMfaMethod(id, …)`, `removeMfaMethod(id, …)`, `setDefaultMfaMethod(id, …)`, `setMfaAutoSend(id, …)`, `verifyMfa(id, code, config?, lockoutOverride?)`, `verifyTotpSetupCode(id, …)`, `addTrustedDevice(id, …)`, `verifyTrustedDevice(userId, …)`, `revokeTrustedDevice(id, …)`, `listTrustedDevices(id)`. Sync: `onUserWrite(listener) → unsubscribe` (since 0.1.78 — settled writes with the user id).
 
 > **Identity keying:** every method takes the stable surrogate **`id`** (the token subject), **except** `login`, which resolves a **handle** via `findByHandle` — the base `username`, then any consumer-declared secondary handle fields (e.g. `email`/`phone`) in configured order. `findByHandle` (login) and `findByIdentifier` (permissive admin/recovery) are the two handle-based reads. See [UserService](/user/service) and [Credentials Model](/user/credentials).
 
@@ -372,6 +372,7 @@ See [Errors](/user/errors).
 ```ts
 class UserAuthError extends Error {
   readonly name: "UserAuthError";
+  readonly code: UserAuthErrorCode; // the message code — USER_AUTH_ERROR_CODES[type]
   constructor(
     public type: UserAuthErrorType,
     message?: string,
@@ -383,10 +384,11 @@ class UserAuthError extends Error {
 Every error path in `@aooth/user` funnels through this single class. The `type` field drives HTTP mapping at the controller layer. `details` carries `{ reason, lockEnds }` for `LOCKED`, `{ policies }` for `POLICY_VIOLATION`, and `{ lockEnds }` for `INVALID_CREDENTIALS` / `MFA_INVALID` when the failure tripped the lock. See [Errors](/user/errors).
 
 ```ts
-const USER_AUTH_ERROR_MESSAGES: Readonly<Record<UserAuthErrorType, string>>; // { NOT_FOUND: "User not found", … }
+const USER_AUTH_ERROR_CODES: Readonly<Record<UserAuthErrorType, UserAuthErrorCode>>; // { LOCKED: "AOOTH_USER_LOCKED", NOT_FOUND: "NOT_FOUND", … }
+const USER_AUTH_ERROR_MESSAGES: Readonly<Record<UserAuthErrorCode, string>>; // { NOT_FOUND: "Not found", AOOTH_USER_LOCKED: "Account is locked", … }
 ```
 
-Since 0.2.5. The default English message of each type — the type is its message code. `@aooth/auth-moost` registers it with moost's `registerMessages`, so a translator translates `UserAuthError`s by type. See [Messages & Localization](/moost/messages).
+The default English message of each error, keyed by its message code (since 0.2.5; keyed by code, with `USER_AUTH_ERROR_CODES` and `err.code`, since 0.2.6). The code is the id a translator keys on and the `code` of `userAuthErrorToHttp()`'s body; types with a generic name get an `AOOTH_USER_` code so they cannot collide with other libraries' codes. `@aooth/auth-moost` registers the catalogue with moost's `registerMessages`. See [Errors](/user/errors) and [Messages & Localization](/moost/messages).
 
 ## Federated identity store
 

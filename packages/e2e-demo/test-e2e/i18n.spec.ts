@@ -50,14 +50,14 @@ test.describe("Accept-Language: de", () => {
     const de = await request.get("/auth/status", { headers: { "Accept-Language": "de" } });
     expect(de.status()).toBe(401);
     expect(await de.json()).toMatchObject({
-      code: "NOT_AUTHENTICATED",
+      code: "AOOTH_NOT_AUTHENTICATED",
       message: "Nicht angemeldet",
     });
     expect(de.headers()["vary"]?.toLowerCase()).toContain("accept-language");
 
     const en = await request.get("/auth/status");
     expect(await en.json()).toMatchObject({
-      code: "NOT_AUTHENTICATED",
+      code: "AOOTH_NOT_AUTHENTICATED",
       message: "Not authenticated",
     });
   });
@@ -137,7 +137,7 @@ test.describe("/meta under Accept-Language: de", () => {
     expect(body.type.$i18n).toMatchObject({
       REQUIRED: "Darf nicht leer sein",
       MAX_LENGTH: "Höchstens {max} Zeichen",
-      LOCKED: "Konto gesperrt", // USER_AUTH_ERROR_MESSAGES
+      AOOTH_USER_LOCKED: "Konto gesperrt", // USER_AUTH_ERROR_MESSAGES
     });
     const text = JSON.stringify(body);
     expect(text).toContain('"offen"'); // the `open` option's label

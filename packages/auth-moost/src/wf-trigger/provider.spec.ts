@@ -35,13 +35,19 @@ class TestProvider extends WfTriggerProvider {
   }
 }
 
+/** The strategy a registry entry wraps (aooth tags every registered strategy). */
+const inner = (strategy: unknown): unknown => (strategy as { inner: unknown }).inner;
+
 describe("WfTriggerProvider named strategy registry", () => {
-  it("registry has both `encapsulated` and `store` keys with default = `encapsulated`", () => {
-    // WHY: every wf starts cheap/serverless on the default; the swap target
-    // (`store`) must exist in the registry or `swapStrategy('store')` blows up.
+  it("registry has `encapsulated`, `store` and `magic-link` keys with default = `encapsulated`", () => {
+    // WHY: every wf starts cheap/serverless on the default; the swap targets
+    // (`store`, and `magic-link` for link pauses) must exist in the registry
+    // or `swapStrategy(...)` blows up.
     const p = new TestProvider(wfStub, jwtAuth());
     const reg = p.publicStateRegistry();
-    expect(Object.keys(reg.strategies).toSorted()).toEqual(["encapsulated", "store"]);
+    expect(Object.keys(reg.strategies).toSorted()).toEqual(["encapsulated", "magic-link", "store"]);
+    // The link strategy stores hashed handles, whatever the configured store.
+    expect(inner(reg.strategies["magic-link"])).toBeInstanceOf(HandleStateStrategy);
     expect(reg.default).toBe("encapsulated");
   });
 
@@ -51,8 +57,8 @@ describe("WfTriggerProvider named strategy registry", () => {
     // 'store' on the default config does not crash on a missing strategy.
     const p = new TestProvider(wfStub, jwtAuth());
     const reg = p.publicStateRegistry();
-    expect(reg.strategies.encapsulated).toBeInstanceOf(EncapsulatedStateStrategy);
-    expect(reg.strategies.store).toBeInstanceOf(EncapsulatedStateStrategy);
+    expect(inner(reg.strategies.encapsulated)).toBeInstanceOf(EncapsulatedStateStrategy);
+    expect(inner(reg.strategies.store)).toBeInstanceOf(EncapsulatedStateStrategy);
   });
 
   it("overriding storeStrategy() swaps ONLY the durable `store` entry", () => {
@@ -65,8 +71,8 @@ describe("WfTriggerProvider named strategy registry", () => {
       }
     }
     const reg = new CustomerProvider(wfStub, jwtAuth()).publicStateRegistry();
-    expect(reg.strategies.store).toBe(durable);
-    expect(reg.strategies.encapsulated).toBeInstanceOf(EncapsulatedStateStrategy);
+    expect(inner(reg.strategies.store)).toBe(durable);
+    expect(inner(reg.strategies.encapsulated)).toBeInstanceOf(EncapsulatedStateStrategy);
   });
 
   it("honors a dedicated wfStateSecret() override", () => {
@@ -87,7 +93,7 @@ describe("WfTriggerProvider named strategy registry", () => {
     );
     expect(p.publicWfStateSecret()).toBe(dedicated);
     expect(() => p.publicStateRegistry()).not.toThrow();
-    expect(p.publicStateRegistry().strategies.encapsulated).toBeInstanceOf(
+    expect(inner(p.publicStateRegistry().strategies.encapsulated)).toBeInstanceOf(
       EncapsulatedStateStrategy,
     );
   });

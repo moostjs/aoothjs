@@ -18,23 +18,27 @@ import { prepareFlowApp } from "./flow-utils";
 
 describe("message catalogue", () => {
   it("renders {placeholders} and falls back to the English template", () => {
-    expect(renderAoothMessage(AOOTH_MESSAGES.RESEND_WAIT, { seconds: 7 })).toBe(
+    expect(renderAoothMessage(AOOTH_MESSAGES.AOOTH_RESEND_WAIT, { seconds: 7 })).toBe(
       "Please wait 7s before requesting a new code.",
     );
-    expect(resolveAoothMessage("INVALID_CODE", {}, { INVALID_CREDENTIALS: "x" })).toBe(
+    expect(resolveAoothMessage("AOOTH_INVALID_CODE", {}, { INVALID_CREDENTIALS: "x" })).toBe(
       "Invalid code",
     );
     expect(
-      resolveAoothMessage("RESEND_WAIT", { seconds: 3 }, { RESEND_WAIT: "Warte {seconds}s" }),
+      resolveAoothMessage(
+        "AOOTH_RESEND_WAIT",
+        { seconds: 3 },
+        { AOOTH_RESEND_WAIT: "Warte {seconds}s" },
+      ),
     ).toBe("Warte 3s");
     const seen: Array<[AoothMessageCode, unknown]> = [];
     const fn = (code: AoothMessageCode, params: object) => {
       seen.push([code, params]);
-      return code === "INVALID_CODE" ? "Falscher Code" : undefined;
+      return code === "AOOTH_INVALID_CODE" ? "Falscher Code" : undefined;
     };
-    expect(resolveAoothMessage("INVALID_CODE", {}, fn)).toBe("Falscher Code");
-    expect(resolveAoothMessage("GO_NOW", {}, fn)).toBe("Go now");
-    expect(seen.map(([c]) => c)).toEqual(["INVALID_CODE", "GO_NOW"]);
+    expect(resolveAoothMessage("AOOTH_INVALID_CODE", {}, fn)).toBe("Falscher Code");
+    expect(resolveAoothMessage("AOOTH_GO_NOW", {}, fn)).toBe("Go now");
+    expect(seen.map(([c]) => c)).toEqual(["AOOTH_INVALID_CODE", "AOOTH_GO_NOW"]);
   });
 
   it("the invite-already-accepted envelope uses the overrides", () => {
@@ -66,7 +70,7 @@ describe("AuthWorkflow messages option", () => {
   it("invite HttpErrors carry a stable code next to the resolved text", async () => {
     const users = new UserService(new UserStoreMemory());
     const flow = new AuthWorkflow(
-      { messages: (code) => (code === "USER_ALREADY_EXISTS" ? "Gibt es" : undefined) },
+      { messages: (code) => (code === "AOOTH_USER_ALREADY_EXISTS" ? "Gibt es" : undefined) },
       users,
       new AuthCredential({ store: new CredentialStoreMemory() }),
       new ConsentStore(),
@@ -77,7 +81,7 @@ describe("AuthWorkflow messages option", () => {
     expect((err as { body: unknown }).body).toMatchObject({
       statusCode: 409,
       message: "Gibt es",
-      code: "USER_ALREADY_EXISTS",
+      code: "AOOTH_USER_ALREADY_EXISTS",
     });
   });
 });

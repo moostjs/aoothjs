@@ -13,10 +13,10 @@ import { inLocale, localizedHttpApp, prepareFlowApp } from "./flow-utils";
 // The message chain: `messages` (app override) → moost translator → English.
 
 const DE = {
-  INVALID_CODE: "Ungültiger Code",
-  RESEND_WAIT: "Bitte {seconds}s warten.",
+  AOOTH_INVALID_CODE: "Ungültiger Code",
+  AOOTH_RESEND_WAIT: "Bitte {seconds}s warten.",
   INVALID_CREDENTIALS: "Ungültige Anmeldedaten",
-  USER_ALREADY_EXISTS: "Benutzer existiert bereits",
+  AOOTH_USER_ALREADY_EXISTS: "Benutzer existiert bereits",
   INVITE_ALREADY_ACCEPTED: "Einladung bereits angenommen.",
 };
 
@@ -29,11 +29,11 @@ describe("AOOTH_MESSAGES registration", () => {
     setTranslator({ en: {}, de: DE });
     const messages = inLocale("de", () => useTranslation()?.messages());
     expect(messages).toMatchObject({
-      INVALID_CODE: "Ungültiger Code",
-      RESEND_WAIT: "Bitte {seconds}s warten.",
+      AOOTH_INVALID_CODE: "Ungültiger Code",
+      AOOTH_RESEND_WAIT: "Bitte {seconds}s warten.",
     });
     // Untranslated codes are not listed (their English template is served by the client).
-    expect(messages).not.toHaveProperty("GO_NOW");
+    expect(messages).not.toHaveProperty("AOOTH_GO_NOW");
   });
 });
 
@@ -41,35 +41,41 @@ describe("resolveAoothMessage chain", () => {
   it("translates by code in the event's locale, filling params", () => {
     setTranslator({ en: {}, de: DE });
     inLocale("de", () => {
-      expect(resolveAoothMessage("INVALID_CODE")).toBe("Ungültiger Code");
-      expect(resolveAoothMessage("RESEND_WAIT", { seconds: 7 })).toBe("Bitte 7s warten.");
+      expect(resolveAoothMessage("AOOTH_INVALID_CODE")).toBe("Ungültiger Code");
+      expect(resolveAoothMessage("AOOTH_RESEND_WAIT", { seconds: 7 })).toBe("Bitte 7s warten.");
       // No translation for the code → the English template, filled.
-      expect(resolveAoothMessage("RESEND_WAIT_ANOTHER", { seconds: 3 })).toBe(
+      expect(resolveAoothMessage("AOOTH_RESEND_WAIT_ANOTHER", { seconds: 3 })).toBe(
         "Please wait 3s before requesting another code",
       );
     });
-    inLocale("en", () => expect(resolveAoothMessage("INVALID_CODE")).toBe("Invalid code"));
+    inLocale("en", () => expect(resolveAoothMessage("AOOTH_INVALID_CODE")).toBe("Invalid code"));
   });
 
   it("the app's messages option wins over the translator", () => {
     setTranslator({ en: {}, de: DE });
     inLocale("de", () => {
-      expect(resolveAoothMessage("INVALID_CODE", {}, { INVALID_CODE: "Code falsch" })).toBe(
-        "Code falsch",
+      expect(
+        resolveAoothMessage("AOOTH_INVALID_CODE", {}, { AOOTH_INVALID_CODE: "Code falsch" }),
+      ).toBe("Code falsch");
+      expect(resolveAoothMessage("AOOTH_INVALID_CODE", {}, () => "vom Resolver")).toBe(
+        "vom Resolver",
       );
-      expect(resolveAoothMessage("INVALID_CODE", {}, () => "vom Resolver")).toBe("vom Resolver");
       // A resolver returning undefined falls through to the translator.
-      expect(resolveAoothMessage("INVALID_CODE", {}, () => undefined)).toBe("Ungültiger Code");
+      expect(resolveAoothMessage("AOOTH_INVALID_CODE", {}, () => undefined)).toBe(
+        "Ungültiger Code",
+      );
       // A map without the code falls through too.
-      expect(resolveAoothMessage("INVALID_CODE", {}, { GO_NOW: "Los" })).toBe("Ungültiger Code");
+      expect(resolveAoothMessage("AOOTH_INVALID_CODE", {}, { AOOTH_GO_NOW: "Los" })).toBe(
+        "Ungültiger Code",
+      );
     });
   });
 
   it("outside an event (or without a translator) it is the English template", () => {
     setTranslator({ en: {}, de: DE });
-    expect(resolveAoothMessage("INVALID_CODE")).toBe(AOOTH_MESSAGES.INVALID_CODE);
+    expect(resolveAoothMessage("AOOTH_INVALID_CODE")).toBe(AOOTH_MESSAGES.AOOTH_INVALID_CODE);
     setTranslator(undefined);
-    inLocale("de", () => expect(resolveAoothMessage("INVALID_CODE")).toBe("Invalid code"));
+    inLocale("de", () => expect(resolveAoothMessage("AOOTH_INVALID_CODE")).toBe("Invalid code"));
   });
 
   it("the invite-already-accepted envelope is translated too", () => {
@@ -117,7 +123,7 @@ describe("AuthWorkflow under Accept-Language", () => {
     expect((err as { body: unknown }).body).toMatchObject({
       statusCode: 409,
       message: "Benutzer existiert bereits",
-      code: "USER_ALREADY_EXISTS",
+      code: "AOOTH_USER_ALREADY_EXISTS",
     });
   });
 });

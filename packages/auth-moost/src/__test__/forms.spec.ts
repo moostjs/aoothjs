@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -130,5 +132,26 @@ describe("default form .as models", () => {
     ).toThrow();
     // OTP proof code is digit-only; a non-numeric code is rejected.
     expect(() => ProveControlOtpForm.validator().validate({ code: "abcd" })).toThrow();
+  });
+  it("every bundled form model is used by the workflows (no dead forms ship)", () => {
+    // WHY: a form no step renders is dead API — `RecoveryFactorForm` shipped
+    // for years with no step, no `forms` slot and options read from a context
+    // field nothing set. Each new form must be wired, or listed here with why.
+    const notRendered = new Set([
+      "WithInlineConsentForm", // base model — the consent forms extend it
+    ]);
+    const formsAs = readFileSync(new URL("../atscript/models/forms.as", import.meta.url), "utf8");
+    const forms = [...formsAs.matchAll(/^export interface (\w+)/gm)].map((m) => m[1]);
+    const srcDir = new URL("../", import.meta.url);
+    const sources = readdirSync(srcDir, { recursive: true, encoding: "utf8" })
+      .filter((f) => f.endsWith(".ts") && !f.endsWith(".d.ts") && !f.includes("__test__"))
+      .filter((f) => !f.endsWith(".spec.ts"))
+      .map((f) => readFileSync(new URL(f, srcDir), "utf8"))
+      .join("\n");
+    const unused = forms.filter(
+      (f) => !notRendered.has(f) && !new RegExp(`\\b${f}\\b`).test(sources),
+    );
+    expect(unused).toEqual([]);
+    expect(forms).not.toContain("RecoveryFactorForm");
   });
 });

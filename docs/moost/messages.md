@@ -7,7 +7,7 @@ Every text aooth shows a user has a **message code**:
 - the rate limiter's 429 — `RATE_LIMIT_MESSAGES` (`@aooth/auth`), the `RATE_LIMITED` code;
 - the `HttpError`s of the ARBAC layer (authorize interceptor, DB controller gates) — `ARBAC_MESSAGES` (`@aooth/arbac-moost`);
 - the built-in password policies — `PASSWORD_POLICY_MESSAGES` (`@aooth/user`), the `PP_*` codes;
-- the default messages of `UserAuthError` — `USER_AUTH_ERROR_MESSAGES` (`@aooth/user`), the error's `type` is its code.
+- the default messages of `UserAuthError` — `USER_AUTH_ERROR_MESSAGES` (`@aooth/user`), keyed by the error's `code` (`USER_AUTH_ERROR_CODES` maps each `type` to its code).
 
 Each catalogue holds the English templates, with `{name}` placeholders filled from the message params. Localize them all with one moost translator, or reword workflow texts per app with `AuthWorkflowOpts.messages`.
 
@@ -24,8 +24,8 @@ setTranslator({
   en: {}, // the default locale: the English templates as they are
   de: {
     INVALID_CREDENTIALS: "Ungültige Anmeldedaten",
-    RESEND_WAIT: "Bitte {seconds}s warten.",
-    NOT_AUTHENTICATED: "Nicht angemeldet",
+    AOOTH_RESEND_WAIT: "Bitte {seconds}s warten.",
+    AOOTH_NOT_AUTHENTICATED: "Nicht angemeldet",
     PP_MIN_LENGTH: "Das Passwort muss mindestens {min} Zeichen lang sein",
   },
 });
@@ -39,9 +39,21 @@ A function translator (i18next, FormatJS, …) works the same way — see the mo
 
 The catalogues are registered with moost's `registerMessages` on import — `@aooth/auth-moost` also registers `RATE_LIMIT_MESSAGES`, `PASSWORD_POLICY_MESSAGES`, and `USER_AUTH_ERROR_MESSAGES`. Every registered template is available to moost's translation helpers and is served, translated, in the `$i18n` of the workflow form schemas and of atscript-db's `/meta` (`@atscript/moost-db` ≥ 0.1.170). Registered templates are public: register only texts a user may see.
 
-::: warning Shared ids
-Codes live in one id space shared by every package. `NOT_FOUND` (a `UserAuthError` type) is also the code of atscript-db's "record not found" errors, and `INVALID_CREDENTIALS` is both a workflow and a `UserAuthError` code. Translate such ids neutrally — `NOT_FOUND: "Nicht gefunden"`, never "Benutzer nicht gefunden" — or a database error reads as a user error. The codes in error bodies are public API and never change.
-:::
+### One id space, shared with other libraries
+
+Codes live in one process-wide registry, shared with every package that registers templates (atscript's validator, atscript-db, atscript-ui, your app). When two catalogues register the same code with different templates, the one registered last wins: its English text replaces the other everywhere, and one translation applies to both. So aooth's codes cannot collide by name:
+
+- **Generic names carry an aooth prefix** — `AOOTH_` (workflow, HTTP and `UserAuthError` codes, e.g. `AOOTH_INVALID_CODE`, `AOOTH_NOT_AUTHENTICATED`, `AOOTH_USER_LOCKED`), `ARBAC_` (the ARBAC layer) or `PP_` (password policies).
+- **Unprefixed codes name an aooth concept** — MFA, TOTP, OTP, passwords, invites, sign-in, sessions, refresh tokens, SSO, the authorization server (`MFA_INVALID`, `INVITE_REPLACED`, `INVALID_REFRESH_TOKEN`, …).
+- **Three codes are shared on purpose**, with a neutral English template that any library registering the same id must use too:
+
+| Code                  | Template                                         | Shared with                                            |
+| --------------------- | ------------------------------------------------ | ------------------------------------------------------ |
+| `NOT_FOUND`           | `Not found`                                      | any library's "record not found" (e.g. atscript-db)    |
+| `INVALID_CREDENTIALS` | `Invalid credentials`                            | the sign-in workflow and `UserAuthError` — one meaning |
+| `RATE_LIMITED`        | `Too many requests. Retry after {retryAfter} s.` | any rate limiter's 429                                 |
+
+Translate the shared codes neutrally — `NOT_FOUND: "Nicht gefunden"`, never "Benutzer nicht gefunden" — or another library's error reads as a user error. Give your own codes a prefix of your own for the same reason.
 
 ::: tip Your own `WooksHttp`
 `MoostHttp` sets up the locale and the error-body translation only when it creates the HTTP app itself (`new MoostHttp()` or `new MoostHttp(options)`). If you pass a `WooksHttp` you built, add both yourself:
@@ -76,7 +88,7 @@ new AuthWorkflow(
   {
     messages: {
       INVALID_CREDENTIALS: "Wrong username or password",
-      RESEND_WAIT: "Wait {seconds} s before asking for a new code.",
+      AOOTH_RESEND_WAIT: "Wait {seconds} s before asking for a new code.",
     },
   },
   users,
@@ -87,7 +99,7 @@ new AuthWorkflow(
 
 Texts are resolved when a response is rendered, never stored translated in the workflow state: a flow opened in one language and resumed in another answers in the language of the request at hand. The form-facing `ctx.public` projection is rebuilt in the request's language before every pause, and `WfTriggerProvider` strips it before the paused state is persisted (store-backed and token-backed alike); your own `beforePersist` hook still runs, after the strip. A flow you persist outside the trigger (e.g. `mintWfToken`) keeps `ctx.public` as a render cache — it is rebuilt on every response, so it is never shown stale. The one exception is the channel-OTP disclosure (`OTP_DISCLOSURE_*`), which is kept as shown because it is recorded with the user's consent.
 
-Copy hooks return your own text, shown as is in every language: `resolveSetPasswordCopy()` (`heading` / `intro`, or other codes as `headingCode` / `introCode`; the default is the `SET_PASSWORD_*` codes), `resolveAccept()`'s `confirmationMessage` (default: `ACCOUNT_CREATED`) and `resolveOtpDisclosure()`. For per-language wording, override the codes through `messages` or the translator instead.
+Copy hooks return your own text, shown as is in every language: `resolveSetPasswordCopy()` (`heading` / `intro`, or other codes as `headingCode` / `introCode`; the default is the `SET_PASSWORD_*` codes), `resolveAccept()`'s `confirmationMessage` (default: `AOOTH_ACCOUNT_CREATED`) and `resolveOtpDisclosure()`. For per-language wording, override the codes through `messages` or the translator instead.
 
 An unknown placeholder is left as-is. For full control — e.g. a per-tenant catalogue — override the protected `msg(code, params)` method on your `AuthWorkflow` subclass; every workflow text goes through it.
 
@@ -149,45 +161,46 @@ Every 4xx `HttpError` aooth raises carries a `code` and, where the text names a 
 ```json
 {
   "statusCode": 403,
-  "code": "WORKFLOW_NOT_ALLOWED",
+  "code": "AOOTH_WORKFLOW_NOT_ALLOWED",
   "params": { "workflow": "auth/x" },
   "message": "Workflow 'auth/x' is not allowed"
 }
 ```
 
-| Catalogue                  | Code                             | Status | Params                                                 |
-| -------------------------- | -------------------------------- | ------ | ------------------------------------------------------ |
-| `AOOTH_HTTP_MESSAGES`      | `AUTH_REQUIRED`                  | 401    | — (guarded route, no credential)                       |
-|                            | `CREDENTIAL_INVALID`             | 401    | — (guarded route, invalid credential)                  |
-|                            | `NOT_AUTHENTICATED`              | 401    | — (`useAuth().getUserId()`, `AuthController`)          |
-|                            | `NO_CURRENT_SESSION`             | 401    |                                                        |
-|                            | `MISSING_REFRESH_TOKEN`          | 401    |                                                        |
-|                            | `INVALID_REFRESH_TOKEN`          | 401    |                                                        |
-|                            | `LOGOUT_OTHERS_REQUIRED`         | 400    |                                                        |
-|                            | `INVITE_NOT_FOUND`               | 404    |                                                        |
-|                            | `MISSING_UID`                    | 400    |                                                        |
-|                            | `LINKED_IDENTITY_NOT_FOUND`      | 404    |                                                        |
-|                            | `LAST_SIGN_IN_METHOD`            | 409    |                                                        |
-|                            | `UNKNOWN_PROVIDER`               | 404    | `provider`                                             |
-|                            | `WORKFLOW_NOT_ALLOWED`           | 403    | `workflow`                                             |
-| `RATE_LIMIT_MESSAGES`      | `RATE_LIMITED`                   | 429    | `policy`, `limit`, `window`, `retryAfter` (seconds)    |
-| `AOOTH_MESSAGES`           | `USER_ALREADY_EXISTS`            | 409    |                                                        |
-|                            | `INVITE_CANCELLED`               | 410    |                                                        |
-|                            | `INVITE_REPLACED`                | 410    |                                                        |
-|                            | `INVITE_ALREADY_ACCEPTED`        | 410    |                                                        |
-|                            | `PASSWORD_CHANGED_SIGN_IN_AGAIN` | 410    |                                                        |
-|                            | `UNKNOWN_SSO_PROVIDER`           | 400    |                                                        |
-|                            | `TOTP_NOT_CONFIGURED`            | 400    |                                                        |
-| `ARBAC_MESSAGES`           | `INSUFFICIENT_PRIVILEGES`        | 403    | `resource`, `action`                                   |
-|                            | `ARBAC_FORBIDDEN`                | 403    | `resource`, `action` (`evaluateOrThrow()`)             |
-|                            | `ARBAC_NOT_AUTHORIZED`           | 401    |                                                        |
-|                            | `CONTROL_NOT_ALLOWED`            | 403    | `control`                                              |
-|                            | `CONTROL_VALUE_NOT_ALLOWED`      | 403    | `control`, `value`                                     |
-|                            | `NESTED_WRITE_NOT_ALLOWED`       | 403    | `relation`                                             |
-|                            | `ROW_OUT_OF_SCOPE`               | 403    |                                                        |
-|                            | `REFERENCE_OUT_OF_SCOPE`         | 403    | `fields`                                               |
-|                            | `INVALID_QUERY_STRING`           | 400    | `error` (the parser's text)                            |
-| `USER_AUTH_ERROR_MESSAGES` | `POLICY_VIOLATION`, …            | 4xx    | see [Errors — HTTP mapping](/user/errors#http-mapping) |
+| Catalogue                  | Code                              | Status | Params                                                                 |
+| -------------------------- | --------------------------------- | ------ | ---------------------------------------------------------------------- |
+| `AOOTH_HTTP_MESSAGES`      | `AOOTH_AUTH_REQUIRED`             | 401    | — (guarded route, no credential)                                       |
+|                            | `AOOTH_CREDENTIAL_INVALID`        | 401    | — (guarded route, invalid credential)                                  |
+|                            | `AOOTH_NOT_AUTHENTICATED`         | 401    | — (`useAuth().getUserId()`, `AuthController`)                          |
+|                            | `NO_CURRENT_SESSION`              | 401    |                                                                        |
+|                            | `MISSING_REFRESH_TOKEN`           | 401    |                                                                        |
+|                            | `INVALID_REFRESH_TOKEN`           | 401    |                                                                        |
+|                            | `LOGOUT_OTHERS_REQUIRED`          | 400    |                                                                        |
+|                            | `INVITE_NOT_FOUND`                | 404    |                                                                        |
+|                            | `AOOTH_MISSING_UID`               | 400    |                                                                        |
+|                            | `LINKED_IDENTITY_NOT_FOUND`       | 404    |                                                                        |
+|                            | `LAST_SIGN_IN_METHOD`             | 409    |                                                                        |
+|                            | `AOOTH_UNKNOWN_PROVIDER`          | 404    | `provider`                                                             |
+|                            | `AOOTH_WORKFLOW_NOT_ALLOWED`      | 403    | `workflow`                                                             |
+|                            | `AOOTH_CODE_LIMIT_REACHED`        | 429    | — (a destination's [code budget](./workflows#one-time-codes) is spent) |
+| `RATE_LIMIT_MESSAGES`      | `RATE_LIMITED`                    | 429    | `policy`, `limit`, `window`, `retryAfter` (seconds)                    |
+| `AOOTH_MESSAGES`           | `AOOTH_USER_ALREADY_EXISTS`       | 409    |                                                                        |
+|                            | `INVITE_CANCELLED`                | 410    |                                                                        |
+|                            | `INVITE_REPLACED`                 | 410    |                                                                        |
+|                            | `INVITE_ALREADY_ACCEPTED`         | 410    |                                                                        |
+|                            | `PASSWORD_CHANGED_SIGN_IN_AGAIN`  | 410    |                                                                        |
+|                            | `UNKNOWN_SSO_PROVIDER`            | 400    |                                                                        |
+|                            | `TOTP_NOT_CONFIGURED`             | 400    |                                                                        |
+| `ARBAC_MESSAGES`           | `ARBAC_INSUFFICIENT_PRIVILEGES`   | 403    | `resource`, `action`                                                   |
+|                            | `ARBAC_FORBIDDEN`                 | 403    | `resource`, `action` (`evaluateOrThrow()`)                             |
+|                            | `ARBAC_NOT_AUTHORIZED`            | 401    |                                                                        |
+|                            | `ARBAC_CONTROL_NOT_ALLOWED`       | 403    | `control`                                                              |
+|                            | `ARBAC_CONTROL_VALUE_NOT_ALLOWED` | 403    | `control`, `value`                                                     |
+|                            | `ARBAC_NESTED_WRITE_NOT_ALLOWED`  | 403    | `relation`                                                             |
+|                            | `ARBAC_ROW_OUT_OF_SCOPE`          | 403    |                                                                        |
+|                            | `ARBAC_REFERENCE_OUT_OF_SCOPE`    | 403    | `fields`                                                               |
+|                            | `ARBAC_INVALID_QUERY_STRING`      | 400    | `error` (the parser's text)                                            |
+| `USER_AUTH_ERROR_MESSAGES` | `AOOTH_USER_POLICY_VIOLATION`, …  | 4xx    | see [Errors — HTTP mapping](/user/errors#http-mapping)                 |
 
 Under a translator, a rate-limit rule's own English `message` is replaced by the `RATE_LIMITED` translation — the 429 is translated by its code. Use `{limit}`, `{window}` and `{retryAfter}` (seconds) in your translations.
 
@@ -239,18 +252,18 @@ class MyAuthWorkflow extends AuthWorkflow {
 
 ## The workflow catalogue
 
-| Group                | Codes                                                                                                                                                                                                                                                                                                                                                                |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sign-in              | `INVALID_CREDENTIALS`, `ACCOUNT_LOCKED`, `INVALID_PASSWORD`, `INCORRECT_PASSWORD`, `SESSION_LIMIT_REACHED`, `PASSWORD_CHANGED_SIGN_IN_AGAIN`                                                                                                                                                                                                                         |
-| Codes (MFA / OTP)    | `INVALID_CODE`, `CODE_EXPIRED`, `TOO_MANY_CODE_ATTEMPTS`, `RESEND_WAIT` `{seconds}`, `RESEND_WAIT_ANOTHER` `{seconds}`, `RESEND_WAIT_CHANNEL` `{seconds, channel}`, `TOTP_RESEND_NOT_APPLICABLE`, `TOTP_NOT_CONFIGURED`                                                                                                                                              |
-| Contact addresses    | `ADDRESS_REQUIRED`, `INVALID_EMAIL_ADDRESS`, `INVALID_PHONE_NUMBER`, `OTP_DISCLOSURE_EMAIL`, `OTP_DISCLOSURE_PHONE`                                                                                                                                                                                                                                                  |
-| MFA management       | `UNKNOWN_MFA_METHOD`, `UNKNOWN_METHOD`, `METHOD_UNAVAILABLE`, `METHOD_NOT_CHANGEABLE`, `KEEP_ONE_MFA_METHOD`, `LAST_MFA_METHOD_NOT_REMOVABLE`, `CHOOSE_OPTION`, `ALL_MFA_METHODS_SET_UP`, `NO_MFA_CHANGES`, `MFA_METHOD_TOTP`, `MFA_METHOD_EMAIL`, `MFA_METHOD_SMS`, `MFA_METHOD_ADDED` `{method}`, `MFA_METHOD_UPDATED` `{method}`, `MFA_METHOD_REMOVED` `{method}` |
-| Passwords            | `PASSWORDS_DO_NOT_MATCH`, `PASSWORD_CHANGE_TOO_RECENT`, `PASSWORD_CHANGED`, `PASSWORD_UPDATED_REDIRECTING`, `PASSWORD_UPDATED_STILL_LOCKED`                                                                                                                                                                                                                          |
-| Password screens     | `CHANGE_PASSWORD_HEADING`, `CHANGE_PASSWORD_INTRO`, `SET_PASSWORD_EXPIRED_HEADING`, `SET_PASSWORD_EXPIRED_INTRO`, `SET_PASSWORD_RESET_HEADING`, `SET_PASSWORD_RESET_INTRO`, `SET_PASSWORD_INVITE_HEADING`, `SET_PASSWORD_INVITE_INTRO`, `SET_PASSWORD_INITIAL_HEADING`, `SET_PASSWORD_INITIAL_INTRO`                                                                 |
-| Recovery / signup    | `RECOVERY_INSTRUCTIONS_SENT`, `SIGNUP_DISABLED`, `ALREADY_HAVE_ACCOUNT`, `ACCOUNT_LINKED`, `UNKNOWN_SSO_PROVIDER`                                                                                                                                                                                                                                                    |
-| Invites              | `ACCOUNT_CREATED`, `INVALID_ROLE`, `INVITE_ALREADY_PENDING`, `USER_ALREADY_EXISTS`, `DUPLICATE_INVITE_REJECTED`, `INVITE_CANCELLED`, `INVITE_REPLACED`, `INVITE_ALREADY_ACCEPTED`, `CHOOSE_USERNAME_TAKEN`, `USERNAME_NOT_ALLOWED`                                                                                                                                   |
-| Authorization server | `AUTHZ_EXPIRED`, `AUTHZ_BROWSER_MISMATCH`, `AUTHZ_FAILED`                                                                                                                                                                                                                                                                                                            |
-| Button labels        | `GO_TO_SIGN_IN`, `BACK_TO_SIGN_IN`, `REQUEST_NEW_INVITE`, `BACK`, `GO_NOW`                                                                                                                                                                                                                                                                                           |
+| Group                | Codes                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sign-in              | `INVALID_CREDENTIALS`, `AOOTH_ACCOUNT_LOCKED`, `INVALID_PASSWORD`, `INCORRECT_PASSWORD`, `SESSION_LIMIT_REACHED`, `PASSWORD_CHANGED_SIGN_IN_AGAIN`                                                                                                                                                                                                                                           |
+| Codes (MFA / OTP)    | `AOOTH_INVALID_CODE`, `AOOTH_CODE_EXPIRED`, `AOOTH_TOO_MANY_CODE_ATTEMPTS`, `AOOTH_RESEND_WAIT` `{seconds}`, `AOOTH_RESEND_WAIT_ANOTHER` `{seconds}`, `AOOTH_RESEND_WAIT_CHANNEL` `{seconds, channel}`, `TOTP_RESEND_NOT_APPLICABLE`, `TOTP_NOT_CONFIGURED`                                                                                                                                  |
+| Contact addresses    | `AOOTH_ADDRESS_REQUIRED`, `AOOTH_INVALID_EMAIL_ADDRESS`, `AOOTH_INVALID_PHONE_NUMBER`, `OTP_DISCLOSURE_EMAIL`, `OTP_DISCLOSURE_PHONE`                                                                                                                                                                                                                                                        |
+| MFA management       | `UNKNOWN_MFA_METHOD`, `AOOTH_UNKNOWN_METHOD`, `AOOTH_METHOD_UNAVAILABLE`, `AOOTH_METHOD_NOT_CHANGEABLE`, `KEEP_ONE_MFA_METHOD`, `LAST_MFA_METHOD_NOT_REMOVABLE`, `AOOTH_CHOOSE_OPTION`, `ALL_MFA_METHODS_SET_UP`, `NO_MFA_CHANGES`, `MFA_METHOD_TOTP`, `MFA_METHOD_EMAIL`, `MFA_METHOD_SMS`, `MFA_METHOD_ADDED` `{method}`, `MFA_METHOD_UPDATED` `{method}`, `MFA_METHOD_REMOVED` `{method}` |
+| Passwords            | `PASSWORDS_DO_NOT_MATCH`, `PASSWORD_CHANGE_TOO_RECENT`, `PASSWORD_CHANGED`, `PASSWORD_UPDATED_REDIRECTING`, `PASSWORD_UPDATED_STILL_LOCKED`                                                                                                                                                                                                                                                  |
+| Password screens     | `CHANGE_PASSWORD_HEADING`, `CHANGE_PASSWORD_INTRO`, `SET_PASSWORD_EXPIRED_HEADING`, `SET_PASSWORD_EXPIRED_INTRO`, `SET_PASSWORD_RESET_HEADING`, `SET_PASSWORD_RESET_INTRO`, `SET_PASSWORD_INVITE_HEADING`, `SET_PASSWORD_INVITE_INTRO`, `SET_PASSWORD_INITIAL_HEADING`, `SET_PASSWORD_INITIAL_INTRO`                                                                                         |
+| Recovery / signup    | `AOOTH_MAGIC_LINK_INVALID`, `SIGNUP_DISABLED`, `AOOTH_ALREADY_HAVE_ACCOUNT`, `AOOTH_ACCOUNT_LINKED`, `UNKNOWN_SSO_PROVIDER`                                                                                                                                                                                                                                                                  |
+| Invites              | `AOOTH_ACCOUNT_CREATED`, `AOOTH_INVALID_ROLE`, `INVITE_ALREADY_PENDING`, `AOOTH_USER_ALREADY_EXISTS`, `DUPLICATE_INVITE_REJECTED`, `INVITE_CANCELLED`, `INVITE_REPLACED`, `INVITE_ALREADY_ACCEPTED`, `CHOOSE_USERNAME_TAKEN`, `USERNAME_NOT_ALLOWED`                                                                                                                                         |
+| Authorization server | `AUTHZ_EXPIRED`, `AUTHZ_BROWSER_MISMATCH`, `AUTHZ_FAILED`                                                                                                                                                                                                                                                                                                                                    |
+| Button labels        | `GO_TO_SIGN_IN`, `BACK_TO_SIGN_IN`, `REQUEST_NEW_INVITE`, `AOOTH_BACK`, `AOOTH_GO_NOW`                                                                                                                                                                                                                                                                                                       |
 
 Read the English wording from the catalogues themselves (or the [source](https://github.com/moostjs/aoothjs/blob/main/packages/auth-moost/src/workflow/auth-messages.ts)) rather than copying it.
 

@@ -255,9 +255,11 @@ async function boot(roles: string[], authorize = true) {
   return { call: client(http, "acts"), callPublic: client(http, "acts-public") };
 }
 
+// moost-db's coded 404 (`notFoundError()`), the same body ARBAC's own 404s use.
 const ROW_NOT_FOUND = {
   statusCode: 404,
-  message: "Row not found for action identifier",
+  message: "Not found",
+  code: "NOT_FOUND",
   error: "Not Found",
 };
 const disabledFor = (action: string, ids: number[]) => ({

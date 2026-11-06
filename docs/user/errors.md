@@ -35,7 +35,7 @@ type UserAuthErrorType =
   | "CAS_EXHAUSTED";
 ```
 
-Without a `message` argument the error carries its type's default English message from `USER_AUTH_ERROR_MESSAGES` (exported, keyed by type). The type is also the error's message code: `@aooth/auth-moost` registers the catalogue with moost, so under a moost translator `userAuthErrorToHttp()` answers in the request's language ([Messages & Localization](/moost/messages)). Using `@aooth/user` on a moost server without `@aooth/auth-moost`? Call `registerMessages(USER_AUTH_ERROR_MESSAGES)` yourself. `NOT_FOUND` is an id shared with atscript-db — see the shared-ids note in [Messages & Localization](/moost/messages#localizing-with-the-moost-translator).
+Without a `message` argument the error carries its default English message from `USER_AUTH_ERROR_MESSAGES`. That catalogue is keyed by the error's **message code**, `err.code` — the id its text is registered and translated by, and the `code` of the HTTP error made from it. `USER_AUTH_ERROR_CODES` maps each `type` to its code: types with a generic name get an `AOOTH_USER_` code (`LOCKED` → `AOOTH_USER_LOCKED`, `ALREADY_EXISTS` → `AOOTH_USER_ALREADY_EXISTS`, `INACTIVE` → `AOOTH_USER_INACTIVE`, `POLICY_VIOLATION` → `AOOTH_USER_POLICY_VIOLATION`, `CAS_EXHAUSTED` → `AOOTH_USER_CAS_EXHAUSTED`), the others keep their type as the code. `NOT_FOUND` ("Not found") and `INVALID_CREDENTIALS` are shared with other libraries on purpose — see [One id space](/moost/messages#one-id-space-shared-with-other-libraries). Branch on `err.type` in code; translate by `err.code`. `@aooth/auth-moost` registers the catalogue with moost, so under a moost translator `userAuthErrorToHttp()` answers in the request's language ([Messages & Localization](/moost/messages)). Using `@aooth/user` on a moost server without `@aooth/auth-moost`? Call `registerMessages(USER_AUTH_ERROR_MESSAGES)` yourself.
 
 The narrowing pattern in handlers:
 
@@ -192,7 +192,7 @@ Triggered when the new password matches the current hash or any entry in `passwo
 
 ## HTTP mapping {#http-mapping}
 
-`@aooth/auth-moost` ships the mapping: `userAuthErrorToHttp(err)` turns a `UserAuthError` into an `HttpError` whose body carries `code` (the error `type`), the message and, for password errors, the form `field`; `userAuthErrorInterceptor` applies it to every `UserAuthError` a handler throws.
+`@aooth/auth-moost` ships the mapping: `userAuthErrorToHttp(err)` turns a `UserAuthError` into an `HttpError` whose body carries `code` (the error's message code, `err.code`), the message and, for password errors, the form `field`; `userAuthErrorInterceptor` applies it to every `UserAuthError` a handler throws.
 
 ```ts
 import { userAuthErrorInterceptor } from "@aooth/auth-moost";
@@ -213,23 +213,23 @@ export class AdminUsersController {
 }
 ```
 
-| `type`                               | Status | `field`           | `params`       |
-| ------------------------------------ | ------ | ----------------- | -------------- |
-| `NOT_FOUND`                          | `404`  |                   |                |
-| `ALREADY_EXISTS`, `CAS_EXHAUSTED`    | `409`  |                   |                |
-| `INVALID_CREDENTIALS`                | `400`  | `currentPassword` |                |
-| `PASSWORD_IN_HISTORY`                | `400`  | `newPassword`     |                |
-| `POLICY_VIOLATION`                   | `422`  | `newPassword`     | `{ policies }` |
-| `PASSWORDS_MISMATCH`                 | `400`  | `confirmPassword` |                |
-| `MFA_INVALID`, `MFA_NOT_CONFIGURED`  | `400`  |                   |                |
-| `INACTIVE`, `LOCKED`, `MFA_REQUIRED` | `403`  |                   |                |
+| `type`                               | `code`                                                     | Status | `field`           | `params`       |
+| ------------------------------------ | ---------------------------------------------------------- | ------ | ----------------- | -------------- |
+| `NOT_FOUND`                          | `NOT_FOUND`                                                | `404`  |                   |                |
+| `ALREADY_EXISTS`, `CAS_EXHAUSTED`    | `AOOTH_USER_ALREADY_EXISTS`, `AOOTH_USER_CAS_EXHAUSTED`    | `409`  |                   |                |
+| `INVALID_CREDENTIALS`                | `INVALID_CREDENTIALS`                                      | `400`  | `currentPassword` |                |
+| `PASSWORD_IN_HISTORY`                | `PASSWORD_IN_HISTORY`                                      | `400`  | `newPassword`     |                |
+| `POLICY_VIOLATION`                   | `AOOTH_USER_POLICY_VIOLATION`                              | `422`  | `newPassword`     | `{ policies }` |
+| `PASSWORDS_MISMATCH`                 | `PASSWORDS_MISMATCH`                                       | `400`  | `confirmPassword` |                |
+| `MFA_INVALID`, `MFA_NOT_CONFIGURED`  | `MFA_INVALID`, `MFA_NOT_CONFIGURED`                        | `400`  |                   |                |
+| `INACTIVE`, `LOCKED`, `MFA_REQUIRED` | `AOOTH_USER_INACTIVE`, `AOOTH_USER_LOCKED`, `MFA_REQUIRED` | `403`  |                   |                |
 
 ```json
 {
   "statusCode": 422,
   "error": "Unprocessable Entity",
   "message": "Password must be at least 12 characters long",
-  "code": "POLICY_VIOLATION",
+  "code": "AOOTH_USER_POLICY_VIOLATION",
   "field": "newPassword",
   "params": { "policies": [{ "description": "Minimum length 12", "passed": false }] }
 }

@@ -106,6 +106,33 @@ describe("extractUsedControlValues", () => {
     expect(extractUsedControlValues("$groupBy", ["status", "owner"])).toEqual(["status", "owner"]);
   });
 
+  it("$groupBy over $from: an un-aliased inner aggregate is an inner column by its default name", () => {
+    // WHY: only explicit `$as` aliases counted, so `count(*)` (→ `count_star`)
+    // as an outer key was checked against the whitelist and refused.
+    const from = { $groupBy: ["deptId"], $select: [{ $fn: "count", $field: "*" }] };
+    expect(extractUsedControlValues("$groupBy", ["count_star"], { $from: from })).toEqual([]);
+    const sum = { $groupBy: ["deptId"], $select: [{ $fn: "sum", $field: "salary" }] };
+    expect(extractUsedControlValues("$groupBy", ["sum_salary"], { $from: sum })).toEqual([]);
+  });
+
+  it("$groupBy over $from: a table field that is no inner column is still checked", () => {
+    const from = { $groupBy: ["deptId"], $select: [{ $fn: "count", $field: "*" }] };
+    expect(extractUsedControlValues("$groupBy", ["owner"], { $from: from })).toEqual(["owner"]);
+  });
+
+  it("$groupBy over $from: an inner alias named like a table field is the inner column (explicit or default)", () => {
+    // The outer level reads only inner columns, so the name means the inner
+    // value either way — the same rule for `$as` and default names.
+    const aliased = {
+      $groupBy: ["deptId"],
+      $select: [{ $fn: "count", $field: "*", $as: "owner" }],
+    };
+    expect(extractUsedControlValues("$groupBy", ["owner"], { $from: aliased })).toEqual([]);
+    // a plain field entry or an expression without a name adds nothing
+    const plain = { $groupBy: ["deptId"], $select: ["owner", { $expr: 1 }] };
+    expect(extractUsedControlValues("$groupBy", ["owner"], { $from: plain })).toEqual(["owner"]);
+  });
+
   it("returns [] for unknown / undefined / null values", () => {
     expect(extractUsedControlValues("$with", undefined)).toEqual([]);
     expect(extractUsedControlValues("$with", null)).toEqual([]);

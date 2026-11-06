@@ -143,7 +143,12 @@ export function createAooth({ tables, env }: AppAuthOptions): AppAuth {
   });
 
   const buildMagicLinkUrl: BuildMagicLinkUrl = (kind, token, ctx) => {
-    const segment = kind === "recovery.magicLink" ? "recover" : "accept-invite";
+    const segment =
+      kind === "recovery.magicLink"
+        ? "recover"
+        : kind === "login.magicLink"
+          ? "login"
+          : "accept-invite";
     // `uid` rides on the URL so the SPA can call `/auth/invite/post-redemption`
     // when a re-click on an already-redeemed invite link hits a 410 from the
     // wf state store. Recovery links don't need it (auth-moost's outlet

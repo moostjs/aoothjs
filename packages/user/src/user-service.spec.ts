@@ -28,6 +28,33 @@ describe("UserService", () => {
     });
   });
 
+  describe("assertCanSignIn", () => {
+    // WHY: a magic-link sign-in skips the password, so the account checks
+    // login() runs before it must still apply — or a link bypasses lockout /
+    // deactivation / a pending invitation.
+    it("returns an active, unlocked account", async () => {
+      const user = await createActiveUser(svc, "alice", "Password1");
+      expect((await svc.assertCanSignIn(user.id)).id).toBe(user.id);
+    });
+
+    it("refuses unknown, inactive (incl. pending invite) and locked accounts", async () => {
+      await expect(svc.assertCanSignIn("nope")).rejects.toMatchObject({ type: "NOT_FOUND" });
+      const pending = await svc.createUser("bob");
+      await expect(svc.assertCanSignIn(pending.id)).rejects.toMatchObject({ type: "INACTIVE" });
+      const locked = await createActiveUser(svc, "carol", "Password1");
+      await svc.lockAccount(locked.id, "admin", 60_000);
+      await expect(svc.assertCanSignIn(locked.id)).rejects.toMatchObject({ type: "LOCKED" });
+    });
+
+    it("lifts an expired lock like login does", async () => {
+      const user = await createActiveUser(svc, "dave", "Password1");
+      await svc.lockAccount(user.id, "admin", 1000);
+      now += 2000;
+      expect((await svc.assertCanSignIn(user.id)).account.locked).toBe(false);
+      expect((await svc.getUser(user.id)).account.locked).toBe(false);
+    });
+  });
+
   describe("createUser", () => {
     it("should create a user with a system-generated password", async () => {
       const user = await svc.createUser("alice");

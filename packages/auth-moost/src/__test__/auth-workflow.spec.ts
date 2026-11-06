@@ -43,6 +43,11 @@ class TestableAuthWorkflow extends AuthWorkflow {
     return undefined;
   }
 
+  // Unit tests run steps outside `WfTriggerProvider` (no published key).
+  protected override pincodeKey(): Buffer {
+    return Buffer.alloc(32, 7);
+  }
+
   // ── Resolver exposure (single-line trampolines so tests reach the
   // protected surface; widen visibility only, do NOT change behaviour) ──
   public exposeAlternateCredentials = (ctx: AuthWfCtx) => this.resolveAlternateCredentials(ctx);
@@ -216,6 +221,8 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     // which is a security regression (stale OTP states become resumable
     // indefinitely).
     expect(opts.recoveryStateTtlMs).toBe(60 * 60 * 1000);
+    // Magic-link lifetime (recovery + sign-in links).
+    expect(opts.magicLinkTtlMs).toBe(15 * 60 * 1000);
 
     // Canonical login URL — referenced by invite accept + recovery post-reset
     // resolvers. The default MUST stay stable so consumers can opt out of
@@ -246,8 +253,11 @@ describe("AuthWorkflow construction (WF-AUTH-UNIFIED-002)", () => {
     // the box. Consumer override via `opts.forms.<field>` swaps any slot.
     // Pin a representative field-count + a key slot so a regression that
     // drops the default map is caught.
-    expect(Object.keys(opts.forms).length).toBe(26);
+    expect(Object.keys(opts.forms).length).toBe(29);
     expect(opts.forms.loginCredentials).toBeTruthy();
+    // Magic links: the recovery delivery picker + the sign-in identifier form.
+    expect(opts.forms.recoveryModeSelect).toBeTruthy();
+    expect(opts.forms.magicLinkRequest).toBeTruthy();
     expect(opts.forms.recoveryEmailIdentifier).toBeTruthy();
     // Authorization-server consent gate (AUTH-SERVER.md §6).
     expect(opts.forms.authzConsent).toBeTruthy();
@@ -375,13 +385,10 @@ describe("AuthWorkflow resolver defaults", () => {
     expect(r.signup).toBe(false);
     // Magic-link OFF until consumer wires the outlet.
     expect(r.magicLink).toBe(false);
-    expect(r.magicLinkSkipsMfa).toBe(false);
     expect(r.ssoProviders).toEqual([]);
     expect(r.recoveryUrl).toBe("/recover");
     expect(r.signupUrl).toBe("/signup");
-    // embedRecovery controls whether recovery runs inline as a sub-workflow.
-    // Default OFF — recovery is a separate flow.
-    expect(r.embedRecovery).toBe(false);
+    expect(r).not.toHaveProperty("embedRecovery");
   });
 
   it("resolveSignupPolicy — allowSignup OFF, collectUsername OFF by default", async () => {
@@ -555,11 +562,9 @@ describe("AuthWorkflow resolver defaults", () => {
       forgotPassword: true,
       signup: false,
       magicLink: false,
-      magicLinkSkipsMfa: false,
       ssoProviders: [],
       recoveryUrl: "/recover",
       signupUrl: "/signup",
-      embedRecovery: false,
     };
     // WHY: login's forgotPassword alt-action threads the typed username into
     // the recovery page so the email input pre-fills. Skipping URL encoding
@@ -587,7 +592,7 @@ describe("AuthWorkflow resolver defaults", () => {
     // showConfirmation ON: invite accept-tail renders a confirmation screen
     // before redirecting. Turning OFF skips the `confirmation` step.
     expect(r.showConfirmation).toBe(true);
-    // No text in state: the confirmation step renders ACCOUNT_CREATED in the
+    // No text in state: the confirmation step renders AOOTH_ACCOUNT_CREATED in the
     // finishing request's language.
     expect(r.confirmationMessage).toBeUndefined();
   });
@@ -651,7 +656,7 @@ describe("AuthWorkflow resolver defaults", () => {
     // (phone-first); (2) email is the fallback when no SMS; (3) TOTP carries no
     // deliverable address and is never selected; (4) unconfirmed methods don't
     // count; (5) no deliverable method → null (caller turns this into the
-    // anti-enumeration generic finish).
+    // anti-enumeration ghost run).
     const sms = { name: "sms", confirmed: true, value: "+15555550101" };
     const email = { name: "email", confirmed: true, value: "a@b.io" };
     const totp = { name: "totp", confirmed: true, value: "SECRET" };
@@ -1211,13 +1216,16 @@ describe("verified correspondence email capture", () => {
     // record what the code was actually DELIVERED to (recovery M2 may differ
     // from the typed identifier), and it lives on server-only `ctx.otp` so an
     // unmasked address never rides the wire-passed `pincode` group.
-    // Recovery/signup branch (no ctx.mfa.method): the typed identifier.
-    const wf = makeWorkflow();
+    // Recovery branch (no ctx.mfa.method): sends to the typed identifier of
+    // an active account, and stashes NOTHING about the account — pincode-check
+    // resolves it again at verification (the state holds no account data).
+    const { wf, users: recoveryUsers } = makeWorkflowWithDeps();
+    const typed = await recoveryUsers.createUser("typed@example.com", undefined, {});
+    await recoveryUsers.activateAccount(typed.id);
     const recoveryCtx = { email: "typed@example.com" } as AuthWfCtx;
     await wf.pincodeSend(recoveryCtx);
-    expect(recoveryCtx.otp?.deliveredTo).toBe("typed@example.com");
-    expect(recoveryCtx.otp?.deliveredChannel).toBe("email");
-    // The old recovery-only stash is gone — nothing writes postReset here.
+    expect(recoveryCtx.otp?.deliveredTo).toBeUndefined();
+    expect(recoveryCtx.subject).toBeUndefined();
     expect(recoveryCtx.postReset).toBeUndefined();
     expect(wf.deliveries).toEqual([
       expect.objectContaining({ kind: "recovery-pincode", recipient: "typed@example.com" }),
@@ -1742,10 +1750,10 @@ describe("Enroll-send dispatch (pre-seeded address must still get exactly one co
   });
 
   it("schema: enroll-send is send-once and never fires for totp / done / pre-confirmed", () => {
-    // `!ctx.pin` — a re-pause (wrong code typed, resume) must not re-send.
-    expect(cond(sendNode, { mfaEnroll: { method: "email", address: "a@x.co" }, pin: "h" })).toBe(
-      false,
-    );
+    // `!ctx.pinNonce` — a re-pause (wrong code typed, resume) must not re-send.
+    expect(
+      cond(sendNode, { mfaEnroll: { method: "email", address: "a@x.co" }, pinNonce: "h" }),
+    ).toBe(false);
     // sms is a dispatch transport too; totp has nothing to send.
     expect(cond(sendNode, { mfaEnroll: { method: "sms", address: "+15550100" } })).toBe(true);
     expect(cond(sendNode, { mfaEnroll: { method: "totp", address: "x" } })).toBe(false);
@@ -1769,7 +1777,7 @@ describe("Enroll-send dispatch (pre-seeded address must still get exactly one co
     ]);
     // The pin + resend cooldown + form hint are armed exactly like the
     // collected-address path used to arm them inside `enroll-address`.
-    expect(typeof ctx.pin).toBe("string");
+    expect(typeof ctx.pinNonce).toBe("string");
     expect(ctx.pincode?.resendAllowedAt).toBeGreaterThan(Date.now() - 1);
     expect(ctx.pincode?.codeLength).toBeGreaterThan(0);
     expect(ctx.mfaEnroll?.preConfirmed).toBeUndefined();
@@ -1778,7 +1786,7 @@ describe("Enroll-send dispatch (pre-seeded address must still get exactly one co
   it("enrollAddress STAGES only — nothing dispatches from the collect step", async () => {
     // Regression guard for the single-dispatch-site contract: if a send is
     // re-welded into the collect step, the collected path would mint here and
-    // the `!ctx.pin` schema gate would then mask the drift by suppressing
+    // the `!ctx.pinNonce` schema gate would then mask the drift by suppressing
     // `enroll-send`. Drive the step with a stubbed form round-trip (a unit
     // test has no wf event context) and assert it ONLY stages the address —
     // the sole dispatch is `enrollSend`'s, asserted above.
@@ -1799,7 +1807,7 @@ describe("Enroll-send dispatch (pre-seeded address must still get exactly one co
     await wf.enrollAddress(ctx);
     expect(ctx.mfaEnroll?.address).toBe("a@x.co");
     expect(wf.deliveries).toEqual([]);
-    expect(ctx.pin).toBeUndefined();
+    expect(ctx.pinNonce).toBeUndefined();
     expect(ctx.pincode).toBeUndefined();
   });
 });
@@ -1844,7 +1852,7 @@ describe("resolveEnrollPreConfirmed (verified-by-construction enrolment)", () =>
     await wf.enrollSend(ctx);
     // Nothing dispatched, no pin minted — the proof transfers from the magic link.
     expect(wf.deliveries).toEqual([]);
-    expect(ctx.pin).toBeUndefined();
+    expect(ctx.pinNonce).toBeUndefined();
     expect(ctx.mfaEnroll?.preConfirmed).toBe(true);
 
     // enroll-confirm then runs its write-on-confirm tail in the SAME engine
@@ -1962,7 +1970,7 @@ describe("Manage-MFA step-up consent (manage-stepup-confirm)", () => {
       false,
     );
     // Code already in flight (re-pause on a wrong code) — never re-ask.
-    expect(cond(confirmNode, { mfa: { method: "email" }, addMfa: {}, pin: "123456" })).toBe(false);
+    expect(cond(confirmNode, { mfa: { method: "email" }, addMfa: {}, pinNonce: "n" })).toBe(false);
     // Step-up already verified.
     expect(
       cond(confirmNode, { mfa: { method: "email" }, addMfa: {}, otp: { verified: true } }),
@@ -1992,7 +2000,7 @@ describe("Manage-MFA step-up consent (manage-stepup-confirm)", () => {
     expect(ctx.aborted).toBeUndefined();
     // Crucially: the consent step itself dispatched NOTHING.
     expect(wf.deliveries).toEqual([]);
-    expect(ctx.pin).toBeUndefined();
+    expect(ctx.pinNonce).toBeUndefined();
   });
 
   it("cancel aborts with nothing dispatched and no consent recorded", async () => {
@@ -2594,5 +2602,20 @@ describe("Consent-only authorize (silent session → consent)", () => {
     expect(projected?.clientName).toBe("Acme CLI");
     expect(projected?.handle).toBeUndefined();
     expect(projected?.silent).toBeUndefined();
+  });
+});
+
+describe("finalize-auto-login (L-3, defense in depth)", () => {
+  // WHY: `auto-login-check` guards the bundled schemas; a custom schema that
+  // reaches the terminal directly must still never issue for an inactive account.
+  it("refuses an inactive account with 403, issuing nothing", async () => {
+    const { wf, users, auth } = makeWorkflowWithDeps();
+    const user = await users.createUser("alice", "Password123!"); // never activated
+    await expect(wf.finalizeAutoLogin({ subject: user.id, autoLogin: true })).rejects.toMatchObject(
+      {
+        code: 403,
+      },
+    );
+    expect(await auth.listSessions(user.id)).toEqual([]);
   });
 });

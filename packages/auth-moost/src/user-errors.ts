@@ -3,6 +3,7 @@ import {
   type TransferablePolicy,
   UserAuthError,
   USER_AUTH_ERROR_MESSAGES,
+  type UserAuthErrorCode,
   type UserAuthErrorType,
 } from "@aooth/user";
 import { HttpError } from "@wooksjs/event-http";
@@ -21,8 +22,8 @@ registerMessages(USER_AUTH_ERROR_MESSAGES);
 /** The body of an `HttpError` made by {@link userAuthErrorToHttp}. */
 export interface UserAuthErrorBody {
   message: string;
-  /** The `UserAuthError` type (`"PASSWORD_IN_HISTORY"`, `"NOT_FOUND"`, …). */
-  code: UserAuthErrorType;
+  /** The `UserAuthError`'s message code (`"PASSWORD_IN_HISTORY"`, `"AOOTH_USER_LOCKED"`, …) — see `USER_AUTH_ERROR_CODES`. */
+  code: UserAuthErrorCode;
   /**
    * `POLICY_VIOLATION`: `{ policies: [{ description, passed, errorMessage, code?, params? }] }`
    * — every policy and its result (`code` / `params`: the built-in policies' `PP_*` codes).
@@ -63,19 +64,20 @@ export function userAuthErrorField(type: UserAuthErrorType): UserAuthErrorBody["
 
 /**
  * Map a `UserAuthError` (thrown by `UserService`) to an `HttpError` whose body
- * carries `code` (the error type), the message and — for password errors —
- * the form `field` it belongs to (named as in the bundled password forms):
+ * carries `code` (the error's message code, `err.code`), the message and — for
+ * password errors — the form `field` it belongs to (named as in the bundled
+ * password forms):
  *
- * | type | status | field |
- * |---|---|---|
- * | `NOT_FOUND` | 404 | |
- * | `ALREADY_EXISTS`, `CAS_EXHAUSTED` | 409 | |
- * | `INVALID_CREDENTIALS` | 400 | `currentPassword` |
- * | `PASSWORD_IN_HISTORY` | 400 | `newPassword` |
- * | `POLICY_VIOLATION` (+ `params.policies`) | 422 | `newPassword` |
- * | `PASSWORDS_MISMATCH` | 400 | `confirmPassword` |
- * | `MFA_INVALID`, `MFA_NOT_CONFIGURED` | 400 | |
- * | `INACTIVE`, `LOCKED`, `MFA_REQUIRED` | 403 | |
+ * | type | code | status | field |
+ * |---|---|---|---|
+ * | `NOT_FOUND` | `NOT_FOUND` | 404 | |
+ * | `ALREADY_EXISTS`, `CAS_EXHAUSTED` | `AOOTH_USER_ALREADY_EXISTS`, `AOOTH_USER_CAS_EXHAUSTED` | 409 | |
+ * | `INVALID_CREDENTIALS` | `INVALID_CREDENTIALS` | 400 | `currentPassword` |
+ * | `PASSWORD_IN_HISTORY` | `PASSWORD_IN_HISTORY` | 400 | `newPassword` |
+ * | `POLICY_VIOLATION` (+ `params.policies`) | `AOOTH_USER_POLICY_VIOLATION` | 422 | `newPassword` |
+ * | `PASSWORDS_MISMATCH` | `PASSWORDS_MISMATCH` | 400 | `confirmPassword` |
+ * | `MFA_INVALID`, `MFA_NOT_CONFIGURED` | same as type | 400 | |
+ * | `INACTIVE`, `LOCKED`, `MFA_REQUIRED` | `AOOTH_USER_INACTIVE`, `AOOTH_USER_LOCKED`, `MFA_REQUIRED` | 403 | |
  *
  * For routes such as an admin "set password" endpoint. Do not use it on a
  * sign-in endpoint: distinct answers for unknown, inactive and locked accounts
@@ -87,7 +89,7 @@ export function userAuthErrorToHttp(err: UserAuthError): HttpError<UserAuthError
   const policies = err.type === "POLICY_VIOLATION" ? err.details?.policies : undefined;
   return new HttpError(STATUS[err.type], {
     message: userAuthErrorText(err),
-    code: err.type,
+    code: err.code,
     ...(policies !== undefined && { params: { policies } }),
     ...(field && { field }),
   });
@@ -124,8 +126,8 @@ function translatePolicyError({ code, params, errorMessage }: PolicyTexts): stri
  * A `UserAuthError`'s text in the request's locale: a `POLICY_VIOLATION` lists
  * its failed policies' translated `errorMessage`s (`; `-joined, like the
  * English message) when at least one of them has a translation; otherwise —
- * and for any other type — the error is translated by its type, its own
- * message the fallback.
+ * and for any other type — the error is translated by its code (`err.code`),
+ * its own message the fallback.
  */
 export function userAuthErrorText(err: UserAuthError): string {
   const policies = err.type === "POLICY_VIOLATION" ? err.details?.policies : undefined;
@@ -138,7 +140,7 @@ export function userAuthErrorText(err: UserAuthError): string {
     const texts = failed.map((p) => translatePolicyError(p) as string);
     if (texts.some((text, i) => text !== failed[i].errorMessage)) return texts.join("; ");
   }
-  return translateCode(err.type, undefined, err.message);
+  return translateCode(err.code, undefined, err.message);
 }
 
 /**

@@ -289,7 +289,7 @@ function enforceControlsPolicy(
 ): void;
 ```
 
-Throws `HttpError(403, 'Control "$with" is not allowed for your role')` on violations, with `code` `CONTROL_NOT_ALLOWED` / `CONTROL_VALUE_NOT_ALLOWED` and `params` (since 0.2.5). Applied by `AsArbacDbController.validateControls` against the union of scope `controls` maps. A control counts as used when it is present and not an empty array; `$groupBy` counts as used whenever it is present, so `$groupBy: []` (how moost-db marks an ungrouped aggregate) is denied by a `false` gate and passes a whitelist (since 0.1.80).
+Throws `HttpError(403, 'Control "$with" is not allowed for your role')` on violations, with `code` `ARBAC_CONTROL_NOT_ALLOWED` / `ARBAC_CONTROL_VALUE_NOT_ALLOWED` and `params` (since 0.2.5). Applied by `AsArbacDbController.validateControls` against the union of scope `controls` maps. A control counts as used when it is present and not an empty array; `$groupBy` counts as used whenever it is present, so `$groupBy: []` (how moost-db marks an ungrouped aggregate) is denied by a `false` gate and passes a whitelist (since 0.1.80).
 
 ### `extractUsedControlValues`
 
@@ -395,7 +395,7 @@ Credential-attenuation combiner: UNIONs each side with the additive helpers, the
 ### `ARBAC_MESSAGES`
 
 ```ts
-const ARBAC_MESSAGES: { readonly INSUFFICIENT_PRIVILEGES: 'Insufficient privileges for action "{action}" on resource "{resource}"' /* … */ };
+const ARBAC_MESSAGES: { readonly ARBAC_INSUFFICIENT_PRIVILEGES: 'Insufficient privileges for action "{action}" on resource "{resource}"' /* … */ };
 type ArbacMessageCode = keyof typeof ARBAC_MESSAGES;
 ```
 

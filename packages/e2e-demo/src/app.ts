@@ -56,6 +56,7 @@ import {
   deriveWfStateSecret,
   haversineKm,
   type MfaTransport,
+  type AuthWfRecoveryDeliveryMode,
   AUTH_CODE_STORE_TOKEN,
   AuthorizeController,
   CLIENT_REDIRECT_POLICY_TOKEN,
@@ -75,7 +76,13 @@ import {
   WfTriggerProvider,
 } from "@aooth/auth-moost";
 import { FakeIdentityProvider, FederatedLoginService, OAuthProviderRegistry } from "@aooth/idp";
-import { HandleStateStrategy, Step, type WfStateStrategy, WorkflowParam } from "@moostjs/event-wf";
+import {
+  HandleStateStrategy,
+  Step,
+  type WfStateStore,
+  type WfStateStrategy,
+  WorkflowParam,
+} from "@moostjs/event-wf";
 import { type UserCredentials, UserService } from "@aooth/user";
 import { FederatedIdentityStoreAtscriptDb } from "@aooth/user/atscript-db";
 import { Get, MoostHttp, Post } from "@moostjs/event-http";
@@ -545,10 +552,14 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
 
   // Demo's base `AuthWorkflowOpts`. Cross-workflow infrastructure
   // (pincode timers, loginUrl, totpIssuer) lives on this single surface.
-  // Magic-link TTL is owned by `@StepTTL` on the workflow's `send-email`
-  // @Step; the outlet's per-kind TTL function (passed via `deps.magicLinkTtlMs`
-  // below) drives the email-body "expires at" line independently.
-  const demoBaseOpts: Partial<AuthWorkflowOpts> = {};
+  // Link lifetimes: an invite link's is `@StepTTL` on the workflow's
+  // `send-email` @Step, and the email outlet's per-kind `deps.magicLinkTtlMs`
+  // (below) drives its email-body "expires at" line. Recovery and sign-in links
+  // expire after `magicLinkTtlMs`, which they also hand the outlet.
+  // The per-handle counter store (uniform-lockout shadow counters, magic-link
+  // send cooldown) — held so `reseed()` can clear it between e2e tests.
+  const demoCounterStore = new RateLimitStoreMemory();
+  const demoBaseOpts: Partial<AuthWorkflowOpts> = { lockoutShadowStore: demoCounterStore };
 
   const consentStore = new DemoConsentStore();
 
@@ -686,6 +697,11 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     // M1 in force: the OTP goes to the typed identifier.
     protected override resolveRecoveryDeliverySource(_ctx: AuthWfCtx): "typed" | "registered" {
       return pickVariant(RECOVERY_VARIANTS, readVariantHeader())?.policy?.deliverySource ?? "typed";
+    }
+
+    // Recovery delivery mode (code / magic link / user's pick), from the variant header.
+    protected override resolveRecoveryDeliveryMode(_ctx: AuthWfCtx): AuthWfRecoveryDeliveryMode {
+      return pickVariant(RECOVERY_VARIANTS, readVariantHeader())?.policy?.deliveryMode ?? "otp";
     }
 
     // Turn channel→handle promotion ON for the demo: after a user confirms an
@@ -1136,8 +1152,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
   // Rate limiting (RL.spec.md): the memory store keeps the demo dependency-free
   // (a real deployment passes `RateLimitStoreRedis` from `@aooth/auth/redis`).
   // The store reference is held so `reseed()` can wipe counters between e2e
-  // tests. Only the two `/rl-demo/*` routes declare rules — no app-wide
-  // defaults — so every other endpoint is unaffected.
+  // tests. No app-wide defaults: only the `/rl-demo/*` routes and the routes
+  // aooth limits itself (`/auth/refresh`, `/auth/invite/post-redemption`)
+  // declare rules.
   const rateLimitStore = new RateLimitStoreMemory();
   const rateLimiter = new RateLimiter({ store: rateLimitStore });
   app.applyGlobalInterceptors(
@@ -1172,9 +1189,15 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
       return deriveWfStateSecret(env.JWT_SECRET);
     }
     // Durable strategy a workflow swaps to after first validated input — the
-    // app's DB-backed AsWfStore.
+    // app's DB-backed AsWfStore. Handles are stored hashed, so a read of the
+    // table yields no redeemable invite link or paused run.
     protected override storeStrategy(): WfStateStrategy {
-      return new HandleStateStrategy({ store: wfStateStore });
+      return new HandleStateStrategy({ store: wfStateStore, hashHandles: true });
+    }
+    // Magic links (recovery + sign-in) live in the same durable table; aooth
+    // stores their handles hashed and consumes each on first use.
+    protected override magicLinkStore(): WfStateStore {
+      return wfStateStore;
     }
   }
 
@@ -1368,6 +1391,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     g.__aoothE2eAllowDuplicateInvites = false;
     // Rate-limit counters — wiped so one spec's 429s don't bleed into the next.
     rateLimitStore.clear();
+    // Lockout shadow counters + magic-link send cooldowns.
+    demoCounterStore.clear();
     // Order matters for FKs: drop dependent rows first. The model-typed
     // `AtscriptDbTable<T>` overloads produce a TS2590 union when combined in
     // one array — widen the whole array once to a plain `deleteMany` shape

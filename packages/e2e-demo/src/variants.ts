@@ -15,7 +15,12 @@
  * The unified `AuthWorkflow` replaces the prior three workflows; the policy
  * shapes below are typed against `AuthWfCtx` fields directly.
  */
-import type { AuthWfCtx, AuthWorkflowOpts, MfaTransport } from "@aooth/auth-moost";
+import type {
+  AuthWfCtx,
+  AuthWfRecoveryDeliveryMode,
+  AuthWorkflowOpts,
+  MfaTransport,
+} from "@aooth/auth-moost";
 
 import { RecoveryIdentifierForm } from "./models/auth-forms.as";
 
@@ -103,6 +108,8 @@ export interface RecoveryPolicyOverrides {
   recoveryAltActions?: NonNullable<AuthWfCtx["recoveryAltActions"]>;
   /** Recovery OTP delivery model — `"registered"` arms M2 (OTP to a verified row channel). Default M1. */
   deliverySource?: "typed" | "registered";
+  /** Recovery delivery mode (`resolveRecoveryDeliveryMode`) — one-time code (default), magic link, or the user's pick. */
+  deliveryMode?: AuthWfRecoveryDeliveryMode;
 }
 
 /**
@@ -143,11 +150,9 @@ const ALT_DEFAULTS: NonNullable<AuthWfCtx["alternateCredentials"]> = {
   forgotPassword: true,
   signup: false,
   magicLink: false,
-  magicLinkSkipsMfa: false,
   ssoProviders: [],
   recoveryUrl: "/recover",
   signupUrl: "/signup",
-  embedRecovery: false,
 };
 
 /**
@@ -161,6 +166,18 @@ const SHORT_TTL_TRUST: LoginVariant = {
 };
 
 export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
+  // Magic-link sign-in (the `magicLink` alt-action) with MFA off — a user
+  // without MFA is signed in by the link alone. Drives ML-LOGIN-*.
+  "magic-link": {
+    policy: { alternateCredentials: { ...ALT_DEFAULTS, magicLink: true } },
+    mfaCtx: { mfaMode: "disabled" },
+  },
+  // Magic-link sign-in with MFA on — the link is the first factor only; an
+  // enrolled user is challenged after the click, as after a password.
+  "magic-link-mfa": {
+    policy: { alternateCredentials: { ...ALT_DEFAULTS, magicLink: true } },
+    mfaCtx: { mfaMode: "optional", availableMfaTransports: ["sms", "email", "totp"] },
+  },
   minimal: {
     // Explicit false on signup/magicLink so the variant clears the demo
     // defaults (which set signup:true for the dev-UI dropdown). Tests assert
@@ -316,8 +333,11 @@ export const LOGIN_VARIANTS: Record<string, LoginVariant> = {
   // re-requires MFA on the next login but must NOT re-send the new-device
   // email, because the always-on recognition cookie (180d default TTL) still
   // marks the browser as seen.
+  // Its two sign-ins are 1.5 s apart: a 1 s resend wait lets the second one
+  // send its code (one code per address per wait, enforced server-side).
   "device-trust-short-ttl-notify": {
     ...SHORT_TTL_TRUST,
+    authOpts: { mfa: { pincodeResendTimeoutMs: 1000 } },
     policy: {
       ...SHORT_TTL_TRUST.policy,
       finalize: { notifyNewDevice: true, redirect: false },
@@ -396,6 +416,14 @@ export interface RecoveryVariant {
  * lookup.
  */
 export const RECOVERY_VARIANTS: Record<string, RecoveryVariant> = {
+  // Recovery by magic link instead of a one-time code (ML-RECOVERY-*).
+  "recovery-magic-link": {
+    policy: { deliveryMode: "magicLink" },
+  },
+  // Recovery with the delivery picker (`RecoveryModeSelectForm`) after the identifier.
+  "recovery-choice": {
+    policy: { deliveryMode: "choice" },
+  },
   // Flips the static opt so the finish envelope issues tokens instead of
   // redirecting to login (WF-RECOVERY-016). The default (no variant) leaves
   // `autoLoginOnRecover=false`, exercised by WF-RECOVERY-001.

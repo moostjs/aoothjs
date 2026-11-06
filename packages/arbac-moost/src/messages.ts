@@ -12,23 +12,24 @@ import { formatMessage, registerMessages } from "moost";
  */
 export const ARBAC_MESSAGES = {
   /** 403 — the authorize interceptor denied the handler. Params: `resource`, `action`. */
-  INSUFFICIENT_PRIVILEGES: 'Insufficient privileges for action "{action}" on resource "{resource}"',
+  ARBAC_INSUFFICIENT_PRIVILEGES:
+    'Insufficient privileges for action "{action}" on resource "{resource}"',
   /** 403 — `useArbac().evaluateOrThrow()` denied. Params: `resource`, `action`. */
   ARBAC_FORBIDDEN: "Forbidden: {resource}/{action}",
   /** 401 — the authorize interceptor could not evaluate the caller (e.g. unknown user). */
   ARBAC_NOT_AUTHORIZED: "Not authorized",
   /** 403 — a query control the role's `controls` gate denies. Params: `control`. */
-  CONTROL_NOT_ALLOWED: 'Control "{control}" is not allowed for your role',
+  ARBAC_CONTROL_NOT_ALLOWED: 'Control "{control}" is not allowed for your role',
   /** 403 — a value outside the role's `controls` whitelist. Params: `control`, `value`. */
-  CONTROL_VALUE_NOT_ALLOWED: 'Control "{control}={value}" is not allowed for your role',
+  ARBAC_CONTROL_VALUE_NOT_ALLOWED: 'Control "{control}={value}" is not allowed for your role',
   /** 403 — a write through a relation no scope lists in `nestedWrites`. Params: `relation`. */
-  NESTED_WRITE_NOT_ALLOWED: 'Nested writes through "{relation}" are not allowed',
+  ARBAC_NESTED_WRITE_NOT_ALLOWED: 'Nested writes through "{relation}" are not allowed',
   /** 403 — a written row fails the scope `check` (WITH CHECK). */
-  ROW_OUT_OF_SCOPE: "Row outside your write scope",
+  ARBAC_ROW_OUT_OF_SCOPE: "Row outside your write scope",
   /** 403 — a foreign key the write sets points at a row outside the caller's read scope. Params: `fields`. */
-  REFERENCE_OUT_OF_SCOPE: 'Referenced row "{fields}" is outside your scope',
+  ARBAC_REFERENCE_OUT_OF_SCOPE: 'Referenced row "{fields}" is outside your scope',
   /** 400 — the query string does not parse. Params: `error` (the parser's text). */
-  INVALID_QUERY_STRING: "Invalid query string: {error}",
+  ARBAC_INVALID_QUERY_STRING: "Invalid query string: {error}",
 } as const;
 
 registerMessages(ARBAC_MESSAGES);

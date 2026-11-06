@@ -9,6 +9,7 @@
  */
 export type AuthEmailKind =
   | "recovery.magicLink"
+  | "login.magicLink"
   | "invite.magicLink"
   | "mfa.code"
   | "login.pincode"

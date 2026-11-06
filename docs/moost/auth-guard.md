@@ -40,11 +40,11 @@ Method-level then class-level `authPublic` metadata is consulted. On `@Public()`
 
 ### Protected routes
 
-| Scenario      | Behavior                                                 |
-| ------------- | -------------------------------------------------------- |
-| No token      | 401 `"Unauthorized"`, `code: "AUTH_REQUIRED"`            |
-| Invalid token | 401 `"Invalid credential"`, `code: "CREDENTIAL_INVALID"` |
-| Valid token   | `setAuthContext(ctx, authContext)` and continue          |
+| Scenario      | Behavior                                                       |
+| ------------- | -------------------------------------------------------------- |
+| No token      | 401 `"Unauthorized"`, `code: "AOOTH_AUTH_REQUIRED"`            |
+| Invalid token | 401 `"Invalid credential"`, `code: "AOOTH_CREDENTIAL_INVALID"` |
+| Valid token   | `setAuthContext(ctx, authContext)` and continue                |
 
 ::: warning The guard never auto-refreshes
 Even if the access token is expired but the refresh cookie is fresh, the guard returns 401. The refresh exchange is a separate REST endpoint — see [REST Controllers](./controllers).
@@ -102,7 +102,7 @@ if (ctx) {
 
 ### `getUserId(): string`
 
-Returns the resolved user id, or **throws `HttpError(401, "Not authenticated")`** (`code: "NOT_AUTHENTICATED"`) when no context. The `@UserId()` parameter decorator delegates to this method.
+Returns the resolved user id, or **throws `HttpError(401, "Not authenticated")`** (`code: "AOOTH_NOT_AUTHENTICATED"`) when no context. The `@UserId()` parameter decorator delegates to this method.
 
 ### `isAuthenticated(): boolean`
 

@@ -753,10 +753,9 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
     await expect(wrapper).toHaveAttribute("maxlength", "6");
   });
 
-  // BRANCH: brute-force protection — `verifyPin` increments `ctx.pinAttempts`
-  // on each wrong submission and on the `pincodeMaxAttempts`-th miss
-  // invalidates the code (clears pin + pinExpire + pinAttempts) so the user
-  // must request a fresh one. Without this gate, an attacker could probe the
+  // BRANCH: brute-force protection — `verifyPin` counts every submission
+  // server-side (per minted code) and on the `pincodeMaxAttempts`-th miss
+  // the code is used up, so the user must request a fresh one. Without this gate, an attacker could probe the
   // full 10^pincodeLength space inside one `pincodeTtlMs` window. The default
   // cap is 5, the wrong-code inline error is "Invalid code", and the
   // cap-hit error is "Too many invalid attempts. Please request a new code."
@@ -771,18 +770,16 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
     await waitForFormInput(page, "code");
     const verify = page.getByRole("button", { name: "Verify", exact: true });
 
-    // Attempts 1-4 → "Invalid code" inline. The form stays on PincodeForm —
-    // pin/pinExpire survive so the user can keep trying.
+    // Attempts 1-4 → "Invalid code" inline. The form stays on PincodeForm and
+    // the code stays valid so the user can keep trying.
     for (let i = 1; i <= 4; i++) {
       await fillField(page, "code", "000000");
       await verify.click();
       await expect(page.getByText("Invalid code", { exact: true })).toBeVisible();
     }
 
-    // Attempt 5 → cap hit. The server clears the pin and returns the distinct
-    // "Too many" message. Pin/pinExpire are gone so the next click will hit
-    // "Code expired" — pinning the actual "Too many" string here is what
-    // proves the cap fired, not the expiry fallback.
+    // Attempt 5 → cap hit: the distinct "Too many" message — pinning the
+    // actual string is what proves the cap fired, not the expiry fallback.
     await fillField(page, "code", "000000");
     await verify.click();
     await expect(
@@ -792,9 +789,8 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
 
   // ADVERSARIAL (Rule 9): WF-LOGIN-011d proves the cap surfaces a MESSAGE; this
   // proves the cap actually INVALIDATES the minted code. After the 5th wrong
-  // attempt the server deletes ctx.pin/pinExpire — so even submitting the REAL
-  // code that was emailed must now fail. A regression that showed the "too
-  // many" banner but left ctx.pin intact would let an attacker who later
+  // attempt even submitting the REAL code that was emailed must fail. A
+  // regression that showed the "too many" banner but left the code usable would let an attacker who later
   // learns/intercepts the code still spend it inside the TTL window; this test
   // is the only thing that catches that class of bug (the cap being cosmetic).
   test("WF-LOGIN-011e: after the cap is hit the real code is dead — only a resend yields a usable one", async ({
@@ -837,19 +833,28 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
       page.getByText("Too many invalid attempts. Please request a new code.", { exact: true }),
     ).toBeVisible();
 
-    // The cap deleted ctx.pin, so the once-valid real code now reads as expired.
-    // It must NOT authenticate — no finish envelope, no accessToken.
+    // The once-valid real code is used up: it answers "Too many" again and
+    // must NOT authenticate — no finish envelope, no accessToken.
     await fillField(page, "code", realCode);
-    await verify.click();
-    await expect(page.getByText("Code expired", { exact: true })).toBeVisible();
+    const [afterCap] = await Promise.all([
+      page.waitForResponse(
+        (r) => r.url().includes("/auth/trigger") && r.request().method() === "POST",
+      ),
+      verify.click(),
+    ]);
+    const afterCapBody = (await afterCap.json()) as { finished?: boolean };
+    expect(afterCapBody.finished).toBeUndefined();
+    expect(JSON.stringify(afterCapBody)).toContain("Too many invalid attempts");
+    await expect(
+      page.getByText("Too many invalid attempts. Please request a new code.", { exact: true }),
+    ).toBeVisible();
     await expect(page.getByText("Workflow finished")).toHaveCount(0);
   });
 
   // BOUNDARY (Rule 9): the cap is `attempts >= 5`, so a user gets exactly 4
   // wrong tries and the FIFTH submission can still be a correct one. This pins
   // the off-by-one: a regression to `>= 4` would lock out a fat-fingering
-  // legitimate user one try too early; `> 5` would weaken the cap. It also
-  // proves a successful verify clears ctx.pinAttempts (no lingering count).
+  // legitimate user one try too early; `> 5` would weaken the cap.
   test("WF-LOGIN-011f: four wrong attempts then the correct code still authenticates", async ({
     page,
     request,
@@ -894,14 +899,14 @@ test.describe("LoginWorkflow / variant=mfa-full (P1)", () => {
   });
 
   // BRANCH: pincode resend AFTER `pincodeResendTimeoutMs` → workflow should
-  // clear `ctx.pin` and re-run `pincode-send-login` on the next iteration.
+  // drop the code in flight and re-run `pincode-send-login` on the next iteration.
   //
   // FIXME: in the running demo, clicking `Resend code` after the cooldown
   // throws `requireInput({ formMessage: 'Code resent' })` but does NOT re-fire
   // `pincode-send-login` until the form is submitted again — the schema only
   // re-evaluates conditions on resume, and the resend-throw IS a pause. The
   // BRANCH: resend after the cooldown elapses. Workflow's resend handler
-  // clears `ctx.pin` and returns; the MFA while-loop re-iterates and
+  // drops the code in flight and returns; the MFA while-loop re-iterates and
   // `pincode-send-login` fires again, emitting a fresh code.
   test("WF-LOGIN-012: resend after cooldown → new email sent", async ({ page, request }) => {
     await page.goto(wfUrl(LOGIN_WF, "mfa-fast-resend"));
@@ -2201,8 +2206,8 @@ test.describe("LoginWorkflow / MFA enrollment (PW MFA coverage)", () => {
    * BRANCH: `EnrollConfirmForm.resend` action — within the cooldown
    * (`pincodeResendTimeoutMs`) the workflow throws
    * `requireInput({ formMessage: 'Please wait Ns…' })` and does NOT call
-   * the outlet a second time; after the cooldown elapses it clears
-   * `ctx.pin` and re-mints a fresh code on the next iteration. A regression
+   * the outlet a second time; after the cooldown elapses it drops
+   * the code in flight and re-mints a fresh code on the next iteration. A regression
    * dropping the cooldown gate would let attackers SMS-pump enrollment; a
    * regression dropping the re-mint would freeze the user. Uses the
    * `mfa-enroll-optional-fast-resend` variant (1s cooldown) so this fits
@@ -2251,8 +2256,8 @@ test.describe("LoginWorkflow / MFA enrollment (PW MFA coverage)", () => {
     ).length;
     expect(afterCooldownReject).toBe(beforeCount);
 
-    // Wait past the 1s cooldown and resend — Phase 2 re-mints (clears
-    // ctx.pin → next iteration's `pincode-send-enroll` step fires).
+    // Wait past the 1s cooldown and resend — Phase 2 re-mints (drops
+    // the code in flight → next iteration's `pincode-send-enroll` step fires).
     await page.waitForTimeout(1200);
     await clickAction(page, "Resend code");
 

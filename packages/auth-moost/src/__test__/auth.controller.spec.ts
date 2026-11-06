@@ -39,6 +39,11 @@ async function seedAndIssue(
   };
 }
 
+/** A `POST /auth/refresh` request presenting `refreshToken` in the body. */
+function junk(refreshToken: string): RequestInit & { json: unknown } {
+  return { method: "POST", json: { refreshToken } };
+}
+
 /** Both auth cookies were cleared (`Max-Age=0`) on this response. */
 function expectBothCleared(setCookies: string[]): void {
   expect(setCookies.some((c) => /^aooth_session=;.*Max-Age=0/i.test(c))).toBe(true);
@@ -339,6 +344,89 @@ describe("AuthController", () => {
       });
       expect(res.status).toBe(401);
       expect(res.setCookies).toEqual([]);
+    });
+  });
+
+  describe("POST /auth/refresh rate limits", () => {
+    // WHY: refresh is @Public() and does a credential-store lookup per call;
+    // without a limit any caller can force unbounded lookups, and one refresh
+    // token can be re-presented without bound (in rotation 'none' each call
+    // mints another access token).
+    it("ships two default policies: 150/5m per IP and 10/1m per presented refresh token", () => {
+      const meta = getMoostMate<TRateLimitMeta>().read(AuthController.prototype, "refresh");
+      expect(
+        meta?.rateLimitPolicies?.map((p) => ({
+          id: p.options?.id,
+          key: p.options?.key,
+          rules: p.rules.map((r) => [r.limit, r.window]),
+        })),
+      ).toEqual([
+        { id: "aooth.refresh", key: undefined, rules: [[150, 300_000]] },
+        { id: "aooth.refresh-token", key: "refresh-token", rules: [[10, 60_000]] },
+      ]);
+    });
+
+    it("caps re-presenting ONE refresh token (body or cookie) with the coded 429; other tokens are unaffected", async () => {
+      const app = await prepareControllerApp({ rateLimit: {} });
+      for (let i = 0; i < 10; i++) {
+        const res = await app.request("/auth/refresh", junk("stolen"));
+        expect(res.status).toBe(401);
+        expect(res.response?.headers.get("ratelimit-policy")).toBe("150;w=300, 10;w=60");
+      }
+      const limited = await app.request("/auth/refresh", junk("stolen"));
+      expect(limited.status).toBe(429);
+      expect(limited.body).toMatchObject({
+        code: "RATE_LIMITED",
+        params: { policy: "aooth.refresh-token", limit: 10, window: 60 },
+      });
+      expect(Number(limited.response?.headers.get("retry-after"))).toBeGreaterThan(0);
+      // The same token in the refresh cookie is the same subject.
+      const viaCookie = await app.request("/auth/refresh", {
+        method: "POST",
+        headers: { cookie: "aooth_refresh=stolen" },
+        json: {},
+      });
+      expect(viaCookie.status).toBe(429);
+      // Another token has its own budget.
+      expect((await app.request("/auth/refresh", junk("other"))).status).toBe(401);
+    });
+
+    it("never counts a request without a refresh token against a token budget", async () => {
+      const app = await prepareControllerApp({ rateLimit: {} });
+      for (let i = 0; i < 12; i++) {
+        const res = await app.request("/auth/refresh", { method: "POST", json: {} });
+        expect(res.status).toBe(401);
+        expect((res.body as { code?: string }).code).toBe("MISSING_REFRESH_TOKEN");
+      }
+    });
+
+    it("caps one IP across fresh tokens before the guard runs (re-tuned via policies)", async () => {
+      const app = await prepareControllerApp({
+        rateLimit: { policies: { "aooth.refresh": "3/5m" } },
+      });
+      for (let i = 0; i < 3; i++) {
+        expect((await app.request("/auth/refresh", junk(`fresh-${i}`))).status).toBe(401);
+      }
+      const limited = await app.request("/auth/refresh", junk("fresh-3"));
+      expect(limited.status).toBe(429);
+      expect(limited.body).toMatchObject({ params: { policy: "aooth.refresh", limit: 3 } });
+    });
+
+    it("a valid refresh still succeeds and carries the RateLimit-* headers", async () => {
+      const app = await prepareControllerApp({ rateLimit: {} });
+      const { refreshToken } = await seedAndIssue(app, "alice", "Password123");
+      const res = await app.request("/auth/refresh", junk(refreshToken));
+      expect(res.status).toBe(201);
+      expect(res.response?.headers.get("ratelimit-remaining")).toBe("9");
+    });
+
+    it("policies: { 'aooth.refresh-token': false } switches the per-token limit off", async () => {
+      const app = await prepareControllerApp({
+        rateLimit: { policies: { "aooth.refresh-token": false } },
+      });
+      for (let i = 0; i < 12; i++) {
+        expect((await app.request("/auth/refresh", junk("stolen"))).status).toBe(401);
+      }
     });
   });
 

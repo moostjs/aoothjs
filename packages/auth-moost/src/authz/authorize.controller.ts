@@ -21,6 +21,8 @@ import { Controller, Inject } from "moost";
 
 import { useAuth } from "../auth.composables";
 import { Public } from "../auth.decorator";
+import { RateLimit } from "../rate-limit/decorator";
+import { oauthRefreshTokenSubject } from "../rate-limit/subjects";
 import { AUTHZ_BINDING_COOKIE, authzBindingCookieAttrs } from "./authz-binding";
 import { authzRedirectUrl } from "./authz-redirect";
 import {
@@ -56,6 +58,19 @@ interface TokenRequestBody {
   refresh_token?: string;
   resource?: string | string[];
 }
+
+/**
+ * Default rate limits of the authorization server's public token endpoints, by
+ * policy id — re-tune or switch one off with `rateLimitInterceptors({ policies })`.
+ */
+export const AUTHZ_RATE_LIMITS = {
+  /** `POST /auth/token`, per client IP — every grant. */
+  "aooth.token": "150/5m",
+  /** `POST /auth/token` with `grant_type=refresh_token`, per presented refresh token, from any IP. */
+  "aooth.token-refresh": "10/1m",
+  /** `POST /auth/register` (dynamic client registration), per client IP. */
+  "aooth.register": "20/1h",
+} as const;
 
 /** A minimal OIDC discovery document (`/.well-known/openid-configuration`). */
 interface OidcDiscoveryDocument {
@@ -297,8 +312,20 @@ export class AuthorizeController {
     return "";
   }
 
+  /**
+   * Rate limited when `rateLimitInterceptors` are installed
+   * ({@link AUTHZ_RATE_LIMITS}): `aooth.token` per client IP, and
+   * `aooth.token-refresh` per presented `refresh_token` of a refresh grant.
+   * Both are checked before the auth guard; over the limit the endpoint
+   * answers the coded `429` (`RATE_LIMITED`, `Retry-After`).
+   */
   @Post("token")
   @Public()
+  @RateLimit(AUTHZ_RATE_LIMITS["aooth.token"], { id: "aooth.token" })
+  @RateLimit(AUTHZ_RATE_LIMITS["aooth.token-refresh"], {
+    key: oauthRefreshTokenSubject,
+    id: "aooth.token-refresh",
+  })
   async token(@Body() body: TokenRequestBody | undefined): Promise<TokenSuccess | TokenError> {
     if (body?.grant_type === "refresh_token") {
       return await this.refreshTokenGrant(body);
@@ -576,6 +603,7 @@ export class AuthorizeController {
    */
   @Post("register")
   @Public()
+  @RateLimit(AUTHZ_RATE_LIMITS["aooth.register"], { id: "aooth.register" })
   async register(
     @Body() body: unknown,
   ): Promise<ClientRegistrationSuccess | ClientRegistrationFailure | TokenError> {

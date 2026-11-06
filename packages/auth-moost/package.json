@@ -74,6 +74,8 @@
   },
   "devDependencies": {
     "@atscript/core": "catalog:",
+    "@atscript/db": "catalog:",
+    "@atscript/moost-db": "catalog:",
     "@atscript/typescript": "catalog:",
     "@atscript/ui": "catalog:",
     "@atscript/ui-fns": "catalog:",

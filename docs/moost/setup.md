@@ -108,7 +108,11 @@ class MyWfTriggerProvider extends WfTriggerProvider {
     ];
   }
   protected override storeStrategy(): WfStateStrategy {
-    return new HandleStateStrategy({ store: new AsWfStore({ table: wfStatesTable }) });
+    // hashHandles: a read of the table yields no resumable token
+    return new HandleStateStrategy({
+      store: new AsWfStore({ table: wfStatesTable }),
+      hashHandles: true,
+    });
   }
 }
 

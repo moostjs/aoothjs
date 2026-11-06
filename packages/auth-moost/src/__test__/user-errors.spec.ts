@@ -1,5 +1,6 @@
 import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
 import {
+  USER_AUTH_ERROR_CODES,
   ppHasMinLength,
   UserAuthError,
   type UserAuthErrorType,
@@ -35,7 +36,7 @@ describe("userAuthErrorToHttp", () => {
     const err = userAuthErrorToHttp(new UserAuthError(type));
     expect(err).toBeInstanceOf(HttpError);
     expect(err.body.statusCode).toBe(status);
-    expect(err.body.code).toBe(type);
+    expect(err.body.code).toBe(USER_AUTH_ERROR_CODES[type]);
     expect(err.body.message).toBe(new UserAuthError(type).message);
     expect(err.body.field).toBe(field);
   });
@@ -91,7 +92,7 @@ describe("userAuthErrorInterceptor", () => {
     });
     expect(short.status).toBe(422);
     expect(short.body).toMatchObject({
-      code: "POLICY_VIOLATION",
+      code: "AOOTH_USER_POLICY_VIOLATION",
       field: "newPassword",
       params: { policies: [{ passed: false }] },
     });
@@ -133,7 +134,10 @@ describe("bundled workflow store-error translation", () => {
       .run(() => Promise.reject(new UserAuthError("CAS_EXHAUSTED")))
       .catch((e: unknown) => e);
     expect(thrown).toBeInstanceOf(HttpError);
-    expect((thrown as HttpError).body).toMatchObject({ statusCode: 409, code: "CAS_EXHAUSTED" });
+    expect((thrown as HttpError).body).toMatchObject({
+      statusCode: 409,
+      code: "AOOTH_USER_CAS_EXHAUSTED",
+    });
   });
 });
 
@@ -158,6 +162,6 @@ describe("bundled TOTP step", () => {
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
     expect(res.status).toBe(409);
-    expect(res.body).toMatchObject({ code: "CAS_EXHAUSTED" });
+    expect(res.body).toMatchObject({ code: "AOOTH_USER_CAS_EXHAUSTED" });
   });
 });

@@ -198,8 +198,8 @@ const dynamicClients = new DynamicClientStoreAtscriptDb({ table: db.getTable(MyD
 // 2. The registration operation behind POST /auth/register, with the abuse knobs:
 //    a reject-when-full cap (used registrations are NEVER evicted — a connector
 //    caches its client_id), lazy GC of never-used registrations, and an optional
-//    guard hook (throw ClientRegistrationError to reject). Rate limiting stays
-//    at your ingress.
+//    guard hook (throw ClientRegistrationError to reject). POST /auth/register
+//    is rate limited per IP — see "Rate limits" below.
 const registration = new DynamicClientRegistration({
   store: dynamicClients,
   maxClients: 1000,
@@ -321,6 +321,18 @@ There is still **no RFC 7009 revocation endpoint** — the revocation path is yo
 ::: warning Schema migration
 The `aooth_pending_authorizations` / `aooth_auth_codes` models gained nullable `clientName` / `resource` columns. Run your schema sync before serving connector traffic — connector clients **always** send `resource`, so an un-synced column fails at the `/authorize` insert.
 :::
+
+## Rate limits {#rate-limits}
+
+The public token endpoints declare bundled [rate-limit](./rate-limit) policies, enforced when `rateLimitInterceptors` are installed:
+
+| Endpoint              | Policy id             | Rule     | Key                                                                       |
+| --------------------- | --------------------- | -------- | ------------------------------------------------------------------------- |
+| `POST /auth/token`    | `aooth.token`         | `150/5m` | client IP — every grant                                                   |
+| `POST /auth/token`    | `aooth.token-refresh` | `10/1m`  | the presented `refresh_token` of a `refresh_token` grant (hashed), any IP |
+| `POST /auth/register` | `aooth.register`      | `20/1h`  | client IP                                                                 |
+
+All three are checked before the auth guard. Over a limit the endpoint answers the coded `429` (`RATE_LIMITED`, `Retry-After`, `RateLimit-*` headers) — not an OAuth `{ error }` body; OAuth clients treat it as a temporary HTTP failure. Re-tune or switch them off by id with `rateLimitInterceptors({ policies: { "aooth.register": "5/1h" } })` ([Bundled limits](./rate-limit#bundled-limits)). They limit one caller; an ingress limit in front can still cap the total.
 
 ## Consuming it — "the inbound grant and the outbound provider are two ends of the same wire"
 

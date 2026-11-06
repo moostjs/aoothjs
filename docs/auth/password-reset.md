@@ -204,8 +204,20 @@ If you're using moost, the unified [`AuthWorkflow`](../moost/workflows)'s `recov
 - A single `/auth/trigger` entry point (no per-step routes — the flow is driven by the wf state token).
 - A multi-step `WfFinished` envelope (countdown auto-redirect, magic-link **or** OTP delivery).
 - `recoveryStateTtlMs` capping the request-to-reset window; per-request policy via `resolveXxx(ctx)` getters.
-- Anti-enumeration on the identifier step + optional known-factor verification before reset.
+- No account-existence oracle: an identifier no code can go to gets the same answer as an existing account (below).
 - Post-reset session revocation + `autoLoginOnRecover` (auto-login vs fresh-login redirect).
+
+### No enumeration
+
+The recovery flow's answers do not tell whether an account exists:
+
+- **One-time code (the default).** Every identifier gets the same code step: the same token prefix, response and form, one persisted pause with the same expiry (`recoveryStateTtlMs`), and the same answers to every code (`AOOTH_INVALID_CODE`, the attempt limit and `AOOTH_TOO_MANY_CODE_ATTEMPTS`, `AOOTH_CODE_EXPIRED`, the resend wait). No code goes to an identifier that matches no account a code can go to — unknown, an inactive account (a pending invitation, a deactivated user), or with registered-channel delivery an account without a deliverable channel — and no code is accepted for it. A locked account still receives its code: recovery is how it unlocks itself (`resolveLockout`).
+- **Nothing about the account is in the state before the code is verified.** The account is looked up from the typed identifier when a code is sent and again when one is checked, never stored — so a client-held (encapsulated) token carries nothing that differs between accounts, and neither does its length or the response's: they are the same for known, unknown, inactive and registered-channel accounts, whatever the length of their addresses, under the default encapsulated strategy and a durable store. Encapsulated states are padded to 256-byte buckets. Pending consents are staged only after verification, and with registered-channel delivery the code form shows no destination.
+- **The code rules answer alike for every identifier.** Recovery codes follow the [one-time code rules](../moost/workflows#one-time-codes) — bound to what they were sent for, attempt limit and single use enforced on the server, server-side resend wait and failure budgets. Their destination is the typed identifier, known or not, so every one of those limits answers the same for an identifier with no account. A recovery code is bound to the account and the address it went to: if the identifier resolves to another account by the time the code is entered (a renamed username, an address moved to another account, an account deleted and recreated), or its registered channel changed, the code is answered as wrong.
+- **The same reads.** A known and an unknown identifier make the same user-store reads: one identifier lookup, then one account read with one-time-code delivery to the typed address, two with registered-channel delivery (the second picks the channel) — of a placeholder row for an unknown or inactive one — and call the same delivery resolvers (an error a resolver throws on the placeholder is "no account"). A resolver you override must keep the reads equal itself.
+- **[Magic links](../moost/workflows#magic-links)** give the same answer to every identifier and never return the link to the requester.
+
+The one difference left is time: a real account waits for its code (or link) to be sent. Use an `EmailSender` / `SmsSender` that queues (returns before the message goes out) if response time must not depend on delivery. Every send attempt — real or not — also counts against the bundled per-IP [`aooth.send`](../moost/rate-limit#bundled-limits) limit.
 
 If your needs match the workflow's shape, use it. If they don't, the primitives on this page are what's underneath — and they're stable.
 

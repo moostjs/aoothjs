@@ -98,11 +98,11 @@ protected selectRecoveryRegisteredMethod(user: UserCredentials): MfaMethod | nul
 ```
 
 ::: tip Anti-enumeration is preserved
-When the resolved account has **no deliverable confirmed method**, the `request` step emits the **same generic finish envelope** as an unknown identifier and leaves `ctx.subject` unset — so an attacker can't distinguish "no such account" from "account with no recoverable channel". TOTP-only and method-less accounts therefore look identical to unknown ones.
+When the resolved account has **no deliverable confirmed method**, the run looks exactly like a real one — the same code form and pause, with nothing sent and no code accepted — like an unknown identifier ([No enumeration](/auth/password-reset#no-enumeration)), so an attacker can't distinguish "no such account" from "account with no recoverable channel". TOTP-only and method-less accounts therefore look identical to unknown ones. The code form shows **no destination** under M2, for any account: even masked, it would disclose part of the account's own channel to whoever typed the identifier.
 :::
 
 ::: warning The request→send race is handled, not thrown
-A confirmed method can be deleted between the `request` guard and a later resend. M2 detects this at send time and **degrades to the same generic finish** rather than surfacing a distinguishable `500` — so the race can't be used to enumerate either. (The double row-load — once in `request`, once per send — is deliberate: re-reading is the re-check.)
+A confirmed method can be deleted between the `request` guard and a later resend. The account and its channel are resolved again on every send and when a code is checked, so a channel deleted since is simply "no account": the code form stays, nothing is sent and the earlier code stops working — never a distinguishable `500` — so the race can't be used to enumerate either.
 :::
 
 ## Promote a confirmed channel to a handle

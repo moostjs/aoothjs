@@ -12,7 +12,9 @@ import { getMoostMate } from "moost";
  *    `'session'` (per login/device) derive from the auth context; anything
  *    unresolved falls back to the IP budget. `'auto'` is an alias of
  *    `'user'`. Apps supply their own kinds (`'tenant'`, `'apiKey'`, …) via
- *    `setRateLimitSubject`.
+ *    `setRateLimitSubject`. `'refresh-token'` keys on the refresh token the
+ *    request presents (body `refreshToken`, else the refresh cookie), hashed;
+ *    a request without one skips the policy.
  *  - custom function — runs inside the event context PRE-guard; must be
  *    self-sufficient (it cannot read what GUARD-priority code sets). Return
  *    a composite subject (e.g. client IP + submitted username) to key on
@@ -24,6 +26,7 @@ export type RateLimitKeyStrategy =
   | "user"
   | "auto"
   | "session"
+  | "refresh-token"
   // (string & {}) keeps literal autocomplete while accepting any subject kind
   | (string & {})
   | (() => string | null | undefined | Promise<string | null | undefined>);

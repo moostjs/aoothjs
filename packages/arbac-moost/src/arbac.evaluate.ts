@@ -71,7 +71,7 @@ export function scopesOwnedBy(scopes: object, resource: string, action: string):
 
 /** The 403 every ARBAC deny answers. */
 export function insufficientPrivileges(resource: string, action: string): HttpError {
-  return arbacHttpError(403, "INSUFFICIENT_PRIVILEGES", { action, resource });
+  return arbacHttpError(403, "ARBAC_INSUFFICIENT_PRIVILEGES", { action, resource });
 }
 
 /** An evaluation outcome as `useArbac().evaluate()` returns it. */

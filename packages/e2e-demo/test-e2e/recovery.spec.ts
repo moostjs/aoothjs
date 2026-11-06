@@ -87,28 +87,49 @@ test.describe("recovery — default (OTP-via-email)", () => {
     expect(names, "fresh-login recovery is not a login (no session)").not.toContain("afterLogin");
   });
 
-  test("WF-RECOVERY-002: unknown email → generic finish, no mailbox event", async ({
+  test("WF-RECOVERY-002: unknown email → the same code form as a known one, nothing sent, no code accepted", async ({
     page,
     request,
   }) => {
-    // Anti-enumeration: the request step short-circuits to a generic finish
-    // for unknown emails. No `recovery.pincode` event for the ghost address.
+    // Anti-enumeration: an unknown identifier runs a ghost OTP pause — the
+    // same PincodeForm and hint as a real account; no email goes out and
+    // every code answers like a wrong one.
     await page.goto(wfUrl("auth/recovery/flow"));
 
     await waitForFormInput(page, "email", 15_000);
     await fillField(page, "email", "ghost@nowhere.test");
     await submitForm(page);
 
-    await expect(page.getByText("Workflow finished.")).toBeVisible();
-    const envelope = (await readFinishEnvelope(page)) as {
-      data?: { accessToken?: string };
-    };
-    expect(envelope.data?.accessToken, "unknown email must not issue tokens").toBeFalsy();
+    await waitForFormInput(page, "code", 15_000);
+    await expect(page.getByText("Code sent to g***t@nowhere.test.")).toBeVisible();
+    await fillField(page, "code", "123456");
+    await submitForm(page);
+    await expect(page.getByText("Invalid code")).toBeVisible();
 
-    // No recovery email sent for the ghost address.
     const events = await getEmails(request);
-    const recoveryEvents = events.filter((e) => e.kind === "recovery.pincode");
-    expect(recoveryEvents).toEqual([]);
+    expect(events.filter((e) => e.kind === "recovery.pincode")).toEqual([]);
+  });
+
+  test("WF-RECOVERY-002b: known and unknown emails get byte-identical trigger answers", async ({
+    request,
+  }) => {
+    const ask = async (email: string) => {
+      const start = await request.post("/auth/trigger", { data: { wfid: "auth/recovery/flow" } });
+      const { wfs } = (await start.json()) as { wfs: string };
+      const res = await request.post("/auth/trigger", {
+        data: { wfs, input: { formData: { email } } },
+      });
+      const text = (await res.text())
+        .replace(/"wfs":"([a-z-]+)\.[^"]+"/g, '"wfs":"$1.<handle>"')
+        .replace(/"resendAllowedAt":\d+/g, '"resendAllowedAt":0')
+        .replace(/"sentTo":"[^"]*"/g, '"sentTo":"<typed>"');
+      return { status: res.status(), text };
+    };
+    const known = await ask(ALICE_EMAIL);
+    const unknown = await ask("ghost@nowhere.test");
+    expect(known.text).toContain('"wfs":"store.<handle>"');
+    expect(unknown).toEqual(known);
+    expect((await getEmails(request)).filter((e) => e.kind === "recovery.pincode")).toHaveLength(1);
   });
 
   test("WF-RECOVERY-003: password mismatch on SetPasswordForm → inline 'Passwords do not match'", async ({
