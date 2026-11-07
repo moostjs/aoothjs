@@ -132,7 +132,7 @@ class MyAuthController extends AuthController {
 }
 ```
 
-`resumeOnly` lists flows the route may resume but never start (e.g. the invitee's link of the admin-issued invite flow on a public route); `block` refuses flows outright and wins over both. Access is judged on the registered flow a request resolves to; a refused start is 403 `AOOTH_WORKFLOW_NOT_ALLOWED`, a refused resume 403 `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED`.
+Since 0.2.7, `resumeOnly` lists flows the route may resume but never start (e.g. the invitee's link of the admin-issued invite flow on a public route); `block` refuses flows outright and wins over both. Access is judged on the registered flow a request resolves to; a refused start is 403 `AOOTH_WORKFLOW_NOT_ALLOWED`, a refused resume 403 `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED`.
 
 See [REST Controllers](./controllers) and [Workflows](./workflows#trigger-allow-lists-start-and-resume) for full coverage of the trigger surface.
 

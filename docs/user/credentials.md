@@ -164,7 +164,7 @@ When using `@atscript/db`, define the extension in `.as` so it shows up at the s
 
 ```ts
 // app.as
-import { AoothUserCredentials } from '@aooth/user/atscript-db/model.as'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {

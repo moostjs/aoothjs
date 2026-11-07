@@ -4,7 +4,7 @@
 
 ```atscript
 // src/app-user.as
-import { AoothUserCredentials } from '@aooth/user/atscript-db/model.as'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {

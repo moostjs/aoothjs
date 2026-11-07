@@ -118,7 +118,7 @@ The `AtscriptArbacUserProvider` fails loud if it sees more than one field with `
 If you do not use the moost ARBAC layer, extend `AoothUserCredentials` directly:
 
 ```ts:line-numbers
-import { AoothUserCredentials } from '@aooth/user/atscript-db/model.as'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {

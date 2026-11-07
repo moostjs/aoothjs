@@ -223,7 +223,7 @@ The shipped interface already declares the surrogate **`id`** (`@meta.id` + `@db
 
 ```ts
 // app.as
-import { AoothUserCredentials } from '@aooth/user/atscript-db/model.as'
+import { AoothUserCredentials } from '@aooth/user/atscript-db/model'
 
 @db.table 'users'
 export interface AppUser extends AoothUserCredentials {

@@ -4,9 +4,23 @@ What to check when you move to a newer aooth release. Each entry lists the chang
 
 ## To 0.2.7
 
+### Peers
+
+Needs `moost` / `@moostjs/*` `^0.7.6`, `@wooksjs/*` `^0.8.3`, `@atscript/db` / `@atscript/moost-db` `^0.1.175`, `@atscript/typescript` `^0.2.11` and `@atscript/moost-wf` `^0.1.170` (the atscript-ui client packages at `^0.1.170` too). The workflow access lists below are enforced by the `@moostjs/event-wf` trigger of that line.
+
+### A refused workflow resume answers its own code
+
+`@WfTrigger` access lists are now judged by the wooks workflow trigger. A resume the route refuses answers `403` with code `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED` and no params — it used to answer `AOOTH_WORKFLOW_NOT_ALLOWED` with the stored flow's id in `params.workflow`. A refused start keeps `AOOTH_WORKFLOW_NOT_ALLOWED`. Update clients and tests that branch on the code, and add the new code to your translator catalogue.
+
+The flow judged is now the registered flow a request resolves to, not the id the client spelled: an `allow` entry admits only a flow registered under exactly that id — list a parametric flow by its pattern (`user/:id`), not by a concrete id. A start of an id that resolves to no flow answers the same `403 AOOTH_WORKFLOW_NOT_ALLOWED` whenever `allow` is set. New options: `resumeOnly` (resume, never start) and `block`. See [Workflows — trigger allow lists](/moost/workflows#trigger-allow-lists-start-and-resume) and [Messages](/moost/messages).
+
+### Rate limits on two apps sharing one router
+
+Each rate-limit policy is now checked once per event per limiter. When a request runs the handler chains of two apps sharing one router, the second chain answers the same 429 for a policy the same limiter already rejected (without counting it again) and checks the policies it adds; before, the second chain skipped the whole phase. See [Rate Limiting — why a pair](/moost/rate-limit#why-a-pair-flood-rejection-before-credential-work).
+
 ### The rate limiter's `trustProxy` is deprecated
 
-`rateLimitInterceptors({ trustProxy })` is deprecated and logs a one-time warning; it is removed in 0.3. `true` is still honoured — one proxy hop — but now reads the header family the HTTP app's `proxyHeaders` names, so under `proxyHeaders: 'forwarded'` a client can no longer pick its bucket through `X-Forwarded-For`. Every client IP aooth keys on (rate-limit buckets, one-time-code failure budgets, session and device-trust IPs) comes from one place: the HTTP app's resolution, or this option while it is set. Move the setting to the HTTP app (`trustProxy`, plus `proxyHeaders` if your proxy writes `Forwarded`) before 0.3 — without either, every caller behind the proxy shares one budget. See [Rate Limiting — client IP behind a proxy](/moost/rate-limit#client-ip-behind-a-proxy).
+`rateLimitInterceptors({ trustProxy })` is deprecated and logs a one-time warning; it is removed in 0.3. `true` is still honoured — one proxy hop — but now reads the header family the HTTP app's `proxyHeaders` names, so under `proxyHeaders: 'forwarded'` a client can no longer pick its bucket through `X-Forwarded-For`. Every client IP aooth keys on (rate-limit buckets, one-time-code failure budgets, session and device-trust IPs) comes from one place: the HTTP app's resolution, or this option while it is set. Move the setting to the HTTP app (`trustProxy`, plus `proxyHeaders` if your proxy writes `Forwarded`) before 0.3 — `trustProxy: { addresses: ["10.0.0.0/8"], hops: 1 }` is the one-hop setting with the proxy's address checked. Without either, every caller behind the proxy shares one budget. See [Rate Limiting — client IP behind a proxy](/moost/rate-limit#client-ip-behind-a-proxy).
 
 ### `@WfTrigger` on an overriding handler replaces the base trigger
 
@@ -14,7 +28,7 @@ Re-decorating an inherited trigger route (e.g. `triggerWf()` of an `AuthControll
 
 ### Invites issued before 0.2 work on SQL stores
 
-On SQL user stores a pending invite issued before 0.2 answered `410 INVITE_REPLACED`; it now resumes and accepts. Optional fields the bundled atscript-db stores read back as `null` (an unset column) are now left out of the returned user, federated-identity and credential rows, as the `field?` types promise. Nothing to change in your app.
+On SQL user stores a pending invite issued before 0.2 answered `410 INVITE_REPLACED`; it now resumes and accepts. Optional fields the bundled atscript-db stores read back as `null` (an unset column) are now left out of the returned user, federated-identity and credential rows, as the `field?` types promise. For the same reason, refresh-token reuse on a credential row written before session ids existed now revokes every session of the user, as the [theft response](/auth/refresh#reuse-detection) promises; it used to revoke nothing. Nothing to change in your app.
 
 ## To 0.2.6
 

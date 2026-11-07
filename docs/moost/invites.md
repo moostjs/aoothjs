@@ -155,7 +155,7 @@ export class InviteAdminController {
 
 ## Showing what a link is for — `peekInvite` {#peek-invite}
 
-To show "Ann invited you as an editor" on the invite page before the invitee does anything, read the link's token with `peekInvite(token, { trigger, users })`. It never consumes the link and returns a safe projection:
+To show "Ann invited you as an editor" on the invite page before the invitee does anything, read the link's token with `peekInvite(token, { trigger, users })` (since 0.2.7). It never consumes the link and returns a safe projection:
 
 | Field       | Meaning                                                            |
 | ----------- | ------------------------------------------------------------------ |

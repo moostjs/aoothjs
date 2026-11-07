@@ -163,7 +163,7 @@ When the orchestrator detects a refresh-token reuse (a presentation after the gr
 2. The compromised credentials are revoked per `reuseResponse`:
    - **`'session'` (default)** — `auth.revokeSession(userId, sessionId)` kills only the reused token family (the compromised session). The legitimate user and the attacker share that family, so both are ended; the user's _other_ devices keep working.
    - **`'user'`** — `auth.revokeAllForUser(userId)` revokes every session for the user.
-   - When the session can't be targeted (no `sessionId`, or a store that can't enumerate sessions, e.g. stateless), `'session'` falls back to the user-wide cascade so theft is never left un-revoked.
+   - When the session can't be targeted (no `sessionId` — including one a store reads back as `null`, e.g. a SQL row written before session ids existed, since 0.2.7 — or a store that can't enumerate sessions, e.g. stateless), `'session'` falls back to the user-wide cascade so theft is never left un-revoked.
 3. `AuthError('REFRESH_REUSE_DETECTED')` is thrown with `details: { userId, sessionId?, rotatedAt? }`.
 
 **The reasoning**: a reused refresh token is taken to mean either (a) a token leak — the attacker and the legitimate user are both calling `refresh()` — or (b) a client bug. The default response ends the compromised session (the OAuth-best-practice token-family revocation) while leaving the user's other devices alone; escalate to `'user'` when any reuse should be treated as a full-account compromise.

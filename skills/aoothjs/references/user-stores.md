@@ -223,7 +223,7 @@ Keep `T` aligned across the three places it appears (`UsersStoreAtscriptDb<T>`, 
 
 ## `AoothUserCredentials` — the shipped `.as` model
 
-The package ships `@aooth/user/atscript-db/model.as` as a literal-file export pointing at `src/atscript-db/user-credentials.as`:
+The package ships `@aooth/user/atscript-db/model` (bare, since 0.2.7 — use it in `.as` imports) and `…/model.as` as literal-file exports pointing at `src/atscript-db/user-credentials.as`:
 
 ```atscript
 export interface AoothUserCredentials {

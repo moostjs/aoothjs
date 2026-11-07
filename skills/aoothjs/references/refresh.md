@@ -108,7 +108,7 @@ await auth.issue("u1", { ttl: 60 * 60_000, refresh: { ttl: 60 * 24 * 3600_000 } 
 Triggered by reuse **after grace**, by ANY reuse under strict `rotationGraceMs: 0`, or by reuse of a **superseded** token (its successor already rotated/revoked — grace rule 3) on stateful `'always'` / `'sliding'`; on stateless, by replay of a consumed token. Sequence:
 
 1. `refreshConfig.onRotationReuse?.(state)` — synchronous hook for audit-log / alert.
-2. Revoke per `reuseResponse`: `'session'` (default) → `revokeSession(userId, sessionId)` (the compromised family only); `'user'` → `revokeAllForUser(userId)`. Falls back to `revokeAllForUser` when `sessionId` is absent or the store can't enumerate (stateless).
+2. Revoke per `reuseResponse`: `'session'` (default) → `revokeSession(userId, sessionId)` (the compromised family only); `'user'` → `revokeAllForUser(userId)`. Falls back to `revokeAllForUser` when `sessionId` is absent — or `null` (legacy SQL row; since 0.2.7, was silently skipped) — or the store can't enumerate (stateless).
 3. `consumedRefreshes.delete(token)` for the stateless `'always'` path.
 4. `throw new AuthError('REFRESH_REUSE_DETECTED', undefined, { userId, sessionId?, rotatedAt? })`.
 
