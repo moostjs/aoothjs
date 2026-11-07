@@ -33,6 +33,19 @@ export class SessionEnricherProvider {
 }
 
 /**
+ * `?kind=` as the `listSessions` filter: a comma list, values trimmed, empty
+ * ones dropped (none left = the default browser-safe set). A comma list is
+ * the list form — a repeated query key is refused by the HTTP layer.
+ */
+function parseKindFilter(kind: string | undefined): string[] | undefined {
+  const kinds = kind
+    ?.split(",")
+    .map((k) => k.trim())
+    .filter((k) => k !== "");
+  return kinds?.length ? kinds : undefined;
+}
+
+/**
  * Optional, mountable controller exposing a user's active sessions for the
  * "Active sessions" UI. Register it (or a subclass) alongside `AuthController`
  * to enable the endpoints — registration IS the opt-in; aooth never mounts it
@@ -50,8 +63,9 @@ export class SessionEnricherProvider {
  * Each `SessionInfo` is mapped through the injectable {@link SessionEnricherProvider}
  * before returning, and the caller's own session is flagged `current: true`.
  * Both reads default to the browser-safe set (ordinary interactive sessions);
- * `?kind=<kind>` segments a non-browser bucket (e.g. `?kind=cli-session`) and
- * `?kind=*` returns every kind.
+ * `?kind=<kind>` segments a non-browser bucket (e.g. `?kind=cli-session`), a
+ * comma list takes several (`?kind=session,cli-session`) and `?kind=*` returns
+ * every kind.
  * NOT `@Public()` — the auth guard rejects unauthenticated callers with 401 and
  * ARBAC gates each action; a customer enables it with `allow("auth.sessions", "*")`.
  */
@@ -67,9 +81,10 @@ export class SessionsController {
   @ArbacAction("read")
   async listSessions(@Query("kind") kind?: string): Promise<EnrichedSession[]> {
     const auth = useAuth();
+    const kinds = parseKindFilter(kind);
     const sessions = (await this.auth.listSessions(auth.getUserId(), {
       enrich: (s) => this.enricher.enrich(s),
-      ...(kind !== undefined && { kind }),
+      ...(kinds && { kind: kinds }),
     })) as EnrichedSession[];
     const current = auth.getSessionId();
     // Flag the caller's own session in place — the enricher already produced
@@ -89,9 +104,10 @@ export class SessionsController {
     @Param("userId") userId: string,
     @Query("kind") kind?: string,
   ): Promise<EnrichedSession[]> {
+    const kinds = parseKindFilter(kind);
     const sessions = await this.auth.listSessions(userId, {
       enrich: (s) => this.enricher.enrich(s),
-      ...(kind !== undefined && { kind }),
+      ...(kinds && { kind: kinds }),
     });
     // No `current` flag — these are not the admin's own sessions.
     return sessions;

@@ -69,7 +69,8 @@ A correct `UserStore<T>` implementation:
 5. **`update` and `delete` return `false` when no row matched.** The service uses that to throw `NOT_FOUND`.
 6. **Reads return `null`**, not a thrown error, when missing — for all three of `findById`, `findByHandle`, `findByIdentifier`.
 7. **`findByHandle` matches `username` first, then the configured handle fields in order** — ordered, never a permissive `$or`. The handle fields are not hardcoded; the wiring derives them from `@aooth.user.email` / `@aooth.user.phone` and passes the ordered list to the store. See the warning above.
-8. **`withCas` re-reads via `findById`** each attempt and applies the patch under CAS (`expectedVersion = current.version`); it throws `NOT_FOUND` when `id` is missing and `CAS_EXHAUSTED` when retries saturate.
+8. **Optional fields left unset are absent, not `null`.** A SQL engine reads an unset column back as `null`; drop it from the optional paths (`account.pendingInvitation`, `account.invitedBy`, `account.inviteNonce`, `account.verifiedEmail`, `trustedDevices`, `seenDevices`) before returning a row — the bundled `UsersStoreAtscriptDb` does (since 0.2.7).
+9. **`withCas` re-reads via `findById`** each attempt and applies the patch under CAS (`expectedVersion = current.version`); it throws `NOT_FOUND` when `id` is missing and `CAS_EXHAUSTED` when retries saturate.
 
 A minimal but valid in-memory implementation lives at [`UserStoreMemory`](https://github.com/moostjs/aoothjs/blob/main/packages/user/src/store/memory.ts) — read that as your reference.
 
@@ -210,7 +211,7 @@ import {
 } from "@aooth/user/atscript-db";
 ```
 
-Shipped `.as` model (subpath export `./atscript-db/model.as`):
+Shipped `.as` model (subpath export `./atscript-db/model`, also `./atscript-db/model.as`):
 
 ```ts
 import { AoothUserCredentials } from "@aooth/user/atscript-db/model.as";

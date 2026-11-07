@@ -42,6 +42,10 @@
       "import": "./dist/atscript-db.mjs",
       "require": "./dist/atscript-db.cjs"
     },
+    "./atscript-db/model": {
+      "types": "./src/atscript-db/user-credentials.as.d.ts",
+      "default": "./src/atscript-db/user-credentials.as"
+    },
     "./atscript-db/model.as": {
       "types": "./src/atscript-db/user-credentials.as.d.ts",
       "default": "./src/atscript-db/user-credentials.as"

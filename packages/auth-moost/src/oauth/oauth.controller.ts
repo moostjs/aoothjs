@@ -253,10 +253,11 @@ function toConnectedAccount(i: FederatedIdentity): ConnectedAccount {
     provider: i.provider,
     subject: i.subject,
     linkedAt: i.linkedAt,
-    ...(i.lastLoginAt !== undefined && { lastLoginAt: i.lastLoginAt }),
-    ...(i.email !== undefined && { email: i.email }),
-    ...(i.emailVerified !== undefined && { emailVerified: i.emailVerified }),
-    ...(i.displayName !== undefined && { displayName: i.displayName }),
-    ...(i.avatarUrl !== undefined && { avatarUrl: i.avatarUrl }),
+    // `!= null`: a SQL store reads an unset optional column back as `null`.
+    ...(i.lastLoginAt != null && { lastLoginAt: i.lastLoginAt }),
+    ...(i.email != null && { email: i.email }),
+    ...(i.emailVerified != null && { emailVerified: i.emailVerified }),
+    ...(i.displayName != null && { displayName: i.displayName }),
+    ...(i.avatarUrl != null && { avatarUrl: i.avatarUrl }),
   };
 }

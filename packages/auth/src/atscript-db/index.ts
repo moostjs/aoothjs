@@ -365,16 +365,18 @@ function rowToState<TPayload extends object>(
     issuedAt: row.issuedAt,
     expiresAt: row.expiresAt,
   };
+  // The DB returns an unset optional column as `null` on SQL engines; treat
+  // null as absent (omit it) so the state matches the `field?` contract.
   if (metadataField !== undefined) {
     delete (state as unknown as Record<string, unknown>)[metadataField];
     const metadata = (row as Record<string, unknown>)[metadataField];
-    if (metadata !== undefined) state.metadata = metadata as CredentialState["metadata"];
+    if (metadata != null) state.metadata = metadata as CredentialState["metadata"];
   }
   if (row.kind === "access" || row.kind === "refresh") state.kind = row.kind;
-  if (row.parentCredentialId !== undefined) state.parentCredentialId = row.parentCredentialId;
-  if (row.rotatedAt !== undefined) state.rotatedAt = row.rotatedAt;
-  if (row.successor !== undefined && row.successor !== null) state.successor = row.successor;
-  if (row.sessionId !== undefined) state.sessionId = row.sessionId;
-  if (row.lastSeenAt !== undefined) state.lastSeenAt = row.lastSeenAt;
+  if (row.parentCredentialId != null) state.parentCredentialId = row.parentCredentialId;
+  if (row.rotatedAt != null) state.rotatedAt = row.rotatedAt;
+  if (row.successor != null) state.successor = row.successor;
+  if (row.sessionId != null) state.sessionId = row.sessionId;
+  if (row.lastSeenAt != null) state.lastSeenAt = row.lastSeenAt;
   return state as CredentialState & TPayload;
 }

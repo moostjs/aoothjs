@@ -796,7 +796,7 @@ export class AuthCredential<TPayload extends object = object> {
         userId: oldState.userId,
         iat: oldState.issuedAt,
         exp: oldState.expiresAt,
-        ...(oldState.sessionId !== undefined && { sessionId: oldState.sessionId }),
+        ...(oldState.sessionId != null && { sessionId: oldState.sessionId }),
       });
       return await this.issueRotatedPair(
         oldState,
@@ -895,7 +895,7 @@ export class AuthCredential<TPayload extends object = object> {
       expiresAt: oldState.expiresAt,
       kind: "refresh",
       rotatedAt: oldState.rotatedAt,
-      ...(oldState.sessionId !== undefined && { sessionId: oldState.sessionId }),
+      ...(oldState.sessionId != null && { sessionId: oldState.sessionId }),
     });
     return {
       accessToken: successor.accessToken,
@@ -1154,14 +1154,15 @@ export class AuthCredential<TPayload extends object = object> {
     // it across every refresh — the authority fixed at mint time, never the
     // instance default.
     const accessTtl = refreshState.metadata?.accessTtl ?? this.accessTtl;
-    // Carry the credential's typed payload + session forward across rotation.
+    // Carry the credential's typed payload + session forward across rotation
+    // (`?? undefined`: a custom store may read an unset field back as `null`).
     const accessState = stateWithPayload<TPayload>(credentialPayloadOf<TPayload>(refreshState), {
       userId: refreshState.userId,
       issuedAt: now,
       expiresAt: now + accessTtl,
       kind: "access",
-      metadata: refreshState.metadata,
-      sessionId: refreshState.sessionId,
+      metadata: refreshState.metadata ?? undefined,
+      sessionId: refreshState.sessionId ?? undefined,
       ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
     });
     const token = await this.put(accessState, accessTtl);
@@ -1204,10 +1205,10 @@ export class AuthCredential<TPayload extends object = object> {
         issuedAt: now,
         expiresAt: refreshExpiresAt,
         kind: "refresh",
-        metadata: oldRefreshState.metadata,
+        metadata: oldRefreshState.metadata ?? undefined,
         // Never the raw token at rest under `hashAtRest`.
         parentCredentialId: this.hashAtRest ? fingerprint(oldRefreshToken) : oldRefreshToken,
-        sessionId: oldRefreshState.sessionId,
+        sessionId: oldRefreshState.sessionId ?? undefined,
         ...(this.trackLastSeen === "refresh" && { lastSeenAt: now }),
       },
     );
@@ -1355,15 +1356,15 @@ export class AuthCredential<TPayload extends object = object> {
       issuedAt: reuse.issuedAt,
       expiresAt: reuse.expiresAt,
       kind: "refresh",
-      ...(reuse.sessionId !== undefined && { sessionId: reuse.sessionId }),
-      ...(reuse.rotatedAt !== undefined && { rotatedAt: reuse.rotatedAt }),
+      ...(reuse.sessionId != null && { sessionId: reuse.sessionId }),
+      ...(reuse.rotatedAt != null && { rotatedAt: reuse.rotatedAt }),
     });
 
     const scope = this.refreshConfig?.reuseResponse ?? "session";
     // `revokeSession` needs an enumerable store and a concrete sessionId;
     // without either, fall back to the user-wide cascade so theft never goes
-    // un-revoked.
-    if (scope === "session" && reuse.sessionId !== undefined && this.store.listForUser) {
+    // un-revoked. `!= null`: a legacy SQL row reads its unset sessionId as `null`.
+    if (scope === "session" && reuse.sessionId != null && this.store.listForUser) {
       await this.revokeSession(reuse.userId, reuse.sessionId);
     } else {
       await this.revokeAllForUser(reuse.userId);
@@ -1371,8 +1372,8 @@ export class AuthCredential<TPayload extends object = object> {
 
     throw new AuthError("REFRESH_REUSE_DETECTED", undefined, {
       userId: reuse.userId,
-      ...(reuse.sessionId !== undefined && { sessionId: reuse.sessionId }),
-      ...(reuse.rotatedAt !== undefined && { rotatedAt: reuse.rotatedAt }),
+      ...(reuse.sessionId != null && { sessionId: reuse.sessionId }),
+      ...(reuse.rotatedAt != null && { rotatedAt: reuse.rotatedAt }),
     });
   }
 }

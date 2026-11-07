@@ -44,6 +44,19 @@ All routes live under the `auth.sessions` ARBAC resource — **not** `@Public()`
 | `DELETE /auth/sessions/:sessionId`  | `revoke`     | Revoke one of the caller's sessions.                  |
 | `DELETE /auth/sessions?others=true` | `revoke`     | Log out everywhere else, keep current.                |
 
+### Filtering by kind — `?kind=`
+
+Both reads return ordinary interactive sessions by default; credentials minted with a `kind` (e.g. `"cli-session"`, `"pat"` — see [Credentials](../auth/credentials)) are left out. Pick other kinds with `?kind=`:
+
+| Query                       | Returns                                |
+| --------------------------- | -------------------------------------- |
+| _(none)_                    | ordinary sessions                      |
+| `?kind=cli-session`         | CLI sessions only                      |
+| `?kind=session,cli-session` | ordinary sessions **and** CLI sessions |
+| `?kind=*`                   | every kind                             |
+
+A comma-separated list is the list form — a repeated `?kind=a&kind=b` is refused by the HTTP layer. Values are trimmed and empty ones ignored; a list with nothing left returns the default set.
+
 A bare `DELETE /auth/sessions` (no `?others=true`) is a **400** — ending your _current_ device's session is what `POST /auth/logout` is for (it revokes this session's whole token family by `sessionId`). To end a _specific_ other device use `DELETE /auth/sessions/:sessionId`; to end every other device use `?others=true`. Grant ordinary users `read` + `revoke` (own sessions) and reserve the separate `readAny` action for admins who inspect other users.
 
 ## Capturing IP / User-Agent — `resolveIssueMetadata`

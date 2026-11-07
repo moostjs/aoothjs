@@ -1,7 +1,7 @@
 import { UserAuthError } from "../errors";
 import { UserStore, type WithCasOptions } from "../store/user-store";
 import type { UserCredentials, UserStoreUpdate } from "../types";
-import { setAtPath } from "../utils";
+import { dropNullFields, setAtPath } from "../utils";
 
 /**
  * Persisted row shape — `UserCredentials` plus the consumer's custom user
@@ -46,6 +46,28 @@ function isConflict(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as DbErrorLike).code === "CONFLICT";
 }
 
+/** Optional aooth-owned `account.*` fields (see {@link fromRow}). */
+const OPTIONAL_ACCOUNT_FIELDS = [
+  "pendingInvitation",
+  "invitedBy",
+  "inviteNonce",
+  "verifiedEmail",
+] as const;
+/** Optional aooth-owned root fields (see {@link fromRow}). */
+const OPTIONAL_ROOT_FIELDS = ["trustedDevices", "seenDevices"] as const;
+
+/**
+ * The DB returns an unset optional column as `null` on SQL engines (Mongo
+ * omits the key); drop `null` from the optional aooth-owned paths so a row
+ * matches the memory store + the `field?` contract — a NULL `inviteNonce` on a
+ * pre-0.2 invite must read as absent, not as a different nonce.
+ */
+function fromRow<R extends UserCredentials>(row: R): R {
+  if (row.account) dropNullFields(row.account, OPTIONAL_ACCOUNT_FIELDS);
+  dropNullFields(row, OPTIONAL_ROOT_FIELDS);
+  return row;
+}
+
 interface UsersStoreAtscriptDbOptions<TUserCustom extends object> {
   table: AuthUserTable<TUserCustom>;
   /**
@@ -85,25 +107,30 @@ export class UsersStoreAtscriptDb<
     return count > 0;
   }
 
+  /** The one row read every finder goes through — normalized by {@link fromRow}. */
+  private async findRow(
+    filter: Record<string, unknown>,
+  ): Promise<(UserCredentials & TUserCustom) | null> {
+    const row = await this.table.findOne({ filter });
+    return row && fromRow(row);
+  }
+
   async findById(id: string): Promise<(UserCredentials & TUserCustom) | null> {
-    const result = await this.table.findOne({ filter: { id } });
-    return result;
+    return this.findRow({ id });
   }
 
   async findByHandle(handle: string): Promise<(UserCredentials & TUserCustom) | null> {
-    const byUsername = await this.table.findOne({ filter: { username: handle } });
+    const byUsername = await this.findRow({ username: handle });
     if (byUsername) return byUsername;
     for (const field of this.handleFields) {
-      const byHandle = await this.table.findOne({ filter: { [field]: handle } });
+      const byHandle = await this.findRow({ [field]: handle });
       if (byHandle) return byHandle;
     }
     return null;
   }
 
   async findByIdentifier(value: string): Promise<(UserCredentials & TUserCustom) | null> {
-    const byId = await this.table.findOne({ filter: { id: value } });
-    if (byId) return byId;
-    return this.findByHandle(value);
+    return (await this.findRow({ id: value })) ?? this.findByHandle(value);
   }
 
   async create(data: UserCredentials & TUserCustom): Promise<void> {

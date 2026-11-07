@@ -115,20 +115,20 @@ hand-edit; regenerate via `npx asc` or let the unplugin do it at bundle time.
 
 ## Subpath exports
 
-| Package              | Subpath                  | What it ships                                                                                       |
-| -------------------- | ------------------------ | --------------------------------------------------------------------------------------------------- |
-| `@aooth/user`        | `.`                      | `UserService`, stores, password, MFA helpers, `UserAuthError`                                       |
-| `@aooth/user`        | `./atscript-db`          | `UsersStoreAtscriptDb`, `AuthUserTable`, `UserCredentialsRow`                                       |
-| `@aooth/user`        | `./atscript-db/model.as` | Raw `.as` file — the shipped `AoothUserCredentials` interface                                       |
-| `@aooth/auth`        | `.`                      | `AuthCredential`, in-memory + JWT + encapsulated stores, denylists, errors                          |
-| `@aooth/auth`        | `./redis`                | `CredentialStoreRedis`, `DenylistStoreRedis` + `RedisLike` interface                                |
-| `@aooth/auth`        | `./atscript-db`          | `CredentialStoreAtscriptDb`, `AuthCredentialTable`, `AuthCredentialRow`                             |
-| `@aooth/auth`        | `./atscript-db/model.as` | Raw `.as` file — the shipped `AoothAuthCredential` interface                                        |
-| `@aooth/arbac-core`  | `.`                      | `Arbac`, types, `arbacPatternToRegex`                                                               |
-| `@aooth/arbac`       | `.`                      | `* from arbac-core` + builder + privileges + scope mergers + codegen                                |
-| `@aooth/arbac`       | `./bin`                  | `aoothjs-arbac-codegen` CLI (registered via `package.json` `"bin"`)                                 |
-| `@aooth/auth-moost`  | `.`                      | Controllers, guards, decorators, composables, workflows, trigger provider                           |
-| `@aooth/arbac-moost` | `.`                      | Interceptor, decorators, `useArbac`, `MoostArbac`, base `ArbacUserProvider`, DB controllers         |
-| `@aooth/arbac-moost` | `./atscript`             | `AtscriptArbacUserProvider`, `ArbacUserTable`, re-export `AoothArbacUserCredentials`                |
-| `@aooth/arbac-moost` | `./atscript/models`      | The `AoothArbacUserCredentials` `.as` interface (raw file export — also via `./atscript/models.as`) |
-| `@aooth/arbac-moost` | `./plugin`               | `arbacPlugin()` for `atscript.config.ts` — registers `@arbac.role/.attribute/.userId`               |
+| Package              | Subpath                         | What it ships                                                                                                     |
+| -------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `@aooth/user`        | `.`                             | `UserService`, stores, password, MFA helpers, `UserAuthError`                                                     |
+| `@aooth/user`        | `./atscript-db`                 | `UsersStoreAtscriptDb`, `AuthUserTable`, `UserCredentialsRow`                                                     |
+| `@aooth/user`        | `./atscript-db/model` (+ `.as`) | Raw `.as` file — the shipped `AoothUserCredentials` interface (bare subpath since 0.2.7; use it in `.as` imports) |
+| `@aooth/auth`        | `.`                             | `AuthCredential`, in-memory + JWT + encapsulated stores, denylists, errors                                        |
+| `@aooth/auth`        | `./redis`                       | `CredentialStoreRedis`, `DenylistStoreRedis` + `RedisLike` interface                                              |
+| `@aooth/auth`        | `./atscript-db`                 | `CredentialStoreAtscriptDb`, `AuthCredentialTable`, `AuthCredentialRow`                                           |
+| `@aooth/auth`        | `./atscript-db/model` (+ `.as`) | Raw `.as` file — the shipped `AoothAuthCredential` interface                                                      |
+| `@aooth/arbac-core`  | `.`                             | `Arbac`, types, `arbacPatternToRegex`                                                                             |
+| `@aooth/arbac`       | `.`                             | `* from arbac-core` + builder + privileges + scope mergers + codegen                                              |
+| `@aooth/arbac`       | `./bin`                         | `aoothjs-arbac-codegen` CLI (registered via `package.json` `"bin"`)                                               |
+| `@aooth/auth-moost`  | `.`                             | Controllers, guards, decorators, composables, workflows, trigger provider                                         |
+| `@aooth/arbac-moost` | `.`                             | Interceptor, decorators, `useArbac`, `MoostArbac`, base `ArbacUserProvider`, DB controllers                       |
+| `@aooth/arbac-moost` | `./atscript`                    | `AtscriptArbacUserProvider`, `ArbacUserTable`, re-export `AoothArbacUserCredentials`                              |
+| `@aooth/arbac-moost` | `./atscript/models`             | The `AoothArbacUserCredentials` `.as` interface (raw file export — also via `./atscript/models.as`)               |
+| `@aooth/arbac-moost` | `./plugin`                      | `arbacPlugin()` for `atscript.config.ts` — registers `@arbac.role/.attribute/.userId`                             |

@@ -5,6 +5,7 @@ import {
   EncapsulatedStateStrategy,
   HandleStateStrategy,
   MoostWf,
+  normalizeWfId,
   type WfOutlet,
   type WfOutletTokenConfig,
   type WfOutletTriggerConfig,
@@ -71,6 +72,8 @@ export class BoundedWfStateStoreMemory extends WfStateStoreMemory {
 
 /** Where aooth records, inside a persisted state, which strategy persisted it. */
 const STRATEGY_TAG = "aoothStrategy";
+/** Where aooth records, inside a persisted state, when it expires (ms; absent = unknown / never). */
+export const STATE_EXPIRES_KEY = "aoothExpiresAt";
 /** Padding aooth adds to encapsulated states (stripped on read). */
 const PAD_KEY = "aoothPad";
 /** Encapsulated payloads are padded to a multiple of this many bytes. */
@@ -79,6 +82,7 @@ const PAD_BUCKET = 256;
 const TAG_REQUIRED = new Set([MAGIC_LINK_STRATEGY]);
 
 type WfStateMeta = Record<string, unknown>;
+type WfPersistOptions = Parameters<WfStateStrategy["persist"]>[1];
 
 /**
  * Wrap a registered strategy so a state can only be resumed through the
@@ -89,7 +93,9 @@ type WfStateMeta = Record<string, unknown>;
  * attempt does not destroy it. States persisted before tagging existed are
  * accepted, except by strategies that always tag. Encapsulated states are also
  * padded to a {@link PAD_BUCKET}-byte multiple, so the token's length does not
- * follow the length of what is inside.
+ * follow the length of what is inside. The persist-time expiry, when the
+ * trigger passes one, is recorded too ({@link STATE_EXPIRES_KEY}), so a peek
+ * can tell when the token stops working.
  */
 function tagStrategy(name: string, strategy: WfStateStrategy): WfStateStrategy {
   const pad = strategy instanceof EncapsulatedStateStrategy;
@@ -98,9 +104,21 @@ function tagStrategy(name: string, strategy: WfStateStrategy): WfStateStrategy {
     const tag = state.meta?.[STRATEGY_TAG];
     return tag === undefined ? !TAG_REQUIRED.has(name) : tag === name;
   };
-  const tagged = (state: WfState): WfState => {
-    const { [PAD_KEY]: _pad, ...meta } = (state.meta ?? {}) as WfStateMeta;
-    const out = { ...state, meta: { ...meta, [STRATEGY_TAG]: name } } as WfState;
+  const tagged = (state: WfState, options: WfPersistOptions): WfState => {
+    const {
+      [PAD_KEY]: _pad,
+      [STATE_EXPIRES_KEY]: _expires,
+      ...meta
+    } = (state.meta ?? {}) as WfStateMeta;
+    const expiresAt = options?.expiresAt ?? (options?.ttl ? Date.now() + options.ttl : undefined);
+    const out = {
+      ...state,
+      meta: {
+        ...meta,
+        [STRATEGY_TAG]: name,
+        ...(expiresAt !== undefined && { [STATE_EXPIRES_KEY]: expiresAt }),
+      },
+    } as WfState;
     if (!pad) return out;
     // `{"s":<state>,"e":<expiry>}` is what the strategy encrypts; the expiry's
     // length is the same for every state of one configuration.
@@ -114,7 +132,8 @@ function tagStrategy(name: string, strategy: WfStateStrategy): WfStateStrategy {
     return { ...state, meta };
   };
   const wrapped: WfStateStrategy = {
-    persist: (state, options, overrides) => strategy.persist(tagged(state), options, overrides),
+    persist: (state, options, overrides) =>
+      strategy.persist(tagged(state, options), options, overrides),
     retrieve: async (token) => {
       const state = await strategy.retrieve(token);
       return accepts(state) ? clean(state) : null;
@@ -129,7 +148,7 @@ function tagStrategy(name: string, strategy: WfStateStrategy): WfStateStrategy {
   Object.defineProperty(wrapped, "inner", { value: strategy });
   if (strategy.persistEntry) {
     wrapped.persistEntry = (state, options, overrides) =>
-      strategy.persistEntry!(tagged(state), options, overrides);
+      strategy.persistEntry!(tagged(state, options), options, overrides);
   }
   if (strategy.consumeEntry) {
     wrapped.consumeEntry = async (token) => {
@@ -218,11 +237,6 @@ type StateRegistry = { strategies: Record<string, WfStateStrategy>; default: str
  */
 export function deriveWfStateSecret(secret: string): Buffer {
   return createHash("sha256").update(secret).digest();
-}
-
-/** One canonical workflow-id form for allow-list matching: no leading `/`. */
-function normalizeWfId(id: string): string {
-  return id.replace(/^\/+/, "");
 }
 
 function notAllowed(id: string): HttpError {
@@ -433,6 +447,24 @@ export class WfTriggerProvider {
       };
     }
     return this.cachedState;
+  }
+
+  /**
+   * Read the paused workflow state a resume token (`wfs`) points at, WITHOUT
+   * consuming it — e.g. to show what a link is for before its holder acts.
+   * The token is resolved exactly as a resume resolves it (its strategy
+   * prefix, the strategy's handle hashing and legacy-key rules, the strategy
+   * tag), so a peek finds what a resume would. An unknown, expired, malformed
+   * or foreign token is `null` — one answer for all. The state carries
+   * server-only context: project what you need, never send it as-is.
+   */
+  async peek(token: string): Promise<WfState | null> {
+    const i = token.indexOf(".");
+    if (i <= 0 || i === token.length - 1) return null;
+    const strategies = this.stateRegistry().strategies;
+    const name = token.slice(0, i);
+    if (!Object.hasOwn(strategies, name)) return null;
+    return strategies[name].retrieve(token.slice(i + 1));
   }
 
   /**

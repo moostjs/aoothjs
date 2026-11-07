@@ -1,6 +1,6 @@
 import { UserStoreMemory } from "@aooth/user";
 import { HttpError } from "@moostjs/event-http";
-import { useRequest } from "@wooksjs/event-http";
+import { type TWooksHttpOptions, useRequest } from "@wooksjs/event-http";
 import { Controller, Inherit, Injectable } from "moost";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -68,6 +68,7 @@ async function boot(
     workflowOpts?: Partial<AuthWorkflowOpts>;
     rateLimit?: RateLimitInterceptorOptions;
     triggerHooks?: WfTriggerHooks;
+    httpApp?: TWooksHttpOptions;
   } = {},
 ): Promise<PreparedFlowApp> {
   deliverySource = source;
@@ -509,7 +510,8 @@ const behindProxy = (mfa: Partial<NonNullable<AuthWorkflowOpts["mfa"]>>) => ({
     },
   },
   workflowOpts: { mfa: { pincodeResendTimeoutMs: 20, ...mfa } },
-  rateLimit: { trustProxy: true, policies: { "aooth.send": false as const } },
+  httpApp: { trustProxy: 1 },
+  rateLimit: { policies: { "aooth.send": false as const } },
 });
 
 describe("the failure budget is per client IP, with a global cap per destination", () => {

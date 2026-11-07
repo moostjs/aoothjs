@@ -227,6 +227,10 @@ class MyAuthController extends AuthController {
 Without `@Inherit()`, moost re-scans method decorators only on the subclass body and the unoverridden endpoints (`logout`, `refresh`, `status`) disappear from the route table. The `@Inherit()` decorator flows the parent class's `@Get('status')` / `@Post('logout')` / `@Post('refresh')` metadata down.
 :::
 
+### What a re-decorated trigger inherits {#trigger-override-semantics}
+
+The override's `@WfTrigger({...})` **replaces** the base route's trigger options as a whole: its `allow` is the only list checked (it can narrow as well as widen the base list), and its hooks (`renderEnvelope`, `around`, …) are the only route-level hooks. The trigger still runs once per request. Repeat any base option you want to keep. An override without its own `@WfTrigger` keeps the base route's options unchanged.
+
 ### Pattern B — replace `triggerWf` entirely
 
 If you need conditional logic — e.g. routing to a different wf based on a header — return a non-`undefined` value from your override; the after-interceptor will skip the default `handle()` dispatch and use your return value as the response.

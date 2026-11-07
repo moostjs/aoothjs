@@ -392,6 +392,29 @@ describe("AuthCredential", () => {
       expect(await auth.validate(sibling.accessToken)).not.toBeNull();
     });
 
+    it("reuse of a row whose sessionId reads back as null falls back to revoking every session", async () => {
+      // WHY: a store can read an unset column back as `null`; `revokeSession(…, null)`
+      // matches nothing, so the theft response would be silently skipped.
+      const { auth, store, clock } = makeAuth({
+        accessTtl: 60_000,
+        refresh: { ttl: 600_000, rotation: "always", rotationGraceMs: 1000 },
+      });
+      const sibling = await auth.issue("alice");
+      const now = clock.now();
+      await store.persistAs!("legacy-rt", {
+        userId: "alice",
+        issuedAt: now - 10_000,
+        expiresAt: now + 600_000,
+        kind: "refresh",
+        rotatedAt: now - 5_000,
+        sessionId: null as unknown as string,
+      });
+      const err = await auth.refresh("legacy-rt").catch((e: unknown) => e);
+      expect(err).toMatchObject({ type: "REFRESH_REUSE_DETECTED" });
+      expect((err as AuthError).details).toEqual({ userId: "alice", rotatedAt: now - 5_000 });
+      expect(await auth.validate(sibling.accessToken)).toBeNull();
+    });
+
     it("reuseResponse 'user' escalates theft to every session", async () => {
       const { auth, clock } = makeAuth({
         accessTtl: 60_000,

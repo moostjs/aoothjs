@@ -63,7 +63,7 @@ import {
 import { createHash, createHmac, randomBytes } from "node:crypto";
 
 import { current, tryGetCurrent } from "@wooksjs/event-core";
-import { useCookies, useHeaders, useRequest, useResponse, useUrlParams } from "@wooksjs/event-http";
+import { useCookies, useHeaders, useResponse, useUrlParams } from "@wooksjs/event-http";
 import { ArbacAction, ArbacResource, useArbac } from "@aooth/arbac-moost";
 import { Controller, Inherit, Param, useControllerContext, useLogger } from "moost";
 
@@ -3413,7 +3413,7 @@ export class AuthWorkflow {
     const existing = await this.users.findByHandle(email);
     const invitedBy = useAuth().getAuthContext()?.userId;
     const pendingIssuer = existing?.account?.pendingInvitation
-      ? existing.account.invitedBy
+      ? (existing.account.invitedBy ?? undefined)
       : undefined;
     if (invitedBy) (ctx.admin ??= {}).invitedBy = invitedBy;
     const action = await this.duplicateInviteCheck({
@@ -3685,8 +3685,10 @@ export class AuthWorkflow {
     this.requireSubject(ctx);
     const user = await this.users.findByIdentifier(ctx.subject);
     if (!user) throw this.httpError(410, "INVITE_CANCELLED");
+    // `!= null`: a pre-0.2 invite has no marker, and a SQL store may read the
+    // unset column back as `null` rather than leaving it out.
     const current = user.account?.inviteNonce;
-    if (current !== undefined && current !== ctx.admin?.inviteNonce) {
+    if (current != null && current !== ctx.admin?.inviteNonce) {
       throw this.httpError(410, "INVITE_REPLACED");
     }
     return user;
@@ -4597,16 +4599,13 @@ export class AuthWorkflow {
   }
 
   /**
-   * Resolve the client IP from the active HTTP request, swallowing the case
-   * where there is no HTTP context (unit tests that hand-roll the wf runtime).
-   * Ported from `AuthWorkflowBase`.
+   * Resolve the client IP from the active HTTP request — the IP the HTTP app
+   * resolves (its `trustProxy` / `proxyHeaders`), the same one the rate
+   * limiter keys on — swallowing the case where there is no HTTP context
+   * (unit tests that hand-roll the wf runtime).
    */
   protected resolveClientIp(): string | undefined {
-    try {
-      return useRequest().getIp() || undefined;
-    } catch {
-      return undefined;
-    }
+    return requestClientIp() || undefined;
   }
 
   /**

@@ -13,7 +13,7 @@ The patterns below are taken from [`packages/e2e-demo/`](https://github.com/moos
 | `AoothAuthCredential`       | `@aooth/auth/atscript-db/model.as`      | Credential row — `token` (PK), `userId`, `issuedAt`, `expiresAt`, `kind`, rotation and session columns. No `metadata` column: extend it to add one (needed for PATs, per-mint TTLs and authorization-server tokens — see below).                                                                                      |
 
 ::: info Subpath form
-The `package.json` exports the raw `.as` source under the `.as` suffix (e.g. `'@aooth/user/atscript-db/model.as'`). That is what `unplugin-atscript` resolves and what the e2e demo imports. There is no separate no-extension subpath — always include `.as`.
+Every shipped model is exported under two equivalent subpaths: with the `.as` suffix (`'@aooth/user/atscript-db/model.as'`) and without it (`'@aooth/user/atscript-db/model'`). Use the bare form in `.as` files — the atscript language server resolves it, and so does a toolchain without `unplugin-atscript` (resolution through the `exports` map only). The `@aooth/user` bare subpaths exist since 0.2.7.
 :::
 
 ## What's in `AoothUserCredentials`

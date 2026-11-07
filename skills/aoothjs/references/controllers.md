@@ -68,6 +68,8 @@ app.registerControllers(AppAuthController);
 
 The handler body is intentionally empty. `@WfTrigger` is an after-interceptor at `INTERCEPTOR` priority: when the handler returns `undefined`, it `instantiate(WfTriggerProvider)`s the provider and replies with `provider.handle(opts)`. To short-circuit, return any non-`undefined` value from your override.
 
+Override semantics (since 0.2.7): re-decorating an inherited handler with `@WfTrigger({...})` under `@Inherit()` REPLACES the base options as a whole — the override's `allow` is the only list checked (narrow or widen), its hooks the only route hooks; repeat any base option you want to keep. One trigger runs per request. An override WITHOUT its own `@WfTrigger` keeps the base options.
+
 ## `authGuardInterceptor(opts)`
 
 Factory — returns a `defineBeforeInterceptor` at `TInterceptorPriority.GUARD`. HTTP-only — on non-HTTP events (WF, CLI, WS) it returns immediately. `AuthGuarded(opts)` is `@Intercept(authGuardInterceptor(opts))` sugar for per-controller mounting.

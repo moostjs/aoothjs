@@ -8,6 +8,7 @@ import {
   type FederatedProfileSnapshot,
   type NewFederatedIdentity,
 } from "../store/federated-identity-store";
+import { dropNullFields } from "../utils";
 
 /**
  * Structural surface of `AtscriptDbTable` covering exactly the methods this
@@ -30,6 +31,24 @@ interface DbErrorLike {
 
 function isConflict(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as DbErrorLike).code === "CONFLICT";
+}
+
+/** Optional row fields (see {@link fromRow}). */
+const OPTIONAL_FIELDS = [
+  "email",
+  "emailVerified",
+  "displayName",
+  "avatarUrl",
+  "lastLoginAt",
+] as const;
+
+/**
+ * The DB returns an unset optional column as `null` on SQL engines; drop it so
+ * a row matches the memory store + the `field?` contract.
+ */
+function fromRow(row: FederatedIdentity): FederatedIdentity {
+  dropNullFields(row, OPTIONAL_FIELDS);
+  return row;
 }
 
 interface FederatedIdentityStoreAtscriptDbOptions {
@@ -58,12 +77,13 @@ export class FederatedIdentityStoreAtscriptDb extends FederatedIdentityStore {
   }
 
   async find(provider: string, subject: string): Promise<FederatedIdentity | null> {
-    return this.table.findOne({ filter: { provider, subject } });
+    const row = await this.table.findOne({ filter: { provider, subject } });
+    return row && fromRow(row);
   }
 
   async listForUser(userId: string): Promise<FederatedIdentity[]> {
     const rows = await this.table.findMany({ filter: { userId } });
-    return rows.toSorted((a, b) => a.linkedAt - b.linkedAt);
+    return rows.map(fromRow).toSorted((a, b) => a.linkedAt - b.linkedAt);
   }
 
   async link(rec: NewFederatedIdentity): Promise<FederatedIdentity> {

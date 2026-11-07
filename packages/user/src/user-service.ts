@@ -405,7 +405,8 @@ export class UserService<T extends object = object> {
       accepted = false;
       const account = user.account;
       if (!account.pendingInvitation) return null;
-      if (account.inviteNonce !== undefined && account.inviteNonce !== nonce) return null;
+      // `!= null`: a SQL store may read a pre-0.2 row's unset nonce back as `null`.
+      if (account.inviteNonce != null && account.inviteNonce !== nonce) return null;
       accepted = true;
       return { set: { account: { pendingInvitation: false } } };
     });

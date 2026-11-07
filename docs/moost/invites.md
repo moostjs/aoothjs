@@ -99,7 +99,7 @@ Inviting an email that is still pending is the "resend" — there is no separate
 Each issued link carries a fresh marker, stored on the account as `account.inviteNonce`; a `'reuse'` rotates it. A link issued **before** the re-invite then answers **`410` with `code: "INVITE_REPLACED"`** ("This invite was replaced by a newer one") — also when it was opened before the re-invite and is still paused, and also after the newer link was accepted. It never sets a password, a username, an MFA factor or a consent record, and never activates the account: every bundled accept-phase write re-checks that the link is still the current one, and the final acceptance is a single compare-and-set (`UserService.acceptInvitation`), so two links of one account can never both complete. Before 0.2 the old link stayed valid until its own TTL. `'reuse'` still **replaces** the pending row's roles and `prepareUser` extras with the new invite's — nothing is merged.
 :::
 
-`@aooth/user` adds two optional account fields for this, `account.invitedBy` and `account.inviteNonce` — **run your schema sync after upgrading** (two nullable columns). Rows created before the upgrade have no marker; their links keep working until the next re-invite.
+`@aooth/user` adds two optional account fields for this, `account.invitedBy` and `account.inviteNonce` — **run your schema sync after upgrading** (two nullable columns). Rows created before the upgrade have no marker; their links keep working until the next re-invite (on SQL stores since 0.2.7 — 0.2.0–0.2.6 answered them `410 INVITE_REPLACED`).
 
 In a multi-tenant app, refuse taking over a pending invite that another issuer (or tenant) owns. `pending.invitedBy` is the issuer of the invite already on the row:
 
@@ -153,6 +153,47 @@ export class InviteAdminController {
 }
 ```
 
+## Showing what a link is for — `peekInvite` {#peek-invite}
+
+To show "Ann invited you as an editor" on the invite page before the invitee does anything, read the link's token with `peekInvite(token, { trigger, users })`. It never consumes the link and returns a safe projection:
+
+| Field       | Meaning                                                            |
+| ----------- | ------------------------------------------------------------------ |
+| `email`     | The invited address.                                               |
+| `invitedBy` | User id of the issuer — when the invite was issued from a session. |
+| `roles`     | Roles the invite grants — when it grants any.                      |
+| `expiresAt` | When the link stops working (ms since epoch) — when known.         |
+
+It returns `null` — one answer for all — for an unknown, expired or malformed token, a token that is not an invite link, and an invite that was replaced by a re-invite, accepted or revoked. The token is resolved exactly as opening the link resolves it, including hashed handles (`hashHandles`), so pass the `wfs` value from the link as it is.
+
+There is no bundled route — mount one, and rate-limit it like invite redemption:
+
+```ts
+import { peekInvite, Public, RateLimit, WfTriggerProvider } from "@aooth/auth-moost";
+import { UserService } from "@aooth/user";
+import { Get, HttpError, Query } from "@moostjs/event-http";
+import { Controller } from "moost";
+
+@Controller("invite")
+export class InviteInfoController {
+  constructor(
+    private readonly trigger: WfTriggerProvider,
+    private readonly users: UserService,
+  ) {}
+
+  @Get("info")
+  @Public()
+  @RateLimit("30/5m", { id: "app.invite-info" })
+  async info(@Query("wfs") wfs: string | undefined) {
+    const invite = wfs ? await peekInvite(wfs, { trigger: this.trigger, users: this.users }) : null;
+    if (!invite) throw new HttpError(404, "Invite not found");
+    return invite; // resolve `invitedBy` to a display name here, if you show one
+  }
+}
+```
+
+For other workflows, `WfTriggerProvider.peek(token)` returns the paused state behind any resume token (or `null`) without consuming it. The state holds server-only context — project what you need; never return it as it is.
+
 ## Accept phase
 
 The invitee opens the link (an anonymous resume of the same run): already-accepted / cancelled / replaced checks → optional username pick → set password → MFA enrolment when required → consents → the account is activated → finish (auto-login when `autoLoginOnInvite`, default `true`; otherwise a redirect to `loginUrl`). `account.verifiedEmail` is recorded only when the handle looks like an email address and the link was not returned to the issuer.
@@ -176,6 +217,7 @@ The `HttpError` bodies carry the message `code` next to the text, so an SPA can 
 - **DO** run your schema sync after upgrading (`account.invitedBy`, `account.inviteNonce`).
 - **DON'T** replace `WfTriggerProvider.outlets` without keeping `createInviteOutlet()` if you use `'deliver'` or `'return-link'`.
 - **DON'T** build a separate "resend invite" flow — invite the same email again.
+- **DON'T** read the workflow-state table yourself to show invite details — use [`peekInvite`](#peek-invite); it applies the store's handle hashing and the replaced-invite check.
 - **DON'T** revoke with `deleteUser` — it deletes an account even when its invite was accepted meanwhile; use `revokeInvitation`.
 
 ## See also

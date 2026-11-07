@@ -123,6 +123,28 @@ describe("SessionsController (auth.sessions)", () => {
     expect(rows.filter((r) => r.current)).toHaveLength(1);
   });
 
+  it("?kind takes a comma list (values trimmed, empty ones ignored)", async () => {
+    const userRoles = new Map<string, string[]>();
+    const { app, primaryId } = await seedUserWithSessions([ROLE_SESSIONS], userRoles, "alice");
+    userRoles.set(primaryId, ["sessions-self"]);
+    const current = await app.auth.issue(primaryId);
+    await app.auth.issue(primaryId, { kind: "cli-session" });
+    await app.auth.issue(primaryId, { kind: "pat" });
+    const list = async (query: string) => {
+      const res = await app.request(`/auth/sessions${query}`, {
+        headers: { authorization: `Bearer ${current.accessToken}` },
+      });
+      expect(res.status).toBe(200);
+      return (res.body as Array<{ kind?: string }>).map((r) => r.kind ?? "session").toSorted();
+    };
+    expect(await list("")).toEqual(["session"]);
+    expect(await list("?kind=session,cli-session")).toEqual(["cli-session", "session"]);
+    expect(await list("?kind=%20pat%20,,cli-session,")).toEqual(["cli-session", "pat"]);
+    expect(await list("?kind=*")).toEqual(["cli-session", "pat", "session"]);
+    // Nothing left after dropping the empty values → the default set.
+    expect(await list("?kind=,%20,")).toEqual(["session"]);
+  });
+
   it("DELETE /auth/sessions/:id revokes one session, leaving the caller's own", async () => {
     const userRoles = new Map<string, string[]>();
     const { app, primaryId } = await seedUserWithSessions([ROLE_SESSIONS], userRoles, "alice");

@@ -12,6 +12,7 @@ export const rateLimitDecisionKey = key<RateLimitDecision>("aooth.rateLimit.deci
 export interface RateLimitRuntime {
   limiter: RateLimiter;
   overrides: Map<string, RateLimitRule[] | false>;
+  /** The deprecated `rateLimitInterceptors({ trustProxy })` — one-hop client IP when `true`. */
   trustProxy: boolean;
   emitHeaders: boolean;
 }

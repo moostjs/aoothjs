@@ -75,12 +75,15 @@
   "devDependencies": {
     "@atscript/core": "catalog:",
     "@atscript/db": "catalog:",
+    "@atscript/db-sqlite": "catalog:",
     "@atscript/moost-db": "catalog:",
     "@atscript/typescript": "catalog:",
     "@atscript/ui": "catalog:",
     "@atscript/ui-fns": "catalog:",
     "@moostjs/event-http": "catalog:",
     "@moostjs/event-wf": "catalog:",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.6.2",
     "moost": "catalog:",
     "unplugin-atscript": "catalog:",
     "wooks": "catalog:"

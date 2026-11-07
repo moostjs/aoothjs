@@ -67,7 +67,7 @@ login() { /* ... */ }
 
 - Several rules inside **one** decorator (`@RateLimit('1/1s', '30/1m')`) share one key and one bucket; separate decorators do not.
 - Each stacked policy gets its own bucket (`<ControllerClass>.<methodName>`, `…#1`, `…#2`) unless it names one with `id`. The positional suffixes follow decorator order, so reordering or inserting a decorator moves counters between buckets — **give every stacked policy an explicit `id`**.
-- Method-level policies still **replace** class-level ones; class-level policies cover methods without their own.
+- Method-level policies still **replace** class-level ones; class-level policies cover methods without their own. See [Which policies apply to a route](#which-policies-apply).
 
 ::: warning Since 0.2: a second `@RateLimit` no longer replaces the first
 Before 0.2 the bottom-most decorator silently won and the others were ignored. Code that reads the metadata directly sees a new shape: `TRateLimitMeta.rateLimitPolicies` (one `{ rules, options? }` per decorator) replaces `rateLimitRules` / `rateLimitOptions`.
@@ -82,13 +82,30 @@ Returns **two** interceptor definitions — register with a spread, globally or 
 | `limiter`    | —       | The shared `RateLimiter` — wire your `RateLimitStoreRedis` here. Omitted: a memory-store limiter is created once per factory call (single-process dev/test only).                                                                   |
 | `rules`      | —       | App-wide default rules applied to **every** HTTP route without its own `@RateLimit` metadata. Routes opt out with `@RateLimit(false)`.                                                                                              |
 | `key`        | `'ip'`  | Default key strategy for routes whose decorator doesn't set one.                                                                                                                                                                    |
-| `trustProxy` | `false` | Trust exactly one proxy in front: the client IP is the right-most `x-forwarded-for` entry. `false`: the IP the HTTP app resolves (`useRequest().getIp()`).                                                                          |
+| `trustProxy` | `false` | **Deprecated** (one-time warning; removed in 0.3). `true` still trusts exactly one proxy hop, read from the app's `proxyHeaders` family. Configure [`trustProxy` on the HTTP app](#client-ip-behind-a-proxy) instead.               |
 | `headers`    | `true`  | Emit draft `RateLimit-*` headers on every response of a limited route.                                                                                                                                                              |
 | `message`    | —       | App-wide default 429 message template.                                                                                                                                                                                              |
 | `policies`   | —       | Re-tune declared policies by `id` without redeclaring their routes: new rules replace the declared ones (key strategy, id and message stay); `false` switches one off. An unknown id throws. See [Bundled limits](#bundled-limits). |
 
-::: warning `trustProxy: true` means exactly one proxy, always in front
-It trusts one hop — the socket peer — and takes the right-most `x-forwarded-for` entry, the address that proxy wrote (wooks 0.8; before, the left-most entry, which a client forges). Enable it only when **every** request reaches the app through exactly one reverse proxy: reached directly, a client picks its own IP; behind two proxies, every caller shares the inner proxy's budget. For other topologies configure `trustProxy` on the wooks HTTP app (hop count, CIDR list, predicate) and leave this option off — the limiter then uses the app's `useRequest().getIp()`.
+### Client IP behind a proxy {#client-ip-behind-a-proxy}
+
+Every client IP aooth keys on — `'ip'` rate-limit buckets, the one-time-code failure budgets, the IP recorded on sessions and device-trust bindings — is the one the HTTP app resolves (`useRequest().getIp()`). Tell the HTTP app which proxies to trust, and which header family they write:
+
+```ts
+import { createHttpApp } from "@wooksjs/event-http";
+
+const http = new MoostHttp(
+  createHttpApp({
+    trustProxy: ["10.0.0.0/8"], // your load balancer's addresses (or a hop count, or a predicate)
+    proxyHeaders: "x-forwarded", // or 'forwarded' (RFC 7239), whichever your proxy writes
+  }),
+);
+```
+
+Without `trustProxy` on the app, forwarding headers are ignored and the socket peer is the client.
+
+::: warning Since 0.2.7: the limiter's own `trustProxy` is deprecated
+`rateLimitInterceptors({ trustProxy: true })` is still honoured, with a one-time warning: it trusts exactly one hop — whatever its address — and now reads the header family the app's `proxyHeaders` names (it used to read `X-Forwarded-For` even under `proxyHeaders: 'forwarded'`, letting a client pick its own bucket). While it is set it also decides the client IP of the one-time-code budgets and session metadata. It is removed in 0.3: move the setting to the HTTP app as above, and prefer an address list over a hop count when the app is also reachable directly.
 :::
 
 ### Why a pair: flood rejection before credential work
@@ -125,7 +142,7 @@ type RateLimitKeyStrategy =
 
 | Strategy          | Subject                   | Use for                                                                                                                                                                                                                                                     |
 | ----------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `'ip'`            | `ip:<addr>`               | Public endpoints (the default). Honors `trustProxy`. Evaluated **pre-guard**.                                                                                                                                                                               |
+| `'ip'`            | `ip:<addr>`               | Public endpoints (the default). The IP the HTTP app resolves ([behind a proxy](#client-ip-behind-a-proxy)). Evaluated **pre-guard**.                                                                                                                        |
 | `'user'`          | `u:<userId>`              | Guarded endpoints — one budget per user regardless of source IP. Anonymous callers fall back to `ip:<addr>`.                                                                                                                                                |
 | `'session'`       | `s:<sessionId>`           | One budget per **login/device** — a stolen refresh token can't burn the whole user's budget.                                                                                                                                                                |
 | `'refresh-token'` | `rt:<hash of the token>`  | The refresh token the request presents — the body's `refreshToken`, else the refresh cookie — hashed, so the bearer secret never becomes a counter key. One budget per token, whatever the IP. A request without one **skips** the policy (no IP fallback). |
@@ -222,6 +239,19 @@ app.applyGlobalInterceptors(
 
 `policies` takes the **ids** of declared policies: the bundled ones above and every `@RateLimit({ id })` your code declares (declare before you configure — import your controllers first). An unknown id throws when the pair is created, so a typo cannot silently leave a limit in force. Rules are parsed when the pair is created; an empty rule list throws (use `false`).
 
+## Which policies apply to a route {#which-policies-apply}
+
+A route is governed by the **first** of these that exists — they never combine:
+
+1. **Method-level** policies — the method's own `@RateLimit`s, including those it inherits from a base class. The bundled routes above all carry method-level policies, and a subclass of `AuthController` (or `AuthorizeController`) inherits them.
+2. **Class-level** `@RateLimit` on the controller.
+3. The interceptor's app-wide default `rules`.
+
+So a class-level `@RateLimit` on your subclass of an aooth controller **never applies to the bundled routes** (`/auth/refresh`, `/auth/token`, `/auth/register`, invite redemption, …) — their inherited method-level policies win. To change their limits:
+
+- re-tune them by id with [`policies`](#bundled-limits) — the usual way;
+- or override the handler and put your own method-level `@RateLimit` on it (it replaces the inherited policies of that method).
+
 ## Response headers — the full 429 contract
 
 With `headers: true` (default), every response of a rate-limited route carries the draft IETF `RateLimit-*` fields. `Limit` / `Remaining` / `Reset` come from the governing decision — the rejecting policy, else the one with the least budget left (the same rule [`check()`](../auth/rate-limit#check-and-the-decision) applies across rules); `RateLimit-Policy` lists every evaluated policy:
@@ -298,10 +328,11 @@ Inject a `clock` into the `RateLimiter` (and the store) to step through windows 
 
 - **DO** spread the pair: `...rateLimitInterceptors(opts)` — **not** register a single element of the returned array.
 - **DO** pass a shared `limiter` backed by `RateLimitStoreRedis` in any multi-instance deployment — the fallback memory limiter is per-process **and** per-factory-call.
-- **DO** set `trustProxy: true` only when every request passes exactly one reverse proxy — reached directly, clients rotate budgets by forging `x-forwarded-for`; for other topologies configure `trustProxy` on the wooks HTTP app instead.
+- **DO** configure `trustProxy` / `proxyHeaders` on the HTTP app — **not** on `rateLimitInterceptors` (deprecated since 0.2.7, removed in 0.3).
 - **DO** stack decorators for "per IP **and** per account" limits — each is its own policy — and give each an explicit `id`.
 - **DO** use `@RateLimit(false)` to exempt health checks / internal routes when app-wide default `rules` are configured.
 - **DO** re-tune the [bundled limits](#bundled-limits) with `policies` — **not** by subclassing the controller to redeclare a route.
+- **DON'T** expect a class-level `@RateLimit` on a subclass of an aooth controller to cover its bundled routes — their method-level policies win ([precedence](#which-policies-apply)).
 - **DO** give intentionally-shared budgets an explicit `id` — **not** rely on the default scope, which isolates per handler (`<ControllerClass>.<methodName>`).
 - **DO** supply app-defined subjects (`tenant`, `apiKey`, external-IAM principals) from a GUARD-priority interceptor via `setRateLimitSubject` — **not** from a custom key function, which runs pre-guard and can't see guard state.
 - **DON'T** expect `key: 'user'` to 429 anonymous floods _per user_ — anonymous callers share the IP fallback budget, and on guarded routes the auth guard 401s them before the post-guard phase runs (a missing token yields `401`, not `429`).

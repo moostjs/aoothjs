@@ -39,6 +39,7 @@ export {
 export { WfTrigger, type WfTriggerOpts } from "./wf-trigger/decorator";
 export { deriveWfStateSecret, WfTriggerProvider, type WfTriggerHooks } from "./wf-trigger/provider";
 export { createInviteOutlet, INVITE_OUTLET } from "./workflow/invite-outlet";
+export { type InvitePeek, peekInvite } from "./workflow/invite-peek";
 
 // ── Rate limiting (RL.spec.md) — @RateLimit metadata + enforcing interceptor
 //    pair + composable. The limiter/stores are framework-agnostic and live in

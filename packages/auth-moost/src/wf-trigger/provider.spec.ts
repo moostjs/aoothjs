@@ -1,8 +1,10 @@
 import { AuthCredential, CredentialStoreJwt, CredentialStoreMemory } from "@aooth/auth";
 import {
   EncapsulatedStateStrategy,
+  hashWfHandle,
   HandleStateStrategy,
   type MoostWf,
+  type WfState,
   type WfStateStrategy,
   WfStateStoreMemory,
 } from "@moostjs/event-wf";
@@ -131,5 +133,78 @@ describe("deriveWfStateSecret", () => {
   it("is deterministic (stable across restarts) and input-sensitive", () => {
     expect(deriveWfStateSecret("s3cr3t").equals(deriveWfStateSecret("s3cr3t"))).toBe(true);
     expect(deriveWfStateSecret("s3cr3t").equals(deriveWfStateSecret("other"))).toBe(false);
+  });
+});
+
+describe("WfTriggerProvider.peek", () => {
+  const state = {
+    schemaId: "auth/invite/start",
+    indexes: [3],
+    context: { email: "a@x.test" },
+  } as unknown as WfState;
+
+  /** A provider whose durable `store` strategy stores hashed handles. */
+  function hashedProvider() {
+    const store = new WfStateStoreMemory();
+    class Hashed extends TestProvider {
+      protected override storeStrategy(): WfStateStrategy {
+        return new HandleStateStrategy({ store, hashHandles: true });
+      }
+    }
+    const p = new Hashed(wfStub, jwtAuth());
+    const registry = p.publicStateRegistry();
+    const persist = async (options?: { ttl?: number; expiresAt?: number }) =>
+      `store.${await registry.strategies.store.persist(state, options)}`;
+    return { p, registry, persist };
+  }
+
+  it("reads a valid token's state without consuming it", async () => {
+    const { p, registry, persist } = hashedProvider();
+    const token = await persist({ ttl: 60_000 });
+    const before = Date.now();
+    const peeked = await p.peek(token);
+    expect(peeked?.schemaId).toBe("auth/invite/start");
+    expect(peeked?.context).toEqual({ email: "a@x.test" });
+    // The persist-time expiry rides along.
+    const expiresAt = peeked?.meta?.aoothExpiresAt as number;
+    expect(expiresAt).toBeGreaterThan(before);
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + 60_000);
+    // Peeking again still finds it, and a resume can still consume it.
+    expect(await p.peek(token)).not.toBeNull();
+    expect(await registry.strategies.store.consume(token.slice("store.".length))).not.toBeNull();
+    expect(await p.peek(token)).toBeNull();
+  });
+
+  it("an expired, unknown or malformed token is null", async () => {
+    const { p, persist } = hashedProvider();
+    const expired = await persist({ expiresAt: Date.now() - 1 });
+    expect(await p.peek(expired)).toBeNull();
+    for (const token of [
+      "store.00000000-0000-4000-8000-000000000000",
+      "",
+      "store.",
+      ".abc",
+      "noprefix",
+      "nope.abc",
+      "constructor.abc",
+    ]) {
+      expect(await p.peek(token)).toBeNull();
+    }
+  });
+
+  it("a hash-shaped token (a stored key, not a handle) is null", async () => {
+    // WHY: with hashed handles the store holds `hash(handle)`; a value read
+    // from the store must not open the state through the legacy raw-key path.
+    const { p, persist } = hashedProvider();
+    const token = await persist();
+    const handle = token.slice("store.".length);
+    expect(await p.peek(`store.${hashWfHandle(handle)}`)).toBeNull();
+    expect(await p.peek(token)).not.toBeNull();
+  });
+
+  it("a state presented under another strategy's prefix is null", async () => {
+    const { p, persist } = hashedProvider();
+    const handle = (await persist()).slice("store.".length);
+    expect(await p.peek(`magic-link.${handle}`)).toBeNull();
   });
 });

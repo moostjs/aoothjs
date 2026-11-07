@@ -112,4 +112,15 @@ describe("FederatedIdentityStoreAtscriptDb — integration against real SQLite",
     expect(row?.displayName).toBe("New");
     expect(row?.avatarUrl).toBe("http://x/a.png");
   });
+
+  it("unset profile columns read back as absent, not null", async () => {
+    // WHY: SQLite returns an unset optional column as `null`; the row's
+    // `field?` contract (and the memory store) leaves the key out.
+    await store.link({ provider: "google", subject: "bare", userId: "u1" });
+    for (const row of [await store.find("google", "bare"), ...(await store.listForUser("u1"))]) {
+      for (const field of ["email", "emailVerified", "displayName", "avatarUrl", "lastLoginAt"]) {
+        expect(row).not.toHaveProperty(field);
+      }
+    }
+  });
 });

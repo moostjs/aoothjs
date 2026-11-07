@@ -2,6 +2,20 @@
 
 What to check when you move to a newer aooth release. Each entry lists the changes that can break an app or change what users see, and links to the page that documents the current behaviour. All `@aooth/*` packages share one version number — upgrade them together.
 
+## To 0.2.7
+
+### The rate limiter's `trustProxy` is deprecated
+
+`rateLimitInterceptors({ trustProxy })` is deprecated and logs a one-time warning; it is removed in 0.3. `true` is still honoured — one proxy hop — but now reads the header family the HTTP app's `proxyHeaders` names, so under `proxyHeaders: 'forwarded'` a client can no longer pick its bucket through `X-Forwarded-For`. Every client IP aooth keys on (rate-limit buckets, one-time-code failure budgets, session and device-trust IPs) comes from one place: the HTTP app's resolution, or this option while it is set. Move the setting to the HTTP app (`trustProxy`, plus `proxyHeaders` if your proxy writes `Forwarded`) before 0.3 — without either, every caller behind the proxy shares one budget. See [Rate Limiting — client IP behind a proxy](/moost/rate-limit#client-ip-behind-a-proxy).
+
+### `@WfTrigger` on an overriding handler replaces the base trigger
+
+Re-decorating an inherited trigger route (e.g. `triggerWf()` of an `AuthController` subclass) with `@WfTrigger({...})` now replaces the base route's options as a whole — the override's `allow` is the only list checked — and the trigger runs once per request. Before, the base trigger also ran, and could run the workflow a second time when the reply was `undefined` (e.g. from `renderEnvelope`). An override without its own `@WfTrigger` keeps the base options. See [Controllers — what a re-decorated trigger inherits](/moost/controllers#trigger-override-semantics).
+
+### Invites issued before 0.2 work on SQL stores
+
+On SQL user stores a pending invite issued before 0.2 answered `410 INVITE_REPLACED`; it now resumes and accepts. Optional fields the bundled atscript-db stores read back as `null` (an unset column) are now left out of the returned user, federated-identity and credential rows, as the `field?` types promise. Nothing to change in your app.
+
 ## To 0.2.6
 
 ### Message codes no longer collide with other libraries

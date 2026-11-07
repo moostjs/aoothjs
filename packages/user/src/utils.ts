@@ -55,11 +55,17 @@ export function deepMerge(target: object, source: Record<string, unknown>): void
       typeof tv === "object" &&
       !Array.isArray(tv)
     ) {
-      deepMerge(tv as Record<string, unknown>, sv as Record<string, unknown>);
+      deepMerge(tv, sv as Record<string, unknown>);
     } else {
       t[key] = sv;
     }
   }
+}
+
+/** Delete each of `fields` whose value on `obj` is `null` (in place). */
+export function dropNullFields(obj: object, fields: readonly string[]): void {
+  const o = obj as Record<string, unknown>;
+  for (const field of fields) if (o[field] === null) delete o[field];
 }
 
 export function setAtPath(obj: object, path: string, value: unknown): void {

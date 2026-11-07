@@ -1,20 +1,25 @@
 import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
 import { UserService, UserStoreMemory } from "@aooth/user";
-import { Controller, Inherit, Injectable } from "moost";
-import { describe, expect, it } from "vite-plus/test";
+import { Get, Query } from "@moostjs/event-http";
+import { Controller, Inherit, Injectable, useControllerContext } from "moost";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { AuthController } from "../auth.controller";
+import { Public } from "../auth.decorator";
 import { ConsentStore } from "../consent.store";
+import { RateLimit } from "../rate-limit/decorator";
+import { WfTriggerProvider } from "../wf-trigger/provider";
 import { AuthWorkflow } from "../workflow/auth-workflow";
 import type { AuthWfCtx } from "../workflow/auth-workflow.ctx";
+import { peekInvite } from "../workflow/invite-peek";
 import { ExtendedInviteForm } from "./fixtures/invite-ext.as";
-import { FlowWorkflow, prepareFlowApp, type PreparedFlowApp } from "./flow-utils";
-
-/** Run the admin phase of `auth/invite/start` for `email`; returns the response. */
-async function issueInvite(app: PreparedFlowApp, email: string, extra: object = {}) {
-  const start = await app.start("auth/invite/start");
-  expect(start.status, JSON.stringify(start.body)).toBe(201);
-  return app.submit(start.body.wfs, { formData: { email, roles: [], ...extra } });
-}
+import {
+  completeAccept,
+  FlowWorkflow,
+  issueInvite,
+  prepareFlowApp,
+  type PreparedFlowApp,
+} from "./flow-utils";
 
 describe("F33: invite issue fails loudly", () => {
   it("a prepareUser returning nothing still creates the pending user and sends the link", async () => {
@@ -53,22 +58,6 @@ describe("F33: invite issue fails loudly", () => {
 /** Resume the invitee's link up to (and through) the first accept pause. */
 async function openLink(app: PreparedFlowApp, token: string, input: object = {}) {
   return app.submit(token, input);
-}
-
-/** From the set-password pause: set the password and skip optional MFA enrolment. */
-async function completeAccept(app: PreparedFlowApp, wfs: string) {
-  let res = await openLink(app, wfs, {
-    formData: {
-      newPassword: "Str0ng!Passw0rd",
-      confirmPassword: "Str0ng!Passw0rd",
-      consents: [],
-    },
-  });
-  if (res.body.inputRequired?.payload?.id === "EnrollPickMethodForm") {
-    res = await openLink(app, res.body.wfs, { action: "skip" });
-  }
-  expect(res.body.inputRequired, JSON.stringify(res.body).slice(0, 300)).toBeUndefined();
-  return res;
 }
 
 describe("A1: invite issue seam (F32/F102)", () => {
@@ -363,6 +352,69 @@ describe("S7 (H2): superseded / used links never write to the account", () => {
   });
 });
 
+describe("A1: a store that reads an unset invite marker back as null", () => {
+  it("the accept gates treat a null marker as absent; a real one still refuses", async () => {
+    const users = new UserService(new UserStoreMemory());
+    const saved: unknown[] = [];
+    class RecordingConsents extends ConsentStore {
+      override async save(userId: string, events: unknown[]): Promise<void> {
+        saved.push({ userId, events });
+      }
+    }
+    const flow = new AuthWorkflow(
+      {},
+      users,
+      new AuthCredential({ store: new CredentialStoreMemory() }),
+      new RecordingConsents(),
+    );
+    const row = await users.createUser("null@x.test", undefined, {});
+    await users.update(row.id, {
+      account: { pendingInvitation: true, inviteNonce: null, invitedBy: null },
+    } as never);
+    const ctx = (admin: object) =>
+      ({
+        subject: row.id,
+        accept: {},
+        admin,
+        consents: { pending: [{ id: "tos" }], accepted: ["tos"], decidedAt: Date.now() },
+      }) as unknown as AuthWfCtx;
+    // A pre-0.2 run carries no marker of its own.
+    await flow.persistConsents(ctx({}));
+    expect(saved).toHaveLength(1);
+    expect(await users.acceptInvitation(row.id, undefined)).toBe(true);
+
+    await users.update(row.id, {
+      account: { pendingInvitation: true, inviteNonce: "newer" },
+    } as never);
+    const err = await flow.persistConsents(ctx({})).catch((e: unknown) => e);
+    expect((err as { body?: { code?: string } }).body?.code).toBe("INVITE_REPLACED");
+    expect(await users.acceptInvitation(row.id, undefined)).toBe(false);
+  });
+
+  it("a null invitedBy on the pending row is no issuer", async () => {
+    let pending: unknown;
+    @Inherit()
+    @Injectable()
+    @Controller()
+    class Checking extends FlowWorkflow {
+      protected override duplicateInviteCheck(input: { pending?: unknown; existingUser: unknown }) {
+        pending = input.pending;
+        return input.existingUser ? ("reuse" as const) : ("allow" as const);
+      }
+    }
+    const app = await prepareFlowApp({ workflowClass: Checking });
+    await issueInvite(app, "n@x.test");
+    const user = (await app.users.findByHandle("n@x.test"))!;
+    await app.users.update(user.id, { account: { invitedBy: null } } as never);
+    const issuer = await app.seedUser("admin", "Password123!");
+    const { accessToken } = await app.auth.issue(issuer);
+    const asAdmin = { authorization: `Bearer ${accessToken}` };
+    await issueInvite(app, "n@x.test", {}, asAdmin);
+    // `{}` — no issuer — so `invitedBy !== pending issuer` can't flag a takeover.
+    expect(pending).toEqual({});
+  });
+});
+
 describe("S7 (L2): consent records never land through a superseded link", () => {
   it("persist-consents re-checks the invite before writing", async () => {
     const users = new UserService(new UserStoreMemory());
@@ -391,5 +443,99 @@ describe("S7 (L2): consent records never land through a superseded link", () => 
     const err = await flow.persistConsents(ctx).catch((e: unknown) => e);
     expect((err as { body?: { code?: string } }).body?.code).toBe("INVITE_REPLACED");
     expect(saved).toEqual([]);
+  });
+});
+
+/** An app route showing what an invite link is for (A9). */
+@Inherit()
+@Controller("auth")
+class InviteInfoController extends AuthController {
+  @Get("invite/info")
+  @Public()
+  @RateLimit("30/5m", { id: "app.invite-info" })
+  async inviteInfo(@Query("wfs") wfs: string | undefined) {
+    const trigger = await useControllerContext().instantiate(WfTriggerProvider);
+    return { invite: await peekInvite(wfs ?? "", { trigger, users: this.users! }) };
+  }
+}
+
+describe("A9: peekInvite reads an invite link without consuming it", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function boot() {
+    const app = await prepareFlowApp({
+      controllerClass: InviteInfoController,
+      workflowOpts: { autoLoginOnInvite: false },
+    });
+    const issuer = await app.seedUser("admin", "Password123!");
+    const { accessToken } = await app.auth.issue(issuer);
+    const asAdmin = { authorization: `Bearer ${accessToken}` };
+    const invite = async (email: string) => {
+      const res = await issueInvite(app, email, { roles: ["editor"] }, asAdmin);
+      expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+    };
+    const peek = async (token: string) =>
+      (await app.get(`/auth/invite/info?wfs=${encodeURIComponent(token)}`)).body.invite;
+    return { app, issuer, invite, peek };
+  }
+
+  it("a valid link: the safe projection, and the link still opens afterwards", async () => {
+    const { app, issuer, invite, peek } = await boot();
+    const before = Date.now();
+    await invite("p@x.test");
+    const token = app.emails[0].token;
+    const info = await peek(token);
+    expect(info).toEqual({
+      email: "p@x.test",
+      invitedBy: issuer,
+      roles: ["editor"],
+      expiresAt: expect.any(Number),
+    });
+    // The link's lifetime: 7 days from issue.
+    expect(info.expiresAt).toBeGreaterThanOrEqual(before + 7 * 24 * 3600_000);
+    expect(info.expiresAt).toBeLessThanOrEqual(Date.now() + 7 * 24 * 3600_000);
+    expect(await peek(token)).toEqual(info);
+    const opened = await app.submit(token);
+    expect(opened.body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+  });
+
+  it("a link replaced by a re-invite reads as null; the new one reads", async () => {
+    const { app, invite, peek } = await boot();
+    await invite("r@x.test");
+    await invite("r@x.test");
+    expect(await peek(app.emails[0].token)).toBeNull();
+    expect(await peek(app.emails[1].token)).toMatchObject({ email: "r@x.test" });
+  });
+
+  it("expired, unknown, hash-shaped and non-invite tokens all read as null", async () => {
+    const { app, invite, peek } = await boot();
+    await invite("e@x.test");
+    const token = app.emails[0].token;
+    const login = (await app.start("auth/login/flow")).body.wfs as string;
+    for (const other of [
+      "",
+      "store.00000000-0000-4000-8000-000000000000",
+      `${token}x`,
+      "store.wfh0123456789abcdef",
+      login,
+    ]) {
+      expect(await peek(other)).toBeNull();
+    }
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 8 * 24 * 3600_000 });
+    expect(await peek(token)).toBeNull();
+  });
+
+  it("an accepted or cancelled invite reads as null", async () => {
+    const { app, invite, peek } = await boot();
+    await invite("a@x.test");
+    await invite("c@x.test");
+    const accepted = (await app.users.findByHandle("a@x.test"))!;
+    await app.users.update(accepted.id, { account: { pendingInvitation: false } } as never);
+    expect(await peek(app.emails[0].token)).toBeNull();
+    const cancelled = (await app.users.findByHandle("c@x.test"))!;
+    expect(await app.users.revokeInvitation(cancelled.id)).toBe(true);
+    expect(await peek(app.emails[1].token)).toBeNull();
   });
 });

@@ -2,6 +2,7 @@ import { AtscriptDbTable } from "@atscript/db";
 import { BetterSqlite3Driver, SqliteAdapter } from "@atscript/db-sqlite";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vite-plus/test";
 
+import { AuthCredential } from "../../credential/auth-credential";
 import type { CredentialState } from "../../credential/types";
 import { type AuthCredentialTable, CredentialStoreAtscriptDb } from "../index";
 import { prepareFixtures } from "./test-utils";
@@ -115,6 +116,51 @@ describe("CredentialStoreAtscriptDb — integration against real SQLite", () => 
     expect(got?.grants).toEqual(grants);
     expect(got?.grants?.roles).toEqual(["doc-reader"]);
     expect(got?.grants?.tenantId).toBe("t1");
+  });
+
+  it("an unset optional column reads back as absent, never as null", async () => {
+    // WHY: SQL engines read an unset column back as `null`; the envelope's
+    // `field?` contract (and the memory store) leaves the key out. (Typed
+    // payload columns are the consumer's own shape and pass through as read.)
+    const token = await store.persist(makeState("alice"));
+    const got = (await store.retrieve(token)) as unknown as Record<string, unknown>;
+    for (const field of [
+      "metadata",
+      "parentCredentialId",
+      "rotatedAt",
+      "successor",
+      "sessionId",
+      "lastSeenAt",
+    ]) {
+      expect(got).not.toHaveProperty(field);
+    }
+  });
+
+  it("refresh reuse on a legacy row with a NULL sessionId revokes every session of the user", async () => {
+    // WHY: `revokeSession(userId, null)` matches nothing — the theft response
+    // must fall back to the user-wide revoke.
+    const auth = new AuthCredential<DemoClaims>({
+      store,
+      accessTtl: 60_000,
+      refresh: { ttl: 600_000, rotation: "always", rotationGraceMs: 1000 },
+    });
+    const sibling = await auth.issue("alice");
+    const other = await auth.issue("bob");
+    // A rotated refresh row written before session ids existed.
+    const now = Date.now();
+    await table.insertOne({
+      token: "legacy-rt",
+      userId: "alice",
+      issuedAt: now - 10_000,
+      expiresAt: now + 600_000,
+      kind: "refresh",
+      rotatedAt: now - 5_000,
+    });
+    await expect(auth.refresh("legacy-rt")).rejects.toMatchObject({
+      type: "REFRESH_REUSE_DETECTED",
+    });
+    expect(await auth.validate(sibling.accessToken)).toBeNull();
+    expect(await auth.validate(other.accessToken)).not.toBeNull();
   });
 
   it("listForUser returns the persisted rows with tokens attached", async () => {

@@ -9,7 +9,7 @@ import {
 } from "@aooth/auth";
 import type { EventContext } from "@wooksjs/event-core";
 import { current, eventTypeKey, tryGetCurrent } from "@wooksjs/event-core";
-import { resolveForwarded, useRequest, useResponse } from "@wooksjs/event-http";
+import { useRequest, useResponse } from "@wooksjs/event-http";
 import {
   defineBeforeInterceptor,
   formatMessage,
@@ -50,10 +50,11 @@ export interface RateLimitInterceptorOptions {
   /** Default key strategy for routes whose `@RateLimit` doesn't set one. Default: `'ip'`. */
   key?: RateLimitKeyStrategy;
   /**
-   * Trust exactly ONE reverse proxy in front of the app: the client IP is the
-   * right-most `x-forwarded-for` entry (the one that proxy wrote). Default:
-   * `false` — the client IP as the HTTP app resolves it (`useRequest().getIp()`:
-   * the socket peer, unless the wooks HTTP app configures `trustProxy`).
+   * @deprecated Set `trustProxy` (and `proxyHeaders`) on the HTTP app instead;
+   * removed in 0.3. Still honoured, with a one-time warning: `true` trusts
+   * exactly one proxy hop, read from the header family the app's
+   * `proxyHeaders` names. Without it, the client IP is the one the HTTP app
+   * resolves (`useRequest().getIp()`).
    */
   trustProxy?: boolean;
   /** Emit draft `RateLimit-*` headers on every response of a limited route. Default: `true`. */
@@ -109,7 +110,7 @@ interface RouteConfig {
  * ```ts
  * app.applyGlobalInterceptors(
  *   authGuardInterceptor({ ... }),
- *   ...rateLimitInterceptors({ limiter, trustProxy: true }),
+ *   ...rateLimitInterceptors({ limiter }),
  * )
  * ```
  *
@@ -159,6 +160,7 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
   const limiter = opts?.limiter ?? new RateLimiter();
   const emitHeaders = opts?.headers ?? true;
   const trustProxy = opts?.trustProxy ?? false;
+  if (opts?.trustProxy !== undefined) warnTrustProxyDeprecated();
 
   // Route metadata is static, so the resolved config is memoized per
   // controller class + method — after the first hit each request pays one
@@ -234,7 +236,7 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
     const decisions: RateLimitDecision[] = [];
     const headers: string[] = [];
     for (const policy of owned) {
-      const subject = await resolveSubject(policy.keyStrategy, trustProxy, ctx);
+      const subject = await resolveSubject(policy.keyStrategy, ctx);
       if (subject == null) continue; // the key function skipped this request
       decisions.push(
         await limiter.check(policy.scope, subject, policy.rules, {
@@ -259,7 +261,6 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
 
 async function resolveSubject(
   strategy: Exclude<RateLimitKeyStrategy, "auto">,
-  trustProxy: boolean,
   ctx: EventContext,
 ): Promise<string | null | undefined> {
   if (typeof strategy === "function") return await strategy();
@@ -287,33 +288,36 @@ async function resolveSubject(
     // misconfigured custom kind) — fall back to the per-IP budget rather
     // than lumping everyone into one bucket.
   }
-  return `ip:${clientIp(trustProxy, ctx)}`;
+  return `ip:${requestClientIp(ctx)}`;
 }
 
-/** Hop 0 (the socket peer) is the one trusted proxy. */
-const trustOneHop = (_addr: string, hop: number): boolean => hop < 1;
+let warnedTrustProxy = false;
 
-/**
- * `trustProxy: true` resolves like wooks' deprecated `getIp({ trustProxy: true })`
- * (one trusted hop, the right-most forwarded entry; `''` with no known peer)
- * without its deprecation notice; otherwise the app's own `getIp()`.
- */
-function clientIp(trustProxy: boolean, ctx: EventContext): string {
-  const req = useRequest(ctx);
-  return trustProxy ? resolveForwarded(req.raw, trustOneHop).ip : req.getIp();
+/** Warn once per process (at registration — no event yet) that the limiter's own `trustProxy` is deprecated. */
+function warnTrustProxyDeprecated(): void {
+  if (warnedTrustProxy) return;
+  warnedTrustProxy = true;
+  console.warn(
+    "[aooth] rateLimitInterceptors({ trustProxy }) is deprecated — still honoured (one hop, " +
+      "using the app's proxyHeaders); removed in 0.3. Set `trustProxy` on the HTTP app instead.",
+  );
 }
 
 /**
- * Internal: the client IP of the current HTTP event, derived like the rate
- * limiter does (its `trustProxy` when `rateLimitInterceptors` are installed,
- * else the socket peer / the wooks app's own `trustProxy`). `""` outside an
- * HTTP event.
+ * Internal: the client IP of the current HTTP event — the single source of
+ * every client IP aooth keys on (rate limits, one-time-code failure buckets,
+ * session metadata, device binding). The IP the HTTP app resolves
+ * (`useRequest().getIp()`, governed by the app's `trustProxy` /
+ * `proxyHeaders`); with the deprecated `rateLimitInterceptors({ trustProxy:
+ * true })` installed, wooks' one-hop resolution (`getIp({ trustProxy: true })`,
+ * which reads the app's `proxyHeaders` family). `""` outside an HTTP event.
  */
 export function requestClientIp(ctx: EventContext | undefined = tryGetCurrent()): string {
   if (!ctx) return "";
   try {
-    const trustProxy = ctx.has(rateLimitRuntimeKey) && ctx.get(rateLimitRuntimeKey).trustProxy;
-    return clientIp(trustProxy, ctx);
+    const req = useRequest(ctx);
+    const oneHop = ctx.has(rateLimitRuntimeKey) && ctx.get(rateLimitRuntimeKey).trustProxy;
+    return oneHop ? req.getIp({ trustProxy: true }) : req.getIp();
   } catch {
     return "";
   }
@@ -368,7 +372,7 @@ export async function enforceRateLimit(
   if (!rules) return;
   const decision = await runtime.limiter.check(
     policy.id,
-    key ?? `ip:${clientIp(runtime.trustProxy, ctx)}`,
+    key ?? `ip:${requestClientIp(ctx)}`,
     rules,
   );
   answerDecision(decision, [policyHeader(rules)], runtime.emitHeaders, ctx);

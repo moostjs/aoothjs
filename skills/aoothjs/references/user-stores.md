@@ -113,6 +113,7 @@ Start from the contract above. Rules:
 5. **`update` / `delete` return `false`** when no row matched (by `id`). The service surfaces that as `NOT_FOUND`.
 6. **Arrays in `set` are full replacements.** The service has already built `next` from `prev` — your job is to persist whatever you receive.
 7. **`withCas`** loops up to `opts.maxAttempts` (default 2): re-read via `findById` → `mutator(current)` (may return `null` to bail) → `update` under `expectedVersion = current.version`; throw `CAS_EXHAUSTED` on saturation, `NOT_FOUND` on a missing row. See `UserStoreMemory.withCas`.
+8. **Unset optional fields = ABSENT, never `null`.** SQL reads an unset column back as `null` → drop `null` from `account.pendingInvitation` / `invitedBy` / `inviteNonce` / `verifiedEmail`, `trustedDevices`, `seenDevices` before returning (the bundled `UsersStoreAtscriptDb` does, since 0.2.7). A leaked `null` nonce breaks invite acceptance.
 
 ```ts
 import { UserStore, UserAuthError, type UserCredentials, type UserStoreUpdate } from "@aooth/user";

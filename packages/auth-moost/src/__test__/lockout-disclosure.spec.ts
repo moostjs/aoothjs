@@ -49,6 +49,46 @@ describe("lockoutDisclosure", { timeout: 30_000 }, () => {
   });
 });
 
+/**
+ * Everything a client sees of each of `threshold + 3` failed sign-ins for
+ * `handle` (default `'uniform'` disclosure): status, the form it lands on, the
+ * error code (if any) and the form context — messages included.
+ */
+async function responses(handle: "alice" | "ghost", threshold: number): Promise<unknown[]> {
+  const app = await prepareFlowApp({
+    userConfig: { lockout: { threshold, duration: 60_000 } },
+    workflowOpts: { lockoutShadowStore: new RateLimitStoreMemory() },
+  });
+  await app.seedUser("alice", "Password123!");
+  const out: unknown[] = [];
+  for (let i = 0; i < threshold + 3; i++) {
+    const res = await app.login(handle, "wrong-password");
+    const body = res.body as {
+      code?: string;
+      inputRequired?: { payload?: { id?: string }; context?: unknown };
+    };
+    out.push({
+      status: res.status,
+      code: body.code,
+      form: body.inputRequired?.payload?.id,
+      context: body.inputRequired?.context,
+    });
+  }
+  return out;
+}
+
+describe("lockoutDisclosure 'uniform' — property: unknown ≡ real", { timeout: 60_000 }, () => {
+  it.each([1, 2, 3, 5])(
+    "threshold %i: an unknown handle answers threshold + 3 attempts exactly like a real account",
+    async (threshold) => {
+      const real = await responses("alice", threshold);
+      // The real account does lock within the window (the property is not vacuous).
+      expect(JSON.stringify(real.at(-1))).toContain(LOCKED);
+      expect(await responses("ghost", threshold)).toEqual(real);
+    },
+  );
+});
+
 async function sequence(handle: string): Promise<string[]> {
   // One injected clock for the account lock and the shadow store: with the
   // wall clock, a slow machine let the 300 ms lock lapse between attempts.

@@ -63,6 +63,7 @@ The single unified workflow class. Replaces the former `LoginWorkflow` / `Recove
 class WfTriggerProvider {
   constructor(wf: MoostWf, auth: AuthCredential);
   handle(opts?: WfTriggerOpts): Promise<unknown>; // allow governs start AND resume
+  peek(token: string): Promise<WfState | null>; // since 0.2.7 — read a resume token's state, never consumes
   // override seams:
   protected triggerHooks(): WfTriggerHooks; // default {} — app-wide trigger hooks
   protected storeStrategy(): WfStateStrategy;
@@ -89,6 +90,8 @@ interface WfTriggerOpts extends WfTriggerHooks {
 ```
 
 `triggerHooks()` returns the workflow-trigger hooks applied to every trigger request; a hook set in `handle(opts)` / `@WfTrigger(opts)` replaces the provider's hook of the same name. `restoreOnError` is opt-in (default off). See [Workflows — trigger hooks](/moost/workflows#trigger-hooks).
+
+`peek(token)` (since 0.2.7) reads the paused state behind a resume token without consuming it, resolving the token exactly as a resume does (strategy prefix, hashed handles, strategy tag); unknown, expired, malformed or foreign tokens are `null`. The state holds server-only context — project it. For invite links use [`peekInvite`](#peekinvite).
 
 `handle({ allow })` checks the workflow id on **start and resume** (since 0.2): a `wfs` minted for a workflow outside `allow` is refused with 403 before it is consumed. Ids match with or without a leading `/`; omitted `allow` = unrestricted, `allow: []` = deny every workflow. See [Workflows — trigger allow lists](/moost/workflows#trigger-allow-lists-start-and-resume).
 
@@ -148,7 +151,7 @@ class SessionsController {
 }
 ```
 
-Optional, opt-in by registration. Mounts `GET /auth/sessions` (`read`), `GET /auth/sessions/of/:userId` (`readAny`), `DELETE /auth/sessions/:sessionId` (`revoke`), `DELETE /auth/sessions?others=true` (`revoke`) — all under the `auth.sessions` ARBAC resource, none `@Public()`. A bare `DELETE /auth/sessions` is 400. Requires a stateful credential store. See [Sessions](/moost/sessions).
+Optional, opt-in by registration. Mounts `GET /auth/sessions` (`read`), `GET /auth/sessions/of/:userId` (`readAny`), `DELETE /auth/sessions/:sessionId` (`revoke`), `DELETE /auth/sessions?others=true` (`revoke`) — all under the `auth.sessions` ARBAC resource, none `@Public()`. A bare `DELETE /auth/sessions` is 400. Both reads take `?kind=` — one kind, a comma list (`?kind=session,cli-session`, since 0.2.7) or `*`; default: ordinary sessions. Requires a stateful credential store. See [Sessions](/moost/sessions).
 
 ### `SessionEnricherProvider`
 
@@ -250,14 +253,15 @@ interface RateLimitInterceptorOptions {
   limiter?: RateLimiter; // default: memory-store limiter created once per factory call
   rules?: RateLimitRuleInput[]; // app-wide defaults for routes without @RateLimit metadata
   key?: RateLimitKeyStrategy; // default 'ip'
-  trustProxy?: boolean; // default false (app's getIp()); true — one proxy hop, right-most x-forwarded-for
+  /** @deprecated since 0.2.7, removed in 0.3 — set trustProxy on the HTTP app. Still honoured: true = one hop, app's proxyHeaders (one-time warning) */
+  trustProxy?: boolean;
   headers?: boolean; // default true — draft RateLimit-* headers
   message?: string; // app-wide default 429 template
   policies?: Record<string, RateLimitRuleInput | RateLimitRuleInput[] | false>; // by policy id: replace rules, or false = off
 }
 ```
 
-Factory returning the enforcement **pair** — a `BEFORE_GUARD` interceptor for `'ip'` / custom-keyed policies and an `AFTER_GUARD` one for named-subject (`'user'` / `'auto'` / `'session'` / …) policies; a route with stacked policies of both kinds is checked by both. Register with a spread: `app.applyGlobalInterceptors(...rateLimitInterceptors(opts))`. HTTP-only; emits `RateLimit-*` (+ `Retry-After` on rejection) and throws `HttpError(429)` whose body carries `code: "RATE_LIMITED"` and `params: { policy, limit, window, retryAfter }` (seconds; `policy` = the policy `id`) next to the rendered `message`. `policies` re-tunes declared policies by id (the decorator's `id`, else the default `<Class>.<method>` scope) — new rules replace the declared ones, `false` switches one off; parsed eagerly, an empty list throws. See [Rate Limiting](/moost/rate-limit#response-headers-the-full-429-contract) and [Bundled limits](/moost/rate-limit#bundled-limits).
+Factory returning the enforcement **pair** — a `BEFORE_GUARD` interceptor for `'ip'` / custom-keyed policies and an `AFTER_GUARD` one for named-subject (`'user'` / `'auto'` / `'session'` / …) policies; a route with stacked policies of both kinds is checked by both. Register with a spread: `app.applyGlobalInterceptors(...rateLimitInterceptors(opts))`. HTTP-only; emits `RateLimit-*` (+ `Retry-After` on rejection) and throws `HttpError(429)` whose body carries `code: "RATE_LIMITED"` and `params: { policy, limit, window, retryAfter }` (seconds; `policy` = the policy `id`) next to the rendered `message`. `policies` re-tunes declared policies by id (the decorator's `id`, else the default `<Class>.<method>` scope) — new rules replace the declared ones, `false` switches one off; parsed eagerly, an empty list throws. `'ip'` keys use the client IP the HTTP app resolves (`useRequest().getIp()`) — configure proxies there ([client IP behind a proxy](/moost/rate-limit#client-ip-behind-a-proxy)). See [Rate Limiting](/moost/rate-limit#response-headers-the-full-429-contract) and [Bundled limits](/moost/rate-limit#bundled-limits).
 
 ### `useRateLimit`
 
@@ -314,6 +318,24 @@ function createInviteOutlet(): WfOutlet;
 ```
 
 Since 0.2. The outlet `AuthWorkflow` pauses on for `inviteDelivery: 'deliver' | 'return-link'` — it turns the resume token into the link via `inviteLinkUrl` and delivers it or returns it to the issuer. `WfTriggerProvider` registers it by default; include it yourself only if you **replace** `this.outlets`. See [Invites — delivery modes](/moost/invites#delivery-modes).
+
+### `peekInvite`
+
+```ts
+function peekInvite(
+  token: string,
+  deps: { trigger: WfTriggerProvider; users: UserService },
+): Promise<InvitePeek | null>;
+
+interface InvitePeek {
+  email: string;
+  invitedBy?: string; // issuer's user id
+  roles?: string[];
+  expiresAt?: number; // ms since epoch
+}
+```
+
+Since 0.2.7. Reads an invite link's token without consuming it and returns a safe projection, or `null` for an unknown / expired / non-invite token and for an invite that was replaced, accepted or revoked. No bundled route — mount one and rate-limit it. See [Invites — showing what a link is for](/moost/invites#peek-invite).
 
 ### `createMagicLinkOutlet` / `MAGIC_LINK_OUTLET` / `MAGIC_LINK_STRATEGY`
 
@@ -455,7 +477,7 @@ Attaches the `rateLimitInterceptors(opts)` **pair** via two `@Intercept`s — th
 function WfTrigger(opts?: WfTriggerOpts): MethodDecorator;
 ```
 
-Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. `opts.allow` lists the workflow ids the route may start **and resume** (omitted = unrestricted, `[]` = deny all; since 0.2). Return a non-`undefined` value from the handler to short-circuit. `opts.token` overrides the provider's default wire (`WfOutletTokenConfig` from `@moostjs/event-wf`). The trigger hooks (`around`, `beforePersist`, `renderEnvelope`, `restoreOnError`, `maxRestores`) set here apply to this route only. See [Workflows](/moost/workflows) and [trigger hooks](/moost/workflows#trigger-hooks).
+Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. `opts.allow` lists the workflow ids the route may start **and resume** (omitted = unrestricted, `[]` = deny all; since 0.2). Return a non-`undefined` value from the handler to short-circuit. `opts.token` overrides the provider's default wire (`WfOutletTokenConfig` from `@moostjs/event-wf`). The trigger hooks (`around`, `beforePersist`, `renderEnvelope`, `restoreOnError`, `maxRestores`) set here apply to this route only. Re-decorating an inherited handler (under `@Inherit()`) replaces the base route's options as a whole; the trigger still runs once per request ([override semantics](/moost/controllers#trigger-override-semantics)). See [Workflows](/moost/workflows) and [trigger hooks](/moost/workflows#trigger-hooks).
 
 ## REST endpoints
 

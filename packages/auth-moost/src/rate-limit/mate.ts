@@ -4,7 +4,7 @@ import { getMoostMate } from "moost";
 
 /**
  * Caller-identity strategy for a rate-limited route (RL.spec.md §5.3):
- *  - `'ip'` — client IP (the public-endpoint mode; honors `trustProxy`).
+ *  - `'ip'` — client IP (the public-endpoint mode; see `requestClientIp`).
  *    Evaluated PRE-guard — floods rejected before credential work.
  *  - any other string — a NAMED SUBJECT, looked up in the per-event
  *    subjects slot (see `setRateLimitSubject`) and evaluated POST-guard so

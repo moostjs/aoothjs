@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { Post } from "@moostjs/event-http";
 import { Controller, Inherit } from "moost";
@@ -6,6 +6,7 @@ import { Controller, Inherit } from "moost";
 import { Public } from "../auth.decorator";
 import { AuthController } from "../auth.controller";
 import { WfTrigger } from "../wf-trigger/decorator";
+import { WfTriggerProvider } from "../wf-trigger/provider";
 import { pauseOnForcedPasswordChange, prepareFlowApp, setPasswordInput } from "./flow-utils";
 
 // F42 / S2: a trigger's `allow` list governs RESUME too — a state token minted
@@ -110,5 +111,119 @@ describe("F42: @WfTrigger allow list on resume", () => {
     expect(open.status).toBe(201);
     const resumedOnLocked = await app.submit(open.body.wfs, {});
     expect(resumedOnLocked.status).toBe(403);
+  });
+});
+
+describe("@WfTrigger on an @Inherit() override replaces the base trigger", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("the override's allow is the only list checked — narrowing and widening", async () => {
+    @Inherit()
+    @Controller("auth")
+    class NarrowController extends AuthController {
+      @Post("trigger")
+      @Public()
+      @WfTrigger({ allow: ["auth/login/flow"] })
+      override triggerWf(): void {}
+    }
+    const narrow = await prepareFlowApp({ controllerClass: NarrowController });
+    expect((await narrow.start("auth/login/flow")).status).toBe(201);
+    expect((await narrow.start("auth/recovery/flow")).status).toBe(403);
+
+    @Inherit()
+    @Controller("auth")
+    class WideController extends AuthController {
+      @Post("trigger")
+      @Public()
+      @WfTrigger({ allow: ["auth/login/flow", "auth/change-password/flow"] })
+      override triggerWf(): void {}
+    }
+    const wide = await prepareFlowApp({ controllerClass: WideController });
+    const handle = vi.spyOn(WfTriggerProvider.prototype, "handle");
+    // Outside the base list, inside the override's: the base never refuses it.
+    const user = await wide.seedUser("alice", "Password123!");
+    const { accessToken } = await wide.auth.issue(user);
+    const started = await wide.start("auth/change-password/flow", {
+      authorization: `Bearer ${accessToken}`,
+    });
+    expect(started.status).toBe(201);
+    expect(handle).toHaveBeenCalledTimes(1);
+  });
+
+  it("the trigger runs once per request, even when the reply is undefined", async () => {
+    @Inherit()
+    @Controller("auth")
+    class SilentController extends AuthController {
+      @Post("trigger")
+      @Public()
+      @WfTrigger({ allow: ["auth/login/flow"], renderEnvelope: () => undefined })
+      override triggerWf(): void {}
+    }
+    const app = await prepareFlowApp({ controllerClass: SilentController });
+    const handle = vi.spyOn(WfTriggerProvider.prototype, "handle");
+    await app.start("auth/login/flow");
+    expect(handle).toHaveBeenCalledTimes(1);
+    expect(handle.mock.calls[0][0]?.allow).toEqual(["auth/login/flow"]);
+  });
+
+  it("a subclass that does not override the handler keeps the base trigger, once", async () => {
+    @Inherit()
+    @Controller("auth")
+    class Untouched extends AuthController {}
+    const app = await prepareFlowApp({ controllerClass: Untouched });
+    const handle = vi.spyOn(WfTriggerProvider.prototype, "handle");
+    expect((await app.start("auth/login/flow")).status).toBe(201);
+    expect((await app.start("auth/change-password/flow")).status).toBe(403);
+    expect(handle).toHaveBeenCalledTimes(2);
+  });
+
+  it("@Inherit(false) on a re-decorated override: only its own trigger, once", async () => {
+    @Inherit()
+    @Controller("auth")
+    class OptedOut extends AuthController {
+      @Inherit(false)
+      @Post("trigger")
+      @Public()
+      @WfTrigger({ allow: ["auth/login/flow"], renderEnvelope: () => undefined })
+      override triggerWf(): void {}
+    }
+    const app = await prepareFlowApp({ controllerClass: OptedOut });
+    expect((await app.start("auth/recovery/flow")).status).toBe(403);
+    const handle = vi.spyOn(WfTriggerProvider.prototype, "handle");
+    await app.start("auth/login/flow");
+    expect(handle).toHaveBeenCalledTimes(1);
+    expect(handle.mock.calls[0][0]?.allow).toEqual(["auth/login/flow"]);
+  });
+
+  it("two @WfTrigger on one method run one trigger — the top one's options", async () => {
+    // No base class: moost's own dedupe only runs when merging inherited metadata.
+    @Controller("auth")
+    class Doubled {
+      @Post("trigger")
+      @Public()
+      @WfTrigger({ allow: ["auth/login/flow"], renderEnvelope: () => undefined })
+      @WfTrigger({ allow: ["auth/recovery/flow"], renderEnvelope: () => undefined })
+      triggerWf(): void {}
+    }
+    const app = await prepareFlowApp({
+      controllerClass: Doubled as unknown as typeof AuthController,
+    });
+    const handle = vi.spyOn(WfTriggerProvider.prototype, "handle");
+    await app.start("auth/login/flow");
+    expect(handle).toHaveBeenCalledTimes(1);
+    expect(handle.mock.calls[0][0]?.allow).toEqual(["auth/login/flow"]);
+  });
+
+  it("an override without its own @WfTrigger keeps the base options", async () => {
+    @Inherit()
+    @Controller("auth")
+    class PlainOverride extends AuthController {
+      override triggerWf(): void {}
+    }
+    const app = await prepareFlowApp({ controllerClass: PlainOverride });
+    expect((await app.start("auth/login/flow")).status).toBe(201);
+    expect((await app.start("auth/change-password/flow")).status).toBe(403);
   });
 });

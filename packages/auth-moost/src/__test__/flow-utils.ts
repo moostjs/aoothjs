@@ -365,3 +365,30 @@ export async function pauseOnForcedPasswordChange(
 export const setPasswordInput = {
   formData: { newPassword: "NewPassword456!", confirmPassword: "NewPassword456!", consents: [] },
 };
+
+/** Password the invite helpers set when an invitee accepts. */
+export const INVITEE_PASSWORD = "Str0ng!Passw0rd";
+
+/** Run the admin phase of `auth/invite/start` for `email`; returns the response. */
+export async function issueInvite(
+  app: PreparedFlowApp,
+  email: string,
+  extra: object = {},
+  headers?: Record<string, string>,
+): Promise<FlowResponse> {
+  const start = await app.start("auth/invite/start", headers);
+  expect(start.status, JSON.stringify(start.body)).toBe(201);
+  return app.submit(start.body.wfs, { formData: { email, roles: [], ...extra } }, headers);
+}
+
+/** From the set-password pause: set {@link INVITEE_PASSWORD} and skip optional MFA enrolment. */
+export async function completeAccept(app: PreparedFlowApp, wfs: string): Promise<FlowResponse> {
+  let res = await app.submit(wfs, {
+    formData: { newPassword: INVITEE_PASSWORD, confirmPassword: INVITEE_PASSWORD, consents: [] },
+  });
+  if (res.body.inputRequired?.payload?.id === "EnrollPickMethodForm") {
+    res = await app.submit(res.body.wfs, { action: "skip" });
+  }
+  expect(res.body.inputRequired, JSON.stringify(res.body).slice(0, 300)).toBeUndefined();
+  return res;
+}
