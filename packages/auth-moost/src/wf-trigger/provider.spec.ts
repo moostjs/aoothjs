@@ -8,7 +8,7 @@ import {
   type WfStateStrategy,
   WfStateStoreMemory,
 } from "@moostjs/event-wf";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { deriveWfStateSecret, WfTriggerProvider } from "./provider";
 
@@ -206,5 +206,124 @@ describe("WfTriggerProvider.peek", () => {
     const { p, persist } = hashedProvider();
     const handle = (await persist()).slice("store.".length);
     expect(await p.peek(`magic-link.${handle}`)).toBeNull();
+  });
+});
+
+describe("aoothExpiresAt records when the token stops working", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const state = { schemaId: "auth/invite/start", indexes: [1], context: {} } as unknown as WfState;
+  const expiryOf = (peeked: WfState | null) => peeked?.meta?.aoothExpiresAt;
+  const freezeNow = () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: 1_800_000_000_000 });
+    return Date.now();
+  };
+
+  class EncapsulatedTtl extends TestProvider {
+    ttl: number | undefined = undefined;
+    protected override wfStateEncapsulatedTtlMs() {
+      return this.ttl;
+    }
+  }
+
+  it("with both ttl and expiresAt, the earlier one is recorded", async () => {
+    const now = freezeNow();
+    const strategy = new TestProvider(wfStub, jwtAuth()).publicStateRegistry().strategies
+      .encapsulated;
+    const sooner = await strategy.persist(state, { ttl: 60_000, expiresAt: now + 10_000 });
+    expect(expiryOf(await strategy.retrieve(sooner))).toBe(now + 10_000);
+    const later = await strategy.persist(state, { ttl: 5_000, expiresAt: now + 10_000 });
+    expect(expiryOf(await strategy.retrieve(later))).toBe(now + 5_000);
+    // The strategy agrees: the token dies at the recorded moment.
+    vi.setSystemTime(now + 5_001);
+    expect(await strategy.retrieve(later)).toBeNull();
+    expect(await strategy.retrieve(sooner)).not.toBeNull();
+    vi.setSystemTime(now + 10_001);
+    expect(await strategy.retrieve(sooner)).toBeNull();
+  });
+
+  it("with neither, the strategy's default TTL is recorded (encapsulated and store)", async () => {
+    const now = freezeNow();
+    const p = new EncapsulatedTtl(wfStub, jwtAuth());
+    p.ttl = 30_000;
+    const { encapsulated } = p.publicStateRegistry().strategies;
+    const token = await encapsulated.persist(state);
+    expect(expiryOf(await encapsulated.retrieve(token))).toBe(now + 30_000);
+    vi.setSystemTime(now + 30_001);
+    expect(await encapsulated.retrieve(token)).toBeNull();
+
+    vi.setSystemTime(now);
+    class DurableTtl extends TestProvider {
+      protected override storeStrategy(): WfStateStrategy {
+        return new HandleStateStrategy({ store: new WfStateStoreMemory(), defaultTtl: 20_000 });
+      }
+    }
+    const { store } = new DurableTtl(wfStub, jwtAuth()).publicStateRegistry().strategies;
+    const handle = await store.persist(state);
+    expect(expiryOf(await store.retrieve(handle))).toBe(now + 20_000);
+    // An explicit ttl replaces the default; an absolute expiry alone ignores it.
+    expect(expiryOf(await store.retrieve(await store.persist(state, { ttl: 5_000 })))).toBe(
+      now + 5_000,
+    );
+    expect(
+      expiryOf(await store.retrieve(await store.persist(state, { expiresAt: now + 90_000 }))),
+    ).toBe(now + 90_000);
+  });
+
+  it("the recorded expiry is what the strategy reports through expiresAtFor", async () => {
+    const now = freezeNow();
+    const p = new EncapsulatedTtl(wfStub, jwtAuth());
+    p.ttl = 30_000;
+    const { encapsulated } = p.publicStateRegistry().strategies;
+    const builtIn = (encapsulated as unknown as { inner: EncapsulatedStateStrategy }).inner;
+    expect(builtIn.expiresAtFor?.()).toBe(now + 30_000);
+    expect(expiryOf(await encapsulated.retrieve(await encapsulated.persist(state)))).toBe(
+      builtIn.expiresAtFor?.(),
+    );
+  });
+
+  it("no expiry is recorded when nothing bounds the state", async () => {
+    const strategy = new TestProvider(wfStub, jwtAuth()).publicStateRegistry().strategies
+      .encapsulated;
+    const peeked = await strategy.retrieve(await strategy.persist(state));
+    expect(peeked?.meta).not.toHaveProperty("aoothExpiresAt");
+    // `0` (reported as "never") is not recorded either.
+    const never = await strategy.retrieve(await strategy.persist(state, { ttl: 0 }));
+    expect(never?.meta).not.toHaveProperty("aoothExpiresAt");
+  });
+
+  it("a custom strategy without expiresAtFor records nothing; one that has it is trusted", async () => {
+    const memory = new Map<string, WfState>();
+    const base: WfStateStrategy = {
+      persist: async (s) => {
+        const handle = `h${memory.size}`;
+        memory.set(handle, s);
+        return handle;
+      },
+      retrieve: async (handle) => memory.get(handle) ?? null,
+      consume: async (handle) => memory.get(handle) ?? null,
+    };
+    class Custom extends TestProvider {
+      strategy: WfStateStrategy = base;
+      protected override storeStrategy(): WfStateStrategy {
+        return this.strategy;
+      }
+    }
+    const silent = new Custom(wfStub, jwtAuth());
+    const { store } = silent.publicStateRegistry().strategies;
+    // Neither the persist-time ttl nor expiresAt is recorded: the strategy did not report.
+    const unknown = await store.retrieve(
+      await store.persist(state, { ttl: 5_000, expiresAt: Date.now() + 9_000 }),
+    );
+    expect(unknown?.meta).not.toHaveProperty("aoothExpiresAt");
+
+    const reporting = new Custom(wfStub, jwtAuth());
+    reporting.strategy = { ...base, expiresAtFor: () => 1_900_000_000_000 };
+    const reported = reporting.publicStateRegistry().strategies.store;
+    expect(expiryOf(await reported.retrieve(await reported.persist(state)))).toBe(
+      1_900_000_000_000,
+    );
   });
 });

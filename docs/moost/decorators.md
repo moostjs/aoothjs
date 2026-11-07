@@ -4,17 +4,17 @@ This page is the canonical reference for every decorator the two packages export
 
 ## Matrix
 
-| Decorator                        | Target                            | Package              | Effect                                                                                                                                                                                                                                  |
-| -------------------------------- | --------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@Public()`                      | class / method                    | `@aooth/auth-moost`  | Sets BOTH `authPublic=true` AND `arbacPublic=true` on the mate. Single decorator hides the route from both guards.                                                                                                                      |
-| `@UserId()`                      | parameter                         | `@aooth/auth-moost`  | Resolves to `useAuth().getUserId()`. Throws `401` if no context.                                                                                                                                                                        |
-| `@AuthGuarded(opts)`             | class / method                    | `@aooth/auth-moost`  | Sugar for `@Intercept(authGuardInterceptor(opts))`.                                                                                                                                                                                     |
-| `@RateLimit(...rules, opts?)`    | class / method                    | `@aooth/auth-moost`  | Metadata-only: declares rate-limit rules (`'6/5m \| msg'`) + key strategy / bucket id. Enforced by `rateLimitInterceptors`. Stack several for independent policies (since 0.2). `@RateLimit(false)` opts out of app-wide default rules. |
-| `@RateLimited(opts)`             | class / method                    | `@aooth/auth-moost`  | Sugar attaching the `rateLimitInterceptors(opts)` PAIR (pre-guard + post-guard) via two `@Intercept`s — the `AuthGuarded` counterpart.                                                                                                  |
-| `@ArbacResource(name)`           | class / method                    | `@aooth/arbac-moost` | Sets `arbacResourceId` on the mate.                                                                                                                                                                                                     |
-| `@ArbacAction(name)`             | class / method (typically method) | `@aooth/arbac-moost` | Sets `arbacActionId` on the mate.                                                                                                                                                                                                       |
-| `@ArbacAuthorize()`              | class / method                    | `@aooth/arbac-moost` | Wraps `arbacAuthorizeInterceptor` via `Authenticate()` so swagger picks up auth-guard metadata.                                                                                                                                         |
-| `@WfTrigger({ allow?, token? })` | method                            | `@aooth/auth-moost`  | Wraps a method in `defineAfterInterceptor` at INTERCEPTOR priority; instantiates `WfTriggerProvider` and replies with its `handle(opts)` when the inner handler returns `undefined`.                                                    |
+| Decorator                                             | Target                            | Package              | Effect                                                                                                                                                                                                                                  |
+| ----------------------------------------------------- | --------------------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@Public()`                                           | class / method                    | `@aooth/auth-moost`  | Sets BOTH `authPublic=true` AND `arbacPublic=true` on the mate. Single decorator hides the route from both guards.                                                                                                                      |
+| `@UserId()`                                           | parameter                         | `@aooth/auth-moost`  | Resolves to `useAuth().getUserId()`. Throws `401` if no context.                                                                                                                                                                        |
+| `@AuthGuarded(opts)`                                  | class / method                    | `@aooth/auth-moost`  | Sugar for `@Intercept(authGuardInterceptor(opts))`.                                                                                                                                                                                     |
+| `@RateLimit(...rules, opts?)`                         | class / method                    | `@aooth/auth-moost`  | Metadata-only: declares rate-limit rules (`'6/5m \| msg'`) + key strategy / bucket id. Enforced by `rateLimitInterceptors`. Stack several for independent policies (since 0.2). `@RateLimit(false)` opts out of app-wide default rules. |
+| `@RateLimited(opts)`                                  | class / method                    | `@aooth/auth-moost`  | Sugar attaching the `rateLimitInterceptors(opts)` PAIR (pre-guard + post-guard) via two `@Intercept`s — the `AuthGuarded` counterpart.                                                                                                  |
+| `@ArbacResource(name)`                                | class / method                    | `@aooth/arbac-moost` | Sets `arbacResourceId` on the mate.                                                                                                                                                                                                     |
+| `@ArbacAction(name)`                                  | class / method (typically method) | `@aooth/arbac-moost` | Sets `arbacActionId` on the mate.                                                                                                                                                                                                       |
+| `@ArbacAuthorize()`                                   | class / method                    | `@aooth/arbac-moost` | Wraps `arbacAuthorizeInterceptor` via `Authenticate()` so swagger picks up auth-guard metadata.                                                                                                                                         |
+| `@WfTrigger({ allow?, resumeOnly?, block?, token? })` | method                            | `@aooth/auth-moost`  | Wraps a method in `defineAfterInterceptor` at INTERCEPTOR priority; instantiates `WfTriggerProvider` and replies with its `handle(opts)` when the inner handler returns `undefined`.                                                    |
 
 ## `@Public()`
 
@@ -115,7 +115,7 @@ Wraps `arbacAuthorizeInterceptor` via `Authenticate(arbacAuthorizeInterceptor)`.
 
 When the interceptor is global, `@ArbacAuthorize()` is structurally redundant (attaches the same interceptor at the same priority — moost dedupes by reference).
 
-## `@WfTrigger({ allow?, token? })`
+## `@WfTrigger({ allow?, resumeOnly?, block?, token? })`
 
 Method decorator used on the `AuthController.triggerWf()` endpoint (and your subclasses of it). When the wrapped handler returns `undefined`, the after-interceptor instantiates `WfTriggerProvider` and replies with its `handle(opts)`. Subclasses that need to short-circuit return any non-`undefined` value.
 
@@ -132,7 +132,9 @@ class MyAuthController extends AuthController {
 }
 ```
 
-See [REST Controllers](./controllers) and [Workflows](./workflows) for full coverage of the trigger surface.
+`resumeOnly` lists flows the route may resume but never start (e.g. the invitee's link of the admin-issued invite flow on a public route); `block` refuses flows outright and wins over both. Access is judged on the registered flow a request resolves to; a refused start is 403 `AOOTH_WORKFLOW_NOT_ALLOWED`, a refused resume 403 `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED`.
+
+See [REST Controllers](./controllers) and [Workflows](./workflows#trigger-allow-lists-start-and-resume) for full coverage of the trigger surface.
 
 ## Mate types
 

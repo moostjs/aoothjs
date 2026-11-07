@@ -11,13 +11,14 @@ import {
   type WfOutletTriggerConfig,
   type WfOutletTriggerDeps,
   type WfPauseRequest,
+  type WfPersistOptions,
   type WfState,
   type WfStateStore,
   WfStateStoreMemory,
   type WfStateStrategy,
+  type WfTriggerErrorBody,
 } from "@moostjs/event-wf";
 import { current } from "@wooksjs/event-core";
-import { HttpError } from "@wooksjs/event-http";
 import { Injectable } from "moost";
 
 import { createInviteOutlet, reservePendingInviteLink } from "../workflow/invite-outlet";
@@ -72,7 +73,10 @@ export class BoundedWfStateStoreMemory extends WfStateStoreMemory {
 
 /** Where aooth records, inside a persisted state, which strategy persisted it. */
 const STRATEGY_TAG = "aoothStrategy";
-/** Where aooth records, inside a persisted state, when it expires (ms; absent = unknown / never). */
+/**
+ * Where aooth records, inside a persisted state, when it expires (ms; absent =
+ * never, or unknown for a custom strategy).
+ */
 export const STATE_EXPIRES_KEY = "aoothExpiresAt";
 /** Padding aooth adds to encapsulated states (stripped on read). */
 const PAD_KEY = "aoothPad";
@@ -82,7 +86,6 @@ const PAD_BUCKET = 256;
 const TAG_REQUIRED = new Set([MAGIC_LINK_STRATEGY]);
 
 type WfStateMeta = Record<string, unknown>;
-type WfPersistOptions = Parameters<WfStateStrategy["persist"]>[1];
 
 /**
  * Wrap a registered strategy so a state can only be resumed through the
@@ -93,9 +96,12 @@ type WfPersistOptions = Parameters<WfStateStrategy["persist"]>[1];
  * attempt does not destroy it. States persisted before tagging existed are
  * accepted, except by strategies that always tag. Encapsulated states are also
  * padded to a {@link PAD_BUCKET}-byte multiple, so the token's length does not
- * follow the length of what is inside. The persist-time expiry, when the
- * trigger passes one, is recorded too ({@link STATE_EXPIRES_KEY}), so a peek
- * can tell when the token stops working.
+ * follow the length of what is inside. The expiry the strategy applies is
+ * recorded too ({@link STATE_EXPIRES_KEY}), as the strategy reports it through
+ * `expiresAtFor` (the earlier of the persist-time `ttl` / `expiresAt`, else its
+ * own default TTL), so a peek can tell when the token stops working. A strategy
+ * without `expiresAtFor` (a custom one, or a built-in with `persist` overridden)
+ * leaves it unrecorded.
  */
 function tagStrategy(name: string, strategy: WfStateStrategy): WfStateStrategy {
   const pad = strategy instanceof EncapsulatedStateStrategy;
@@ -104,13 +110,16 @@ function tagStrategy(name: string, strategy: WfStateStrategy): WfStateStrategy {
     const tag = state.meta?.[STRATEGY_TAG];
     return tag === undefined ? !TAG_REQUIRED.has(name) : tag === name;
   };
-  const tagged = (state: WfState, options: WfPersistOptions): WfState => {
+  const tagged = (state: WfState, options?: WfPersistOptions): WfState => {
     const {
       [PAD_KEY]: _pad,
       [STATE_EXPIRES_KEY]: _expires,
       ...meta
     } = (state.meta ?? {}) as WfStateMeta;
-    const expiresAt = options?.expiresAt ?? (options?.ttl ? Date.now() + options.ttl : undefined);
+    // The expiry the strategy will apply: positive = record it; `0` = never
+    // expires and `undefined` = unknown (no `expiresAtFor`) = record nothing.
+    const reported = strategy.expiresAtFor?.(options);
+    const expiresAt = reported !== undefined && reported > 0 ? reported : undefined;
     const out = {
       ...state,
       meta: {
@@ -175,7 +184,7 @@ const HOOK_NAMES = [
  * (a route's hook replaces the provider's hook of the same name).
  *
  * - `around(run)` — wraps everything the request does to workflow state and
- *   the outside world (allow checks, consume/start/resume, `beforePersist`,
+ *   the outside world (access checks, consume/start/resume, `beforePersist`,
  *   persist, outlet delivery), e.g. `(run) => db.transaction(run)`. It may
  *   call `run()` again after a failure; each run starts over from the request.
  * - `beforePersist(state, pause)` — runs right before a paused state is
@@ -201,10 +210,30 @@ export type WfTriggerHooks = Pick<WfOutletTriggerConfig, (typeof HOOK_NAMES)[num
 export interface WfTriggerOpts extends WfTriggerHooks {
   /**
    * Workflow ids this trigger may START and RESUME (a leading `/` is ignored).
-   * Omitted = unrestricted; `[]` = deny every workflow. A state token minted
-   * for a workflow outside the list is refused with 403 and is not consumed.
+   * Omitted = unrestricted; `[]` = deny every workflow. A flow is judged by
+   * the registered flow a request resolves to (an `onNotFound` flow or a
+   * parametric route that catches the id counts as that flow), and an entry
+   * admits only a flow registered under exactly that id. A refused start
+   * answers 403 `AOOTH_WORKFLOW_NOT_ALLOWED`, a refused resume 403
+   * `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED`; a state token minted for a workflow
+   * outside the list is not consumed.
    */
   allow?: string[];
+  /**
+   * Workflow ids this trigger may RESUME but never START — e.g. a public
+   * trigger that continues an invite flow only an admin can issue. Additive to
+   * `allow` (a resume needs no `allow` entry); a start is refused (403
+   * `AOOTH_WORKFLOW_NOT_ALLOWED`) even when `allow` lists the flow. `block`
+   * still wins.
+   */
+  resumeOnly?: string[];
+  /**
+   * Workflow ids this trigger refuses on start AND resume (403
+   * `AOOTH_WORKFLOW_NOT_ALLOWED` on a start, `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED`
+   * on a resume), whatever `allow` / `resumeOnly` say. An entry also blocks the
+   * flow it resolves to (`'user/42'` blocks `'user/:id'`).
+   */
+  block?: string[];
   /** Per-endpoint token wire override. Defaults to the provider's wire (`{read:['body','query','cookie'], write:'body', name:'wfs'}`). */
   token?: WfOutletTokenConfig;
 }
@@ -239,55 +268,52 @@ export function deriveWfStateSecret(secret: string): Buffer {
   return createHash("sha256").update(secret).digest();
 }
 
-function notAllowed(id: string): HttpError {
-  return aoothHttpError(403, "AOOTH_WORKFLOW_NOT_ALLOWED", { workflow: normalizeWfId(id) });
-}
-
 /**
- * Wrap a strategy so a resume is checked against the allow list BEFORE the
- * state is consumed: the state is peeked (`retrieve`), refused with 403 when
- * its workflow is not allowed on this route (the token stays usable on its
- * own route), and only then consumed. The optional expiry-reporting methods
- * (`persistEntry` / `consumeEntry`, which `restoreOnError` needs) are kept
- * when the wrapped strategy has them.
+ * The access refusals the wooks trigger raises, in aooth's public form. The
+ * engine decides (`allow` / `resumeOnly` / `block`, judged on the resolved
+ * flow); aooth keeps its own wire contract:
+ *
+ * - `WF_FORBIDDEN` (403) on a start becomes `AOOTH_WORKFLOW_NOT_ALLOWED` (403,
+ *   `workflow` param). On a resume the engine never names the stored flow, so
+ *   it becomes `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED` (403, no params, a template
+ *   without a placeholder).
+ * - `WF_NOT_FOUND` (404) — a start whose id resolves to no flow while access
+ *   lists are set — becomes `AOOTH_WORKFLOW_NOT_ALLOWED` (403) whenever `allow`
+ *   is set: unregistered ids answer like unlisted ones, so a probe cannot tell
+ *   which ids `allow` lists. With only `resumeOnly` / `block` set it stays 404.
+ *
+ * Anything else passes through untouched. The error is recognised by its body
+ * code, not by class, so a second installed copy of `@wooksjs/event-http` does
+ * not let a raw `WF_FORBIDDEN` through.
  */
-function guardStrategy(
-  strategy: WfStateStrategy,
-  permits: (schemaId: string) => boolean,
-): WfStateStrategy {
-  const check = async (token: string): Promise<void> => {
-    const peeked = await strategy.retrieve(token);
-    if (peeked && !permits(peeked.schemaId)) throw notAllowed(peeked.schemaId);
-  };
-  const guarded: WfStateStrategy = {
-    persist: (state, options, overrides) => strategy.persist(state, options, overrides),
-    retrieve: (token) => strategy.retrieve(token),
-    consume: async (token) => {
-      await check(token);
-      return strategy.consume(token);
-    },
-  };
-  if (strategy.persistEntry) {
-    guarded.persistEntry = (state, options, overrides) =>
-      strategy.persistEntry!(state, options, overrides);
+function mapRefusal(error: unknown, allowed: boolean): unknown {
+  const body = (error as { body?: Partial<WfTriggerErrorBody> } | null)?.body;
+  if (!body || typeof body !== "object") return error;
+  const wfid = typeof body.params?.wfid === "string" ? normalizeWfId(body.params.wfid) : undefined;
+  if (body.code === "WF_FORBIDDEN") {
+    return wfid === undefined
+      ? aoothHttpError(403, "AOOTH_WORKFLOW_RESUME_NOT_ALLOWED")
+      : aoothHttpError(403, "AOOTH_WORKFLOW_NOT_ALLOWED", { workflow: wfid });
   }
-  if (strategy.consumeEntry) {
-    guarded.consumeEntry = async (token) => {
-      await check(token);
-      return strategy.consumeEntry!(token);
-    };
+  if (body.code === "WF_NOT_FOUND" && allowed && wfid !== undefined) {
+    return aoothHttpError(403, "AOOTH_WORKFLOW_NOT_ALLOWED", { workflow: wfid });
   }
-  return guarded;
+  return error;
 }
 
 /**
  * Run one trigger attempt. The invite outlet reads the link callback from a
  * slot reserved on the HTTP event; it is reserved per run, so a run that
- * `around` retries starts clean.
+ * `around` retries starts clean. Access refusals leave in aooth's form
+ * ({@link mapRefusal}).
  */
-function runTrigger(run: () => Promise<unknown>): Promise<unknown> {
+async function runTrigger(run: () => Promise<unknown>, allowed: boolean): Promise<unknown> {
   reservePendingInviteLink();
-  return run();
+  try {
+    return await run();
+  } catch (error) {
+    throw mapRefusal(error, allowed);
+  }
 }
 
 /**
@@ -468,55 +494,38 @@ export class WfTriggerProvider {
   }
 
   /**
-   * Handle one trigger request. `allow` lists the workflow ids this route may
-   * START and RESUME (matched without a leading `/`); omitted = unrestricted,
-   * `[]` = deny all. A state token minted for a workflow outside the list is
-   * refused with 403 before it is consumed. Trigger hooks set in `opts`
-   * replace the {@link triggerHooks} of the same name.
+   * Handle one trigger request. `opts` is {@link WfTriggerOpts}: the access
+   * lists are judged by the wooks trigger before a state token is consumed, and
+   * hooks set in `opts` replace the {@link triggerHooks} of the same name.
    */
   async handle(opts: WfTriggerOpts = {}): Promise<unknown> {
     const wfApp = this.wf.getWfApp();
     current().set(pincodeKeySlot, this.pincodeKey());
-    const allowed = opts.allow && new Set(opts.allow.map(normalizeWfId));
-    const permits = (schemaId: string) => !allowed || allowed.has(normalizeWfId(schemaId));
-    const registry = this.stateRegistry();
-    const stateConfig: StateRegistry = allowed
-      ? {
-          default: registry.default,
-          strategies: Object.fromEntries(
-            Object.entries(registry.strategies).map(([name, strategy]) => [
-              name,
-              guardStrategy(strategy, permits),
-            ]),
-          ),
-        }
-      : registry;
     const deps: WfOutletTriggerDeps = {
       // Forward `o.strategy` — the trigger resolves the registry default (start)
       // or the incoming token's prefix (resume) and passes it here; the wf
       // adapter sets the `wf.strategyName` slot from it, which the trigger then
       // reads back at pause time. Dropping it leaves the slot unset and the
       // trigger throws `Key "wf.strategyName" is not set` on every request.
-      start: (schemaId, context, o) => {
-        if (!permits(schemaId)) throw notAllowed(schemaId);
-        return wfApp.start(schemaId, context, {
+      // `expectSchemaId` is the flow the access lists judged: run nothing else.
+      start: (schemaId, context, o) =>
+        wfApp.start(schemaId, context, {
           input: o?.input,
           eventContext: (o?.eventContext ?? current()) as never,
           strategy: o?.strategy,
-        });
-      },
-      resume: (state, o) => {
-        // Belt-and-braces for a strategy whose `retrieve` cannot peek.
-        if (!permits(state.schemaId)) throw notAllowed(state.schemaId);
-        return wfApp.resume(state, {
+          expectSchemaId: o?.expectSchemaId,
+        }),
+      resume: (state, o) =>
+        wfApp.resume(state, {
           input: o?.input,
           eventContext: (o?.eventContext ?? current()) as never,
           strategy: o?.strategy,
-        });
-      },
+        }),
+      // The access lists judge the flow a request resolves to, not its spelling.
+      resolveSchemaId: (id, o) => this.wf.resolveSchemaId(id, o as never),
     };
     // Only the hook options pass through — never other trigger config (state,
-    // outlets, allow…) a subclass might return by mistake.
+    // outlets…) a subclass might return by mistake.
     const base = this.triggerHooks();
     const hooks: Record<string, unknown> = {};
     for (const name of HOOK_NAMES) {
@@ -530,13 +539,16 @@ export class WfTriggerProvider {
       return beforePersist?.(state, pause);
     };
     const around = opts.around ?? base.around;
-    // The allow list is enforced here (start + resume, normalised ids, `[]` =
-    // deny all), not forwarded to the outlet handler.
+    const { allow, resumeOnly, block } = opts;
+    const attempt = (run: () => Promise<unknown>) => runTrigger(run, allow !== undefined);
     return handleAsOutletRequest(
       {
         ...hooks,
-        around: around ? (run) => around(() => runTrigger(run)) : runTrigger,
-        state: stateConfig,
+        allow,
+        resumeOnly,
+        block,
+        around: around ? (run) => around(() => attempt(run)) : attempt,
+        state: this.stateRegistry(),
         outlets: this.outlets,
         token: opts.token ?? this.token,
       },

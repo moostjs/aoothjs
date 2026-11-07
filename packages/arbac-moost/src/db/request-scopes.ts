@@ -8,10 +8,10 @@ import {
 } from "@aooth/arbac";
 import type { FilterExpr } from "@atscript/db";
 import {
-  badRequest,
   DB_CRUD_HANDLERS,
   discoverRowLevelActions,
   hasActionDelegations,
+  unknownFieldError,
 } from "@atscript/moost-db";
 import type { TDbRequestContext } from "@atscript/moost-db";
 import { cached, current, key, tryGetCurrent } from "@wooksjs/event-core";
@@ -515,6 +515,6 @@ export function arbacRelationFilter(
 ): FilterExpr {
   let level: MetaVisibility | undefined = visibilityFor(requireRequestScopes(), readable);
   for (const name of path.split(".")) level = level && visibleRelation(name, level);
-  if (!level?.scopes) throw badRequest(path, `Unknown field "${path}"`);
+  if (!level?.scopes) throw unknownFieldError(path);
   return conjoinScopeFilters(effectiveScope(level.scopes).filter, filter) ?? filter;
 }

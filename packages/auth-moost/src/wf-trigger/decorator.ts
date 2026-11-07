@@ -37,9 +37,10 @@ const wfTriggerInterceptor = defineAfterInterceptor(async (response, reply) => {
  * that need to short-circuit (e.g. emit a custom error response) just return a
  * non-undefined value from the overridden handler and the trigger is skipped.
  *
- * `opts` also takes the workflow-trigger hooks (`around`, `beforePersist`,
+ * `opts` is `WfTriggerOpts`: the access lists `allow` / `resumeOnly` /
+ * `block` and the workflow-trigger hooks (`around`, `beforePersist`,
  * `renderEnvelope`, `restoreOnError`, `maxRestores` — see `WfTriggerHooks`);
- * each one set here replaces the provider's `triggerHooks()` hook of the
+ * each hook set here replaces the provider's `triggerHooks()` hook of the
  * same name for this route.
  *
  * Under `@Inherit()`, re-decorating an overridden handler REPLACES the base

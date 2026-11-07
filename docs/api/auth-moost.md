@@ -84,7 +84,9 @@ type WfTriggerHooks = Pick<
 >;
 
 interface WfTriggerOpts extends WfTriggerHooks {
-  allow?: string[];
+  allow?: string[]; // start + resume
+  resumeOnly?: string[]; // resume only (since 0.2.7)
+  block?: string[]; // neither; wins over both (since 0.2.7)
   token?: WfOutletTokenConfig;
 }
 ```
@@ -93,7 +95,7 @@ interface WfTriggerOpts extends WfTriggerHooks {
 
 `peek(token)` (since 0.2.7) reads the paused state behind a resume token without consuming it, resolving the token exactly as a resume does (strategy prefix, hashed handles, strategy tag); unknown, expired, malformed or foreign tokens are `null`. The state holds server-only context — project it. For invite links use [`peekInvite`](#peekinvite).
 
-`handle({ allow })` checks the workflow id on **start and resume** (since 0.2): a `wfs` minted for a workflow outside `allow` is refused with 403 before it is consumed. Ids match with or without a leading `/`; omitted `allow` = unrestricted, `allow: []` = deny every workflow. See [Workflows — trigger allow lists](/moost/workflows#trigger-allow-lists-start-and-resume).
+`handle({ allow })` checks the workflow id on **start and resume** (since 0.2): a `wfs` minted for a workflow outside `allow` is refused with 403 before it is consumed. Ids match with or without a leading `/`; omitted `allow` = unrestricted, `allow: []` = deny every workflow. Since 0.2.7 the wooks trigger judges the **registered flow a request resolves to** (an `onNotFound` flow or a parametric route counts as that flow), `resumeOnly` flows can be resumed but never started, `block` wins; a refused start is 403 `AOOTH_WORKFLOW_NOT_ALLOWED`, a refused resume 403 `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED` (no params). See [Workflows — trigger allow lists](/moost/workflows#trigger-allow-lists-start-and-resume).
 
 Singleton owning workflow-state persistence, outlets, and the token wire. State is a **named-strategy registry**, not a single strategy: every workflow **starts** on the `encapsulated` strategy (the registry default) — state rides inside the SPA-held token, so an idle login form persists **zero** server-side rows and a restart can never `410 Gone` it. A later step calls `swapStrategy('store')` to move durable.
 
@@ -469,7 +471,7 @@ Metadata-only rule declaration; variadic rules with an optional trailing options
 function RateLimited(opts?: RateLimitInterceptorOptions): ClassDecorator & MethodDecorator;
 ```
 
-Attaches the `rateLimitInterceptors(opts)` **pair** via two `@Intercept`s — the `AuthGuarded` counterpart. Safe alongside a global registration (a per-event phase marker dedups). See [Rate Limiting](/moost/rate-limit#ratelimited-per-controller-sugar).
+Attaches the `rateLimitInterceptors(opts)` **pair** via two `@Intercept`s — the `AuthGuarded` counterpart. Safe alongside a global registration that uses the same limiter (each scope is checked once per event per limiter). See [Rate Limiting](/moost/rate-limit#ratelimited-per-controller-sugar).
 
 ### `@WfTrigger`
 

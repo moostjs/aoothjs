@@ -1101,6 +1101,7 @@ describe("gateMetaControls — /meta capabilities follow the controls policy", (
     "search",
     "index",
     "fuzzy",
+    "rank",
     "vector",
     "threshold",
     "with",
@@ -1263,9 +1264,17 @@ describe("gateMetaControls — /meta capabilities follow the controls policy", (
     expect(out.vectorSearchable).toBe(false);
     expect(out.searchIndexes).toEqual([]);
     expect(out.crud.query).toEqual(
-      without(QUERY, "search", "index", "fuzzy", "vector", "threshold"),
+      without(QUERY, "search", "index", "fuzzy", "rank", "vector", "threshold"),
     );
     expect(out.crud.geo).toEqual(GEO);
+  });
+
+  it("$rank: false → only rank leaves the list, text search kept", () => {
+    const out = gate({ $rank: false });
+    expect(out.searchable).toBe(true);
+    expect(indexNames(out)).toEqual(["", "text_idx", "vec_idx"]);
+    expect(out.crud.query).toEqual(without(QUERY, "rank"));
+    expect(out.crud.pages).toEqual(PAGES);
   });
 
   it("$vector: false → no vector search or vector index, text search kept", () => {

@@ -21,9 +21,9 @@ import {
 
 import { readPresentedRefreshToken, useAuth } from "../auth.composables";
 import {
+  checkedPolicies,
   getRateLimitSubject,
   rateLimitDecisionKey,
-  rateLimitPhasesKey,
   type RateLimitRuntime,
   rateLimitRuntimeKey,
 } from "./composables";
@@ -128,8 +128,12 @@ interface RouteConfig {
  *
  * Ownership is static per policy (from metadata/options): a route whose
  * stacked policies mix both kinds is evaluated by both phases, each checking
- * its own policies. A per-event phase marker guards against double counting
- * when the pair is also attached per-controller (see {@link RateLimited}).
+ * its own policies. Each policy is checked once per event: a per-event record
+ * of the checked policies guards against double counting when the pair is also
+ * attached per-controller (see {@link RateLimited}), and when a request runs
+ * the handler chains of two apps sharing one router (wooks moves on to the next
+ * chain when a handler throws) — the second chain re-answers a policy's
+ * rejection without counting it again and checks only the policies it adds.
  *
  * On rejection: draft `RateLimit-*` headers + `Retry-After` are written to
  * the accumulated response (they survive the throw — wooks renders the error
@@ -222,31 +226,40 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
     // Policies enforced from inside a handler (the auth workflow's sends) use
     // the same limiter and overrides — see `enforceRateLimit`.
     if (!ctx.has(rateLimitRuntimeKey)) ctx.set(rateLimitRuntimeKey, runtime);
-    // Another registration of the pair already evaluated this phase.
-    const done = ctx.has(rateLimitPhasesKey) ? ctx.get(rateLimitPhasesKey) : [];
-    if (done.includes(phase)) return;
-
     const config = resolveRouteConfig(useControllerContext(ctx));
     if (!config) return;
     const owned = config[phase];
     if (owned.length === 0) return; // the other phase owns this route
-    ctx.set(rateLimitPhasesKey, [...done, phase]);
+
+    // Each policy is checked once per event per limiter, whoever registered the
+    // pair (global + per-controller, or the interceptors of two apps on one
+    // router, where wooks runs the next app's chain when a handler throws). A
+    // policy already checked on this limiter is not counted again: if it
+    // rejected, the same 429 is answered (the headers of the first answer are
+    // already on the response). Another limiter runs its own check.
+    const checked = checkedPolicies(ctx, limiter);
 
     // Every owned policy is checked (each counts its own hit) before deciding.
     const decisions: RateLimitDecision[] = [];
     const headers: string[] = [];
     for (const policy of owned) {
+      const id = `${phase}:${policy.scope}`;
+      const seen = checked.get(id);
+      if (seen) {
+        if (!seen.allowed) answerDecision(seen, [], false, ctx);
+        continue;
+      }
       const subject = await resolveSubject(policy.keyStrategy, ctx);
       if (subject == null) continue; // the key function skipped this request
-      decisions.push(
-        await limiter.check(policy.scope, subject, policy.rules, {
-          ...(policy.defaultMessage !== undefined && { defaultMessage: policy.defaultMessage }),
-        }),
-      );
+      const result = await limiter.check(policy.scope, subject, policy.rules, {
+        ...(policy.defaultMessage !== undefined && { defaultMessage: policy.defaultMessage }),
+      });
+      checked.set(id, result);
+      decisions.push(result);
       headers.push(policy.policyHeader);
     }
-    if (ctx.has(rateLimitDecisionKey)) decisions.unshift(ctx.get(rateLimitDecisionKey));
     if (decisions.length === 0) return;
+    if (ctx.has(rateLimitDecisionKey)) decisions.unshift(ctx.get(rateLimitDecisionKey));
     const decision = pickGoverning(decisions, (d) => !d.allowed);
     ctx.set(rateLimitDecisionKey, decision);
 

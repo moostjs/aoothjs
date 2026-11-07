@@ -44,6 +44,14 @@ describe("ArbacDbScope generic typing", () => {
     expect(_s).toBeDefined();
   });
 
+  // WHY: `$rank` (relevance ordering of a text `$search`) is a boolean control
+  // like `$fuzzy`; if it drops out of `BooleanControl`, a typed scope cannot
+  // gate it and this stops compiling.
+  it("typed scope accepts $rank: false next to $fuzzy", () => {
+    const _s: ArbacDbScope<TestTask> = { controls: { $rank: false, $fuzzy: false } };
+    expect(_s.controls).toEqual({ $rank: false, $fuzzy: false });
+  });
+
   // WHY: the primary feature — direct own-field names autocomplete and
   // typo-check. Without this Step B has no value; if `internalNotes` (typed)
   // and `'title.foo'` (dotted-path escape) ever stop coexisting, the design

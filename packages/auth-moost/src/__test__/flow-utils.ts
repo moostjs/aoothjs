@@ -193,6 +193,10 @@ export interface PrepareFlowOpts extends AuthOptions {
   sharedStore?: boolean;
   /** Install `rateLimitInterceptors(rateLimit)` globally. */
   rateLimit?: RateLimitInterceptorOptions;
+  /** Options of the workflow app (e.g. `onNotFound`). */
+  wfOptions?: Exclude<ConstructorParameters<typeof MoostWf>[0], { start: unknown }>;
+  /** Extra controllers registered BEFORE the auth ones (extra workflows, first match wins). */
+  extraControllers?: object[];
 }
 
 export type FlowResponse = HarnessResponse;
@@ -255,12 +259,14 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
     storeMode: _m,
     sharedStore: _s,
     rateLimit,
+    wfOptions,
+    extraControllers,
     ...authOptions
   } = opts;
 
   const moost = new Moost();
   const http = moost.adapter(new MoostHttp(createHttpApp(httpApp, new Wooks())));
-  moost.adapter(new MoostWf());
+  moost.adapter(new MoostWf(wfOptions));
 
   const auth =
     credential ??
@@ -300,6 +306,7 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
     moost.applyGlobalInterceptors(arbacAuthorizeInterceptor);
   }
   moost.registerControllers(
+    ...(extraControllers ?? []),
     controllerClass ?? AuthController,
     workflowClass ?? FlowWorkflow,
     ...(authorizationServer ? [AuthorizeController] : []),

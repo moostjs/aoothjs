@@ -64,7 +64,16 @@ class AppAuthController extends AuthController {
 app.registerControllers(AppAuthController);
 ```
 
-`allow` governs START **and RESUME** (since 0.2): a `wfs` for a workflow outside the list → 403 before it is consumed. Omitted = unrestricted; `[]` = deny all. Ids match with/without a leading `/`.
+`allow` governs START **and RESUME** (since 0.2): a `wfs` for a workflow outside the list → 403 before it is consumed. Omitted = unrestricted; `[]` = deny all. Ids match with/without a leading `/`. Since 0.2.7 access is judged on the REGISTERED flow a request resolves to (not its spelling), and `@WfTrigger` also takes `resumeOnly` (resume yes, start never — even if `allow` lists it) and `block` (wins over both); refused start = 403 `AOOTH_WORKFLOW_NOT_ALLOWED`, refused resume = 403 `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED`.
+
+Public trigger that resumes the admin-issued invite flow but never starts it (the issuing route lists `auth/invite/start` in its own `allow`):
+
+```ts
+@Post("trigger")
+@Public()
+@WfTrigger({ allow: ["auth/login/flow", "auth/recovery/flow"], resumeOnly: ["auth/invite/start"] })
+override triggerWf(): void {}
+```
 
 The handler body is intentionally empty. `@WfTrigger` is an after-interceptor at `INTERCEPTOR` priority: when the handler returns `undefined`, it `instantiate(WfTriggerProvider)`s the provider and replies with `provider.handle(opts)`. To short-circuit, return any non-`undefined` value from your override.
 

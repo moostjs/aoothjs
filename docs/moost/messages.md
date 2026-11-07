@@ -167,40 +167,41 @@ Every 4xx `HttpError` aooth raises carries a `code` and, where the text names a 
 }
 ```
 
-| Catalogue                  | Code                              | Status | Params                                                                 |
-| -------------------------- | --------------------------------- | ------ | ---------------------------------------------------------------------- |
-| `AOOTH_HTTP_MESSAGES`      | `AOOTH_AUTH_REQUIRED`             | 401    | — (guarded route, no credential)                                       |
-|                            | `AOOTH_CREDENTIAL_INVALID`        | 401    | — (guarded route, invalid credential)                                  |
-|                            | `AOOTH_NOT_AUTHENTICATED`         | 401    | — (`useAuth().getUserId()`, `AuthController`)                          |
-|                            | `NO_CURRENT_SESSION`              | 401    |                                                                        |
-|                            | `MISSING_REFRESH_TOKEN`           | 401    |                                                                        |
-|                            | `INVALID_REFRESH_TOKEN`           | 401    |                                                                        |
-|                            | `LOGOUT_OTHERS_REQUIRED`          | 400    |                                                                        |
-|                            | `INVITE_NOT_FOUND`                | 404    |                                                                        |
-|                            | `AOOTH_MISSING_UID`               | 400    |                                                                        |
-|                            | `LINKED_IDENTITY_NOT_FOUND`       | 404    |                                                                        |
-|                            | `LAST_SIGN_IN_METHOD`             | 409    |                                                                        |
-|                            | `AOOTH_UNKNOWN_PROVIDER`          | 404    | `provider`                                                             |
-|                            | `AOOTH_WORKFLOW_NOT_ALLOWED`      | 403    | `workflow`                                                             |
-|                            | `AOOTH_CODE_LIMIT_REACHED`        | 429    | — (a destination's [code budget](./workflows#one-time-codes) is spent) |
-| `RATE_LIMIT_MESSAGES`      | `RATE_LIMITED`                    | 429    | `policy`, `limit`, `window`, `retryAfter` (seconds)                    |
-| `AOOTH_MESSAGES`           | `AOOTH_USER_ALREADY_EXISTS`       | 409    |                                                                        |
-|                            | `INVITE_CANCELLED`                | 410    |                                                                        |
-|                            | `INVITE_REPLACED`                 | 410    |                                                                        |
-|                            | `INVITE_ALREADY_ACCEPTED`         | 410    |                                                                        |
-|                            | `PASSWORD_CHANGED_SIGN_IN_AGAIN`  | 410    |                                                                        |
-|                            | `UNKNOWN_SSO_PROVIDER`            | 400    |                                                                        |
-|                            | `TOTP_NOT_CONFIGURED`             | 400    |                                                                        |
-| `ARBAC_MESSAGES`           | `ARBAC_INSUFFICIENT_PRIVILEGES`   | 403    | `resource`, `action`                                                   |
-|                            | `ARBAC_FORBIDDEN`                 | 403    | `resource`, `action` (`evaluateOrThrow()`)                             |
-|                            | `ARBAC_NOT_AUTHORIZED`            | 401    |                                                                        |
-|                            | `ARBAC_CONTROL_NOT_ALLOWED`       | 403    | `control`                                                              |
-|                            | `ARBAC_CONTROL_VALUE_NOT_ALLOWED` | 403    | `control`, `value`                                                     |
-|                            | `ARBAC_NESTED_WRITE_NOT_ALLOWED`  | 403    | `relation`                                                             |
-|                            | `ARBAC_ROW_OUT_OF_SCOPE`          | 403    |                                                                        |
-|                            | `ARBAC_REFERENCE_OUT_OF_SCOPE`    | 403    | `fields`                                                               |
-|                            | `ARBAC_INVALID_QUERY_STRING`      | 400    | `error` (the parser's text)                                            |
-| `USER_AUTH_ERROR_MESSAGES` | `AOOTH_USER_POLICY_VIOLATION`, …  | 4xx    | see [Errors — HTTP mapping](/user/errors#http-mapping)                 |
+| Catalogue                  | Code                                | Status | Params                                                                 |
+| -------------------------- | ----------------------------------- | ------ | ---------------------------------------------------------------------- |
+| `AOOTH_HTTP_MESSAGES`      | `AOOTH_AUTH_REQUIRED`               | 401    | — (guarded route, no credential)                                       |
+|                            | `AOOTH_CREDENTIAL_INVALID`          | 401    | — (guarded route, invalid credential)                                  |
+|                            | `AOOTH_NOT_AUTHENTICATED`           | 401    | — (`useAuth().getUserId()`, `AuthController`)                          |
+|                            | `NO_CURRENT_SESSION`                | 401    |                                                                        |
+|                            | `MISSING_REFRESH_TOKEN`             | 401    |                                                                        |
+|                            | `INVALID_REFRESH_TOKEN`             | 401    |                                                                        |
+|                            | `LOGOUT_OTHERS_REQUIRED`            | 400    |                                                                        |
+|                            | `INVITE_NOT_FOUND`                  | 404    |                                                                        |
+|                            | `AOOTH_MISSING_UID`                 | 400    |                                                                        |
+|                            | `LINKED_IDENTITY_NOT_FOUND`         | 404    |                                                                        |
+|                            | `LAST_SIGN_IN_METHOD`               | 409    |                                                                        |
+|                            | `AOOTH_UNKNOWN_PROVIDER`            | 404    | `provider`                                                             |
+|                            | `AOOTH_WORKFLOW_NOT_ALLOWED`        | 403    | `workflow` (a refused start)                                           |
+|                            | `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED` | 403    | — (a refused resume never names the stored flow)                       |
+|                            | `AOOTH_CODE_LIMIT_REACHED`          | 429    | — (a destination's [code budget](./workflows#one-time-codes) is spent) |
+| `RATE_LIMIT_MESSAGES`      | `RATE_LIMITED`                      | 429    | `policy`, `limit`, `window`, `retryAfter` (seconds)                    |
+| `AOOTH_MESSAGES`           | `AOOTH_USER_ALREADY_EXISTS`         | 409    |                                                                        |
+|                            | `INVITE_CANCELLED`                  | 410    |                                                                        |
+|                            | `INVITE_REPLACED`                   | 410    |                                                                        |
+|                            | `INVITE_ALREADY_ACCEPTED`           | 410    |                                                                        |
+|                            | `PASSWORD_CHANGED_SIGN_IN_AGAIN`    | 410    |                                                                        |
+|                            | `UNKNOWN_SSO_PROVIDER`              | 400    |                                                                        |
+|                            | `TOTP_NOT_CONFIGURED`               | 400    |                                                                        |
+| `ARBAC_MESSAGES`           | `ARBAC_INSUFFICIENT_PRIVILEGES`     | 403    | `resource`, `action`                                                   |
+|                            | `ARBAC_FORBIDDEN`                   | 403    | `resource`, `action` (`evaluateOrThrow()`)                             |
+|                            | `ARBAC_NOT_AUTHORIZED`              | 401    |                                                                        |
+|                            | `ARBAC_CONTROL_NOT_ALLOWED`         | 403    | `control`                                                              |
+|                            | `ARBAC_CONTROL_VALUE_NOT_ALLOWED`   | 403    | `control`, `value`                                                     |
+|                            | `ARBAC_NESTED_WRITE_NOT_ALLOWED`    | 403    | `relation`                                                             |
+|                            | `ARBAC_ROW_OUT_OF_SCOPE`            | 403    |                                                                        |
+|                            | `ARBAC_REFERENCE_OUT_OF_SCOPE`      | 403    | `fields`                                                               |
+|                            | `ARBAC_INVALID_QUERY_STRING`        | 400    | `error` (the parser's text)                                            |
+| `USER_AUTH_ERROR_MESSAGES` | `AOOTH_USER_POLICY_VIOLATION`, …    | 4xx    | see [Errors — HTTP mapping](/user/errors#http-mapping)                 |
 
 Under a translator, a rate-limit rule's own English `message` is replaced by the `RATE_LIMITED` translation — the 429 is translated by its code. Use `{limit}`, `{window}` and `{retryAfter}` (seconds) in your translations.
 

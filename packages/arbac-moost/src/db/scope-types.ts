@@ -59,6 +59,7 @@ type BooleanControl =
   | "$search"
   | "$index"
   | "$fuzzy"
+  | "$rank"
   | "$vector"
   | "$threshold"
   | "$actions"

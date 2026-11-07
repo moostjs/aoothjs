@@ -39,8 +39,10 @@ export const AOOTH_HTTP_MESSAGES = {
   AOOTH_UNKNOWN_PROVIDER: "Unknown provider '{provider}'",
   /** 429 — the one-time codes of this account or address failed too often; answered to every code send and check until the window passes. */
   AOOTH_CODE_LIMIT_REACHED: "Too many code attempts. Try again later.",
-  /** 403 — the workflow trigger refused a workflow outside its allow list. Params: `workflow`. */
+  /** 403 — the workflow trigger refused a START (outside `allow`, in `resumeOnly`, or `block`ed, or an unregistered id under `allow`). Params: `workflow`. */
   AOOTH_WORKFLOW_NOT_ALLOWED: "Workflow '{workflow}' is not allowed",
+  /** 403 — a refused RESUME (not in the route's `allow` / `resumeOnly`, or `block`ed). No params: it never names the stored flow. */
+  AOOTH_WORKFLOW_RESUME_NOT_ALLOWED: "Workflow is not allowed",
 } as const;
 
 registerMessages(AOOTH_HTTP_MESSAGES);

@@ -501,6 +501,18 @@ describe("A9: peekInvite reads an invite link without consuming it", () => {
     expect(opened.body.inputRequired?.payload?.id).toBe("SetPasswordForm");
   });
 
+  it("expiresAt is the moment the link stops working", async () => {
+    const { app, invite, peek } = await boot();
+    await invite("t@x.test");
+    const token = app.emails[0].token;
+    const { expiresAt } = await peek(token);
+    vi.useFakeTimers({ toFake: ["Date"], now: expiresAt - 1000 });
+    expect(await peek(token)).toMatchObject({ email: "t@x.test", expiresAt });
+    vi.setSystemTime(expiresAt + 1000);
+    expect(await peek(token)).toBeNull();
+    expect((await app.submit(token)).status).toBe(410);
+  });
+
   it("a link replaced by a re-invite reads as null; the new one reads", async () => {
     const { app, invite, peek } = await boot();
     await invite("r@x.test");

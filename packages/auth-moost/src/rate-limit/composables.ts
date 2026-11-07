@@ -20,8 +20,27 @@ export interface RateLimitRuntime {
 /** Internal: the installed interceptors' runtime, published on every HTTP event. */
 export const rateLimitRuntimeKey = key<RateLimitRuntime>("aooth.rateLimit.runtime");
 
-/** Internal: phases (`pre` / `post`) that already evaluated this event — the double-count guard. */
-export const rateLimitPhasesKey = key<Array<"pre" | "post">>("aooth.rateLimit.phases");
+// Per limiter, by `<phase>:<scope>`: keyed by limiter so another app's limiter (or
+// its overrides of the same scope id) never reads this limiter's verdict.
+const rateLimitCheckedKey =
+  key<Map<RateLimiter, Map<string, RateLimitDecision>>>("aooth.rateLimit.checked");
+
+/**
+ * Internal: the decision of every policy already checked on `limiter` during
+ * this event, by `<phase>:<scope>` — the double-count guard (a policy registered
+ * twice on the same limiter counts once) and what a later chain on the same
+ * event re-answers.
+ */
+export function checkedPolicies(
+  ctx: EventContext,
+  limiter: RateLimiter,
+): Map<string, RateLimitDecision> {
+  let byLimiter = ctx.has(rateLimitCheckedKey) ? ctx.get(rateLimitCheckedKey) : undefined;
+  if (!byLimiter) ctx.set(rateLimitCheckedKey, (byLimiter = new Map()));
+  let checked = byLimiter.get(limiter);
+  if (!checked) byLimiter.set(limiter, (checked = new Map()));
+  return checked;
+}
 
 /**
  * Internal: named rate-limit subjects for this event — subject kind

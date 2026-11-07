@@ -1010,7 +1010,7 @@ const NOT_CONTROLS: ReadonlySet<string> = new Set(["filter", "insights"]);
 /**
  * Whether `control` is unusable in an op listing `list` under `policy`: its
  * gate is `false`, or everything it qualifies is unusable (`$index` /
- * `$fuzzy` / `$vector` name how `$search` runs, `$threshold` bounds
+ * `$fuzzy` / `$rank` / `$vector` name how `$search` runs, `$threshold` bounds
  * `$vector`, `$rowOrder` orders `first()` / `last()` in an aggregate
  * `$select`, `$nulls` places NULLs in `$sort` and `$rowOrder` keys, `$from`
  * is the inner level of an aggregate `$select`).
@@ -1021,6 +1021,7 @@ function isControlOff(control: string, list: readonly string[], policy: Controls
   switch (control) {
     case "index":
     case "fuzzy":
+    case "rank":
       return list.includes("search") && off("search");
     case "vector":
       return off("search");

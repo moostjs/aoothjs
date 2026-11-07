@@ -600,9 +600,9 @@ app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, MyWfTriggerProv
 
 The encapsulated token's secret defaults to `auth.deriveStateKey("wf-state")` (HKDF-derived from the auth secret, stable across restarts) — override `wfStateSecret()` for a dedicated secret, or `wfStateEncapsulatedTtlMs()` to expire idle forms. The same secret keys the [one-time code](#one-time-codes) digests unless `pincodeSecret()` is overridden. `HandleStateStrategy` / `EncapsulatedStateStrategy` come from `@moostjs/event-wf`; `AsWfStore` (a `@atscript/db`-table-backed store) from `@atscript/moost-wf`.
 
-### `WfTrigger({ allow?, token?, ...hooks })`
+### `WfTrigger({ allow?, resumeOnly?, block?, token?, ...hooks })`
 
-Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the wrapped handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. `opts.allow` lists the workflow ids the route may start **and resume** (below). `opts.token` overrides the wire (default `{ read: ['body','query','cookie'], write: 'body', name: 'wfs' }`). The [trigger hooks](#trigger-hooks) can be set per route too. Return a non-`undefined` value to short-circuit (see [Controllers — Pattern B](./controllers)).
+Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the wrapped handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. `opts.allow` lists the workflow ids the route may start **and resume**, `opts.resumeOnly` those it may only resume, `opts.block` those it refuses (below). `opts.token` overrides the wire (default `{ read: ['body','query','cookie'], write: 'body', name: 'wfs' }`). The [trigger hooks](#trigger-hooks) can be set per route too. Return a non-`undefined` value to short-circuit (see [Controllers — Pattern B](./controllers)).
 
 ### Trigger allow lists — start and resume {#trigger-allow-lists-start-and-resume}
 
@@ -611,6 +611,40 @@ Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. Wh
 | omitted               | any workflow may be started or resumed on this route        |
 | `["auth/login/flow"]` | only the listed ids; a leading `/` is ignored when matching |
 | `[]`                  | every workflow is refused                                   |
+
+The wooks trigger makes the decision; aooth answers every refusal as 403: **`AOOTH_WORKFLOW_NOT_ALLOWED`** for a start (param `workflow`) and **`AOOTH_WORKFLOW_RESUME_NOT_ALLOWED`** for a resume (no params — a resume never names the stored flow). The flow judged is the **registered flow a request resolves to**, not the spelling the client sent (since 0.2.7): a start that an `onNotFound` handler or a parametric route (`auth/:kind/flow`) would catch is judged as that flow, so listing an id that registers nothing admits nothing. An `allow` entry admits only a flow registered under exactly that id (for a parametric flow, its pattern). A start of an id that resolves to no flow is refused with the same 403 whenever `allow` is set — whether or not `allow` lists the id, so a caller cannot tell which ids are listed; with only `resumeOnly` / `block` set it stays a 404.
+
+| Option       | Start                                      | Resume                                     |
+| ------------ | ------------------------------------------ | ------------------------------------------ |
+| `allow`      | admitted when listed                       | admitted when listed                       |
+| `resumeOnly` | **refused**, even when `allow` lists it    | admitted (no `allow` entry needed)         |
+| `block`      | refused — wins over `allow` / `resumeOnly` | refused — wins over `allow` / `resumeOnly` |
+
+A `block` entry also blocks the flow it resolves to (`"user/42"` blocks `user/:id`). `resumeOnly: []` and `block: []` have no effect.
+
+`resumeOnly` is for a public trigger that continues a flow only someone else can start — for example the invitee's link of the admin-issued [invite flow](./invites): a public route resumes `auth/invite/start` from the emailed link but can never start one (the issuing route, behind its ARBAC grant, lists it in `allow`).
+
+```ts
+@Inherit()
+@Controller("auth")
+class MyAuthController extends AuthController {
+  /** Public: sign-in flows start here; invite links resume here, but no invite starts here. */
+  @Post("trigger")
+  @Public()
+  @WfTrigger({
+    allow: ["auth/login/flow", "auth/recovery/flow", "auth/signup/flow"],
+    resumeOnly: ["auth/invite/start"],
+  })
+  override triggerWf(): void {}
+
+  /** Issuing: the admin (ARBAC-gated) starts the invite flow and fills its form here. */
+  @Post("invite")
+  @ArbacResource("auth.invite")
+  @ArbacAction("create")
+  @WfTrigger({ allow: ["auth/invite/start"] })
+  invite(): void {}
+}
+```
 
 ::: warning Since 0.2: `allow` also governs resume, and `[]` denies all
 A `wfs` token minted for a workflow outside the route's list is refused with **403 before it is consumed** — it stays usable on its own route. This closes route-hopping: a login `wfs` can no longer be resumed on the authenticated `POST /auth/change-password` route (which would sidestep the login route's rate limit), and a change-password `wfs` is refused on the public `/auth/trigger`. Before 0.2, `allow` was checked on start only, and `allow: []` allowed everything. When you add a trigger route of your own, list exactly the workflows it serves.
@@ -640,7 +674,7 @@ class MyWfTriggerProvider extends WfTriggerProvider {
 
 | Hook                             | Runs                                                                                                                                                                       | Use for                                                                                                |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `around(run)`                    | Wraps everything the request does to state and the outside world: allow checks, consume/start/resume, persist, delivery                                                    | A database transaction (`(run) => db.transaction(run)`); may call `run()` again — each run starts over |
+| `around(run)`                    | Wraps everything the request does to state and the outside world: access checks, consume/start/resume, persist, delivery                                                   | A database transaction (`(run) => db.transaction(run)`); may call `run()` again — each run starts over |
 | `beforePersist(state, pause)`    | Right before a paused state is persisted, inside `around`; not on finish. `state.context` no longer has the rendered `ctx.public` projection (stripped first, since 0.2.5) | Validating or counting before the pause is saved; throw to abort                                       |
 | `renderEnvelope(body, info)`     | On every body the trigger answers with — paused envelopes (`info.phase: 'paused'`, `info.outlet`) and finished values                                                      | Translating form texts and messages per request                                                        |
 | `restoreOnError` / `maxRestores` | When a resume fails after its single-use token was consumed                                                                                                                | Keeping a durable link usable after a transient step failure (opt-in)                                  |

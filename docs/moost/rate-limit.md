@@ -117,7 +117,7 @@ Without `trustProxy` on the app, forwarding headers are ignored and the socket p
 | `BEFORE_GUARD` (before the auth guard) | `'ip'` / custom function                                 | Floods are rejected before any token/credential work.                                                |
 | `AFTER_GUARD` (after the auth guard)   | any named subject (`'user'`, `'session'`, `'tenant'`, …) | Needs the [subjects map](#the-subject-seam-setratelimitsubject) / auth context the guards establish. |
 
-The phase is decided **per policy**: a route that stacks an ip-keyed and a user-keyed policy is checked by both phases, each counting its own policies. A per-event phase marker prevents double counting when the pair is registered both globally and per-controller.
+The phase is decided **per policy**: a route that stacks an ip-keyed and a user-keyed policy is checked by both phases, each counting its own policies. Each policy is checked once per event **per limiter**, whoever registered the pair (globally, per-controller, or both): a policy already checked on the same limiter is not counted again. When a request runs the handler chains of two apps sharing one router (it runs the first app's handlers, and when they throw wooks moves on to the second app's), the second chain re-throws a 429 the same limiter already stored, without counting it again, and a policy it adds is checked on its own. An app with a different limiter (or different `policies` overrides) checks and counts its own hit, even for the same scope id. A route with no policy, or with `@RateLimit(false)`, in the second app is never handed the first app's 429.
 
 ::: warning Register the PAIR, always
 `app.applyGlobalInterceptors(...rateLimitInterceptors(opts))` — with the spread. Dropping the pre-guard interceptor silently loses flood protection on ip-keyed routes; dropping the post-guard one silently disables every `key: 'user'` route.
@@ -297,7 +297,7 @@ class ReportsController {
 }
 ```
 
-It attaches **both** phases via two `@Intercept`s, so you can't accidentally lose one. Combining it with a global registration is safe — a per-event phase marker prevents double counting.
+It attaches **both** phases via two `@Intercept`s, so you can't accidentally lose one. Combining it with a global registration that uses the same limiter is safe — each scope is checked once per event per limiter, so nothing is counted twice.
 
 ## `useRateLimit()` — reading the decision
 

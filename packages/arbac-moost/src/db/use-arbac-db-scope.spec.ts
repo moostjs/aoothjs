@@ -15,6 +15,7 @@ import { MoostArbac } from "../moost-arbac";
 import { KeyedDoc } from "./__test__/fixtures/keyed-doc.as";
 import { RpSlug } from "./security-regressions/fixtures/rel-fixtures.as";
 import type { ArbacDbScope } from "./as-arbac-db-controller";
+import { arbacRelationFilter } from "./request-scopes";
 import { useArbacDbScope } from "./use-arbac-db-scope";
 
 /**
@@ -102,6 +103,13 @@ class CustomController {
       check: scope.check(),
       count: scope.scopes.length,
     };
+  }
+
+  @Get("relation/:path")
+  @ArbacAction("query")
+  async relation(@Param("path") path: string) {
+    await useArbacDbScope();
+    return arbacRelationFilter(path, { id: 1 }, table);
   }
 
   @Get("assert/:ids")
@@ -235,6 +243,29 @@ describe("useArbacDbScope", () => {
 
   describe("with scopes cached by the authorize interceptor", () => {
     beforeEach(() => boot(true));
+
+    // WHY: ARBAC rewrites a hidden relation to "unknown", so `arbacRelationFilter`
+    // must answer byte-for-byte like moost-db's own unknown-field 400 — the
+    // machine-readable `code` / `params` included, never a bare message.
+    it("arbacRelationFilter on an unreachable relation is the coded UNKNOWN_FIELD 400", async () => {
+      user.roles = ["owner"];
+      const { status, body } = await get("relation/ghost");
+      expect(status).toBe(400);
+      expect(body).toMatchObject({
+        statusCode: 400,
+        message: 'Unknown field "ghost"',
+        code: "UNKNOWN_FIELD",
+        params: { field: "ghost" },
+        errors: [
+          {
+            path: "ghost",
+            message: 'Unknown field "ghost"',
+            code: "UNKNOWN_FIELD",
+            params: { field: "ghost" },
+          },
+        ],
+      });
+    });
 
     it("conjoins the extra filter with the scope filter — never spreads it", async () => {
       user.roles = ["owner"];

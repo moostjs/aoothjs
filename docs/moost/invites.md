@@ -164,6 +164,10 @@ To show "Ann invited you as an editor" on the invite page before the invitee doe
 | `roles`     | Roles the invite grants — when it grants any.                      |
 | `expiresAt` | When the link stops working (ms since epoch) — when known.         |
 
+`expiresAt` is when the link stops working. The bundled invite link expires exactly 7 days after it is issued: the invite pause carries its own lifetime, so the state is persisted with an explicit `ttl`, and a per-call `ttl` replaces the state strategy's default TTL (`wfStateEncapsulatedTtlMs()`, a `defaultTtl` of your `HandleStateStrategy`). The default applies only to persists that pass no `ttl` and no `expiresAt`. `expiresAt` is absent when nothing bounds the state, and when the state strategy cannot report its expiry: the built-in strategies do (through `expiresAtFor`), a custom `WfStateStrategy` must implement `expiresAtFor(options?, now?)` — the epoch ms a persist with those options expires, `0` for never — for `expiresAt` to be present.
+
+To let a public route resume the invitee's link without being able to start invites, list `auth/invite/start` under `resumeOnly` on that trigger (see [Workflows — trigger allow lists](./workflows#trigger-allow-lists-start-and-resume)).
+
 It returns `null` — one answer for all — for an unknown, expired or malformed token, a token that is not an invite link, and an invite that was replaced by a re-invite, accepted or revoked. The token is resolved exactly as opening the link resolves it, including hashed handles (`hashHandles`), so pass the `wfs` value from the link as it is.
 
 There is no bundled route — mount one, and rate-limit it like invite redemption:
