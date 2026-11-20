@@ -6,23 +6,23 @@ packages:
 
 catalog:
   "@atscript/core": ^0.2.12
-  "@atscript/db": ^0.1.177
-  "@atscript/db-client": ^0.1.177
-  "@atscript/db-sql-tools": ^0.1.177
-  "@atscript/db-sqlite": ^0.1.177
-  "@atscript/moost-db": ^0.1.177
-  "@atscript/moost-ui-presets": ^0.1.172
+  "@atscript/db": ^0.1.178
+  "@atscript/db-client": ^0.1.178
+  "@atscript/db-sql-tools": ^0.1.178
+  "@atscript/db-sqlite": ^0.1.178
+  "@atscript/moost-db": ^0.1.178
+  "@atscript/moost-ui-presets": ^0.1.173
   "@atscript/moost-validator": ^0.2.12
-  "@atscript/moost-wf": ^0.1.172
+  "@atscript/moost-wf": ^0.1.173
   "@atscript/typescript": ^0.2.12
-  "@atscript/ui": ^0.1.172
-  "@atscript/ui-fns": ^0.1.172
-  "@atscript/ui-styles": ^0.1.172
-  "@atscript/ui-table": ^0.1.172
-  "@atscript/vue-aooth": ^0.1.172
-  "@atscript/vue-form": ^0.1.172
-  "@atscript/vue-table": ^0.1.172
-  "@atscript/vue-wf": ^0.1.172
+  "@atscript/ui": ^0.1.173
+  "@atscript/ui-fns": ^0.1.173
+  "@atscript/ui-styles": ^0.1.173
+  "@atscript/ui-table": ^0.1.173
+  "@atscript/vue-aooth": ^0.1.173
+  "@atscript/vue-form": ^0.1.173
+  "@atscript/vue-table": ^0.1.173
+  "@atscript/vue-wf": ^0.1.173
   "@iconify/utils": ^3.1.0
   "@moostjs/event-http": ^0.7.6
   "@moostjs/event-wf": ^0.7.6
