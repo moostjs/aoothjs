@@ -2,6 +2,11 @@
 
 Load when bumping `@aooth/*`, when an app "worked before" an upgrade, or when writing code against an older aooth. All `@aooth/*` packages share one version — bump them together, with the matching ecosystem line ([ecosystem.md](./ecosystem.md) § Peer dependencies).
 
+## 0.2.18 — `startOnly` and `beforeResume` on the workflow trigger
+
+- Peers: `moost` / `@moostjs/*` `^0.7.7`, `@wooksjs/*` `^0.8.4`, `@atscript/db` / `moost-db` `^0.1.187`, `@atscript/typescript` `^0.2.15`, `@atscript/moost-wf` `^0.1.181` (+ atscript-ui clients `^0.1.181`).
+- New, nothing breaks: `@WfTrigger({ startOnly })` = start, never resume (resume → 403 `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED`, token not consumed; not for the bundled invite issuer route — its form submit is a resume); trigger hook `beforeResume(state, { strategy })` (`triggerHooks()` or per route) — after the access lists, before consume; a throw reaches the client as thrown, token kept. Replace a `WfTriggerProvider.peek()` check in front of the trigger, or resume refusals in a start route's own handler code, with `beforeResume` / `startOnly` ([workflows.md](./workflows.md)).
+
 ## 0.2.7 — engine-enforced workflow access; limiter `trustProxy` deprecated; `@WfTrigger` override replaces; SQL null reads
 
 - Peers: `moost` / `@moostjs/*` `^0.7.6`, `@wooksjs/*` `^0.8.3`, `@atscript/db` / `moost-db` `^0.1.175`, `@atscript/typescript` `^0.2.11`, `@atscript/moost-wf` `^0.1.170` (+ atscript-ui clients `^0.1.170`).

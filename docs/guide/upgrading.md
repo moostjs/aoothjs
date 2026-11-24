@@ -2,6 +2,18 @@
 
 What to check when you move to a newer aooth release. Each entry lists the changes that can break an app or change what users see, and links to the page that documents the current behaviour. All `@aooth/*` packages share one version number — upgrade them together.
 
+## To 0.2.18
+
+### Peers
+
+Needs `moost` / `@moostjs/*` `^0.7.7`, `@wooksjs/*` `^0.8.4`, `@atscript/db` / `@atscript/moost-db` `^0.1.187`, `@atscript/typescript` `^0.2.15` and `@atscript/moost-wf` `^0.1.181` (the atscript-ui client packages at `^0.1.181` too). The two trigger options below come from the `@moostjs/event-wf` trigger of that line.
+
+### Two new trigger options: `startOnly` and `beforeResume`
+
+Nothing breaks. `@WfTrigger({ startOnly })` lists flows a route may start but never resume — the mirror of `resumeOnly`, for a flow whose first step hands its link to another route. A resume there answers the same `403 AOOTH_WORKFLOW_RESUME_NOT_ALLOWED` as any refused resume, and the token stays usable on the route that admits it. The bundled invite flow's issuing route keeps the flow in `allow`: the issuer submits the invite form there, which is a resume.
+
+`beforeResume(state, { strategy })` is a new trigger hook, set app-wide in `triggerHooks()` or per route on `@WfTrigger`. It runs on a resume after the access lists admitted it and before the token is consumed; what it throws reaches the client as thrown, and the token stays usable. If your app refuses links with a `WfTriggerProvider.peek()` check in front of the trigger, or refuses resumes on a start route in its own handler code, replace that with `beforeResume` or `startOnly`. See [Workflows — trigger allow lists](/moost/workflows#trigger-allow-lists-start-and-resume) and [trigger hooks](/moost/workflows#trigger-hooks).
+
 ## To 0.2.7
 
 ### Peers

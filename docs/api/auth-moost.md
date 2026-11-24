@@ -80,22 +80,23 @@ class WfTriggerProvider {
 ```ts
 type WfTriggerHooks = Pick<
   WfOutletTriggerConfig, // from @moostjs/event-wf
-  "around" | "beforePersist" | "renderEnvelope" | "restoreOnError" | "maxRestores"
+  "around" | "beforeResume" | "beforePersist" | "renderEnvelope" | "restoreOnError" | "maxRestores"
 >;
 
 interface WfTriggerOpts extends WfTriggerHooks {
   allow?: string[]; // start + resume
   resumeOnly?: string[]; // resume only (since 0.2.7)
-  block?: string[]; // neither; wins over both (since 0.2.7)
+  startOnly?: string[]; // start only (since 0.2.18)
+  block?: string[]; // neither; wins over all (since 0.2.7)
   token?: WfOutletTokenConfig;
 }
 ```
 
-`triggerHooks()` returns the workflow-trigger hooks applied to every trigger request; a hook set in `handle(opts)` / `@WfTrigger(opts)` replaces the provider's hook of the same name. `restoreOnError` is opt-in (default off). See [Workflows — trigger hooks](/moost/workflows#trigger-hooks).
+`triggerHooks()` returns the workflow-trigger hooks applied to every trigger request; a hook set in `handle(opts)` / `@WfTrigger(opts)` replaces the provider's hook of the same name. `restoreOnError` is opt-in (default off). `beforeResume(state, { strategy })` (since 0.2.18) runs on a resume after the access lists admitted it and before the token is consumed; `strategy` is the name of the strategy that holds the token's state (`encapsulated`, `store`, `magic-link`), `state.context` the flow's data (`state.meta` is internal bookkeeping); a throw reaches the client as thrown and leaves the token usable. See [Workflows — trigger hooks](/moost/workflows#trigger-hooks).
 
-`peek(token)` (since 0.2.7) reads the paused state behind a resume token without consuming it, resolving the token exactly as a resume does (strategy prefix, hashed handles, strategy tag); unknown, expired, malformed or foreign tokens are `null`. The state holds server-only context — project it. For invite links use [`peekInvite`](#peekinvite).
+`peek(token)` (since 0.2.7) reads the paused state behind a resume token without consuming it, resolving the token exactly as a resume does (strategy prefix, hashed handles, strategy tag); unknown, expired, malformed or foreign tokens are `null`. The state holds server-only context — project it. For invite links use [`peekInvite`](#peekinvite). To refuse a resume before its token is consumed, use the `beforeResume` hook instead.
 
-`handle({ allow })` checks the workflow id on **start and resume** (since 0.2): a `wfs` minted for a workflow outside `allow` is refused with 403 before it is consumed. Ids match with or without a leading `/`; omitted `allow` = unrestricted, `allow: []` = deny every workflow. Since 0.2.7 the wooks trigger judges the **registered flow a request resolves to** (an `onNotFound` flow or a parametric route counts as that flow), `resumeOnly` flows can be resumed but never started, `block` wins; a refused start is 403 `AOOTH_WORKFLOW_NOT_ALLOWED`, a refused resume 403 `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED` (no params). See [Workflows — trigger allow lists](/moost/workflows#trigger-allow-lists-start-and-resume).
+`handle({ allow })` checks the workflow id on **start and resume** (since 0.2): a `wfs` minted for a workflow outside `allow` is refused with 403 before it is consumed. Ids match with or without a leading `/`; omitted `allow` = unrestricted, `allow: []` = deny every workflow. Since 0.2.7 the wooks trigger judges the **registered flow a request resolves to** (an `onNotFound` flow or a parametric route counts as that flow), `resumeOnly` flows can be resumed but never started, `startOnly` flows (since 0.2.18) started but never resumed, `block` wins; a refused start is 403 `AOOTH_WORKFLOW_NOT_ALLOWED`, a refused resume 403 `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED` (no params; the token is not consumed). See [Workflows — trigger allow lists](/moost/workflows#trigger-allow-lists-start-and-resume).
 
 Singleton owning workflow-state persistence, outlets, and the token wire. State is a **named-strategy registry**, not a single strategy: every workflow **starts** on the `encapsulated` strategy (the registry default) — state rides inside the SPA-held token, so an idle login form persists **zero** server-side rows and a restart can never `410 Gone` it. A later step calls `swapStrategy('store')` to move durable.
 
@@ -479,7 +480,7 @@ Attaches the `rateLimitInterceptors(opts)` **pair** via two `@Intercept`s — th
 function WfTrigger(opts?: WfTriggerOpts): MethodDecorator;
 ```
 
-Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. `opts.allow` lists the workflow ids the route may start **and resume** (omitted = unrestricted, `[]` = deny all; since 0.2). Return a non-`undefined` value from the handler to short-circuit. `opts.token` overrides the provider's default wire (`WfOutletTokenConfig` from `@moostjs/event-wf`). The trigger hooks (`around`, `beforePersist`, `renderEnvelope`, `restoreOnError`, `maxRestores`) set here apply to this route only. Re-decorating an inherited handler (under `@Inherit()`) replaces the base route's options as a whole; the trigger still runs once per request ([override semantics](/moost/controllers#trigger-override-semantics)). See [Workflows](/moost/workflows) and [trigger hooks](/moost/workflows#trigger-hooks).
+Method decorator wrapping `defineAfterInterceptor` at `INTERCEPTOR` priority. When the handler returns `undefined`, the interceptor instantiates `WfTriggerProvider` and replies with `provider.handle(opts)`. `opts.allow` lists the workflow ids the route may start **and resume** (omitted = unrestricted, `[]` = deny all; since 0.2); `opts.resumeOnly` / `opts.startOnly` / `opts.block` refine it (see `WfTriggerOpts`). Return a non-`undefined` value from the handler to short-circuit. `opts.token` overrides the provider's default wire (`WfOutletTokenConfig` from `@moostjs/event-wf`). The trigger hooks (`around`, `beforeResume`, `beforePersist`, `renderEnvelope`, `restoreOnError`, `maxRestores`) set here apply to this route only. Re-decorating an inherited handler (under `@Inherit()`) replaces the base route's options as a whole; the trigger still runs once per request ([override semantics](/moost/controllers#trigger-override-semantics)). See [Workflows](/moost/workflows) and [trigger hooks](/moost/workflows#trigger-hooks).
 
 ## REST endpoints
 

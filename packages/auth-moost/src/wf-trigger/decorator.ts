@@ -38,10 +38,10 @@ const wfTriggerInterceptor = defineAfterInterceptor(async (response, reply) => {
  * non-undefined value from the overridden handler and the trigger is skipped.
  *
  * `opts` is `WfTriggerOpts`: the access lists `allow` / `resumeOnly` /
- * `block` and the workflow-trigger hooks (`around`, `beforePersist`,
- * `renderEnvelope`, `restoreOnError`, `maxRestores` — see `WfTriggerHooks`);
- * each hook set here replaces the provider's `triggerHooks()` hook of the
- * same name for this route.
+ * `startOnly` / `block` and the workflow-trigger hooks (`around`,
+ * `beforeResume`, `beforePersist`, `renderEnvelope`, `restoreOnError`,
+ * `maxRestores` — see `WfTriggerHooks`); each hook set here replaces the
+ * provider's `triggerHooks()` hook of the same name for this route.
  *
  * Under `@Inherit()`, re-decorating an overridden handler REPLACES the base
  * route's options as a whole (e.g. a narrower `allow` is the only list

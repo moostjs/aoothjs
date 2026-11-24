@@ -166,8 +166,6 @@ To show "Ann invited you as an editor" on the invite page before the invitee doe
 
 `expiresAt` is when the link stops working. The bundled invite link expires exactly 7 days after it is issued: the invite pause carries its own lifetime, so the state is persisted with an explicit `ttl`, and a per-call `ttl` replaces the state strategy's default TTL (`wfStateEncapsulatedTtlMs()`, a `defaultTtl` of your `HandleStateStrategy`). The default applies only to persists that pass no `ttl` and no `expiresAt`. `expiresAt` is absent when nothing bounds the state, and when the state strategy cannot report its expiry: the built-in strategies do (through `expiresAtFor`), a custom `WfStateStrategy` must implement `expiresAtFor(options?, now?)` — the epoch ms a persist with those options expires, `0` for never — for `expiresAt` to be present.
 
-To let a public route resume the invitee's link without being able to start invites, list `auth/invite/start` under `resumeOnly` on that trigger (see [Workflows — trigger allow lists](./workflows#trigger-allow-lists-start-and-resume)).
-
 It returns `null` — one answer for all — for an unknown, expired or malformed token, a token that is not an invite link, and an invite that was replaced by a re-invite, accepted or revoked. The token is resolved exactly as opening the link resolves it, including hashed handles (`hashHandles`), so pass the `wfs` value from the link as it is.
 
 There is no bundled route — mount one, and rate-limit it like invite redemption:
@@ -198,6 +196,49 @@ export class InviteInfoController {
 
 For other workflows, `WfTriggerProvider.peek(token)` returns the paused state behind any resume token (or `null`) without consuming it. The state holds server-only context — project what you need; never return it as it is.
 
+## Refusing a link before it is used — `beforeResume` {#before-resume}
+
+To let a public route resume the invitee's link without being able to start invites, list `auth/invite/start` under `resumeOnly` on that trigger (see [Workflows — trigger allow lists](./workflows#trigger-allow-lists-start-and-resume)). The issuing route keeps the flow in `allow`, not `startOnly`: the issuer submits `InviteForm` there, which is a resume.
+
+`peekInvite` is for showing what a link is for. To refuse opening a link for a reason of your own — the address already joined the tenant another way, the tenant was closed — use the [`beforeResume` trigger hook](./workflows#trigger-hooks) (since 0.2.18) on the route that accepts the links. It runs after the access lists and before the link is consumed; throw an `HttpError` and the client gets exactly that error, while the link stays usable. The state's context holds the invited address (`email`) and what `resolveInviteContext` returned (`admin.app`):
+
+```ts
+import {
+  AuthController,
+  type AuthWfCtx,
+  DEFAULT_AUTH_WORKFLOWS,
+  Public,
+  WfTrigger,
+} from "@aooth/auth-moost";
+import { HttpError, Post } from "@moostjs/event-http";
+import { normalizeWfId } from "@moostjs/event-wf";
+import { Controller, Inherit } from "moost";
+
+@Inherit()
+@Controller("auth")
+class AppAuthController extends AuthController {
+  @Post("trigger")
+  @Public()
+  @WfTrigger({
+    allow: [...DEFAULT_AUTH_WORKFLOWS], // invites are still issued here
+    beforeResume: async (state) => {
+      if (normalizeWfId(state.schemaId) !== "auth/invite/start") return;
+      const ctx = state.context as AuthWfCtx;
+      // `email` is set only once the issuer's InviteForm is accepted, so the
+      // issuer's own submits pass; every later resume is the invitee's link.
+      if (!ctx.email) return;
+      const tenantId = ctx.admin?.app?.tenantId as string | undefined;
+      if (tenantId && (await tenants.hasMember(tenantId, ctx.email))) {
+        throw new HttpError(409, { message: "Already a member", code: "APP_ALREADY_MEMBER" });
+      }
+    },
+  })
+  override triggerWf(): void {}
+}
+```
+
+The hook runs on every resume the route admits — sign-in forms and the issuer's form included — so check the flow first. It runs when the link is opened and again on every later submit of the accept phase (each one is a resume). It judges the link as read before it is consumed: a concurrent request in between goes unseen, so a check that must still hold when the account is activated belongs in the flow's steps as well.
+
 ## Accept phase
 
 The invitee opens the link (an anonymous resume of the same run): already-accepted / cancelled / replaced checks → optional username pick → set password → MFA enrolment when required → consents → the account is activated → finish (auto-login when `autoLoginOnInvite`, default `true`; otherwise a redirect to `loginUrl`). `account.verifiedEmail` is recorded only when the handle looks like an email address and the link was not returned to the issuer.
@@ -222,6 +263,7 @@ The `HttpError` bodies carry the message `code` next to the text, so an SPA can 
 - **DON'T** replace `WfTriggerProvider.outlets` without keeping `createInviteOutlet()` if you use `'deliver'` or `'return-link'`.
 - **DON'T** build a separate "resend invite" flow — invite the same email again.
 - **DON'T** read the workflow-state table yourself to show invite details — use [`peekInvite`](#peek-invite); it applies the store's handle hashing and the replaced-invite check.
+- **DON'T** gate a link with a `peekInvite` / `peek()` call of your own in front of the trigger — refuse it in [`beforeResume`](#before-resume), which runs after the access lists, right before the link is consumed.
 - **DON'T** revoke with `deleteUser` — it deletes an account even when its invite was accepted meanwhile; use `revokeInvitation`.
 
 ## See also

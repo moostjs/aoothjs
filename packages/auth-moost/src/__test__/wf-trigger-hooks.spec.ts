@@ -1,21 +1,22 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { Post } from "@moostjs/event-http";
+import { HttpError, Post } from "@moostjs/event-http";
 import { Controller, Inherit } from "moost";
 
 import { Public } from "../auth.decorator";
 import { AuthController, DEFAULT_AUTH_WORKFLOWS } from "../auth.controller";
 import { WfTrigger } from "../wf-trigger/decorator";
-import type { WfTriggerHooks } from "../wf-trigger/provider";
+import { STATE_EXPIRES_KEY, type WfTriggerHooks } from "../wf-trigger/provider";
 import {
+  issueInvite,
   pauseOnForcedPasswordChange,
   prepareFlowApp,
   type PreparedFlowApp,
   setPasswordInput,
 } from "./flow-utils";
 
-// The workflow-trigger hooks of wooks' trigger (`around`, `beforePersist`,
-// `renderEnvelope`, `restoreOnError`) reach the trigger from
+// The workflow-trigger hooks of wooks' trigger (`around`, `beforeResume`,
+// `beforePersist`, `renderEnvelope`, `restoreOnError`) reach the trigger from
 // `WfTriggerProvider.triggerHooks()` (app-wide) and `@WfTrigger(...)` (per route).
 
 const PASSWORD = "Password123!";
@@ -164,6 +165,136 @@ describe("@WfTrigger(...) hooks", () => {
       ["beforePersist", "/auth/login/flow", "http"],
       ["around:exit"],
     ]);
+  });
+});
+
+describe("beforeResume", () => {
+  /** What the hook saw, copied at call time (the in-memory store hands it the stored state). */
+  type Seen = { strategy: string; schemaId: string; meta: Record<string, unknown>; ctx: any };
+  const record =
+    (seen: Seen[]): WfTriggerHooks["beforeResume"] =>
+    (state, { strategy }) => {
+      seen.push({
+        strategy,
+        schemaId: state.schemaId,
+        meta: { ...state.meta },
+        ctx: structuredClone(state.context),
+      });
+    };
+
+  it("gets the paused state and its strategy's name on a resume; not called on a start", async () => {
+    const seen: Seen[] = [];
+    const app = await prepareFlowApp({ triggerHooks: { beforeResume: record(seen) } });
+    expect((await app.start("auth/login/flow")).status).toBe(201);
+    expect(seen).toEqual([]);
+
+    // Resume 1 (credentials) on the client-held token, resume 2 on the durable one.
+    const wfs = await pauseOnForcedPasswordChange(app);
+    expect((await app.submit(wfs, setPasswordInput)).status).toBe(201);
+    const userId = (await app.users.findByHandle("alice"))!.id;
+    expect(seen.map((s) => [s.strategy, s.schemaId])).toEqual([
+      ["encapsulated", "/auth/login/flow"],
+      ["store", "/auth/login/flow"],
+    ]);
+    // `context` is the flow's; `meta` is bookkeeping (aooth's strategy tag included,
+    // its padding stripped).
+    expect(seen[1].ctx.subject).toBe(userId);
+    expect(seen[0].meta).toMatchObject({ aoothStrategy: "encapsulated" });
+    expect(seen[0].meta).not.toHaveProperty("aoothPad");
+    expect(seen[1].meta).toMatchObject({ aoothStrategy: "store" });
+  });
+
+  it("an invite link: the `store` strategy, the invite's context, and its expiry in meta", async () => {
+    const seen: Seen[] = [];
+    const app = await prepareFlowApp({
+      workflowOpts: { autoLoginOnInvite: false },
+      triggerHooks: { beforeResume: record(seen) },
+    });
+    await issueInvite(app, "inv@x.test");
+    seen.length = 0;
+    expect((await app.submit(app.emails[0].token)).status).toBe(201);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      strategy: "store",
+      schemaId: "/auth/invite/start",
+      ctx: { email: "inv@x.test" },
+    });
+    expect(seen[0].meta[STATE_EXPIRES_KEY]).toBeTypeOf("number");
+  });
+
+  it("an HttpError it throws reaches the client as thrown; the token is not consumed", async () => {
+    let member = true;
+    const app = await prepareFlowApp({
+      workflowOpts: { autoLoginOnInvite: false },
+      triggerHooks: {
+        beforeResume: (state, { strategy }) => {
+          const ctx = state.context as { email?: string };
+          if (strategy === "store" && member && ctx.email === "m@x.test") {
+            throw new HttpError(409, { message: "Already a member", code: "APP_ALREADY_MEMBER" });
+          }
+        },
+      },
+    });
+    await issueInvite(app, "m@x.test");
+    const token = app.emails[0].token;
+    expect(token).toMatch(/^store\./);
+    const refused = await app.submit(token);
+    expect(refused.status).toBe(409);
+    expect(refused.body).toEqual({
+      statusCode: 409,
+      error: "Conflict",
+      message: "Already a member",
+      code: "APP_ALREADY_MEMBER",
+    });
+    // The durable link survived the refusal.
+    member = false;
+    const opened = await app.submit(token);
+    expect(opened.status).toBe(201);
+    expect(opened.body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+  });
+
+  it("an async rejection is awaited: refused, the step never runs, the token stays usable", async () => {
+    let refuse = true;
+    const app = await prepareFlowApp({
+      triggerHooks: {
+        beforeResume: async (_state, { strategy }) => {
+          if (!refuse || strategy !== "store") return;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          throw new HttpError(409, "Not now");
+        },
+      },
+    });
+    const wfs = await pauseOnForcedPasswordChange(app);
+    const userId = (await app.users.findByHandle("alice"))!.id;
+    const refused = await app.submit(wfs, setPasswordInput);
+    expect(refused.status).toBe(409);
+    expect(refused.body).toMatchObject({ statusCode: 409, message: "Not now" });
+    expect(await app.users.verifyPassword(userId, NEW_PASSWORD)).toBe(false);
+    refuse = false;
+    expect((await app.submit(wfs, setPasswordInput)).status).toBe(201);
+    expect(await app.users.verifyPassword(userId, NEW_PASSWORD)).toBe(true);
+  });
+
+  it("a route's beforeResume replaces the provider's", async () => {
+    const calls: string[] = [];
+    @Inherit()
+    @Controller("auth")
+    class GuardedResume extends AuthController {
+      @Post("trigger")
+      @Public()
+      @WfTrigger({
+        allow: [...DEFAULT_AUTH_WORKFLOWS],
+        beforeResume: () => void calls.push("route"),
+      })
+      override triggerWf(): void {}
+    }
+    const app = await prepareFlowApp({
+      controllerClass: GuardedResume,
+      triggerHooks: { beforeResume: () => void calls.push("provider") },
+    });
+    const started = await app.start("auth/login/flow");
+    expect((await app.submit(started.body.wfs)).status).toBe(201);
+    expect(calls).toEqual(["route"]);
   });
 });
 

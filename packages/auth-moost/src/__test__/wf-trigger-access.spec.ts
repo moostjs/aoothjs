@@ -1,5 +1,13 @@
 import { Post } from "@moostjs/event-http";
-import { Step, Workflow, WorkflowSchema } from "@moostjs/event-wf";
+import {
+  outletEmail,
+  Step,
+  swapStrategy,
+  useWfState,
+  Workflow,
+  WorkflowParam,
+  WorkflowSchema,
+} from "@moostjs/event-wf";
 import { Controller, Inherit } from "moost";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -8,9 +16,9 @@ import { Public } from "../auth.decorator";
 import { WfTrigger } from "../wf-trigger/decorator";
 import { completeAccept, prepareFlowApp, type PreparedFlowApp } from "./flow-utils";
 
-// The wooks trigger judges `allow` / `resumeOnly` / `block` on the REGISTERED flow a
-// request resolves to; aooth keeps its own refusal contract (403
-// `AOOTH_WORKFLOW_NOT_ALLOWED`).
+// The wooks trigger judges `allow` / `resumeOnly` / `startOnly` / `block` on the
+// REGISTERED flow a request resolves to; aooth keeps its own refusal contract
+// (403 `AOOTH_WORKFLOW_NOT_ALLOWED`).
 
 const NOT_ALLOWED = { code: "AOOTH_WORKFLOW_NOT_ALLOWED" };
 
@@ -102,6 +110,151 @@ describe("@WfTrigger resumeOnly", () => {
     expectResumeRefused(await app.post("/auth/plain", { wfs: token, input: {} }));
     // Refused before it was consumed: the resumeOnly route still opens it.
     expect((await app.submit(token)).status).toBe(201);
+  });
+});
+
+describe("@WfTrigger startOnly", () => {
+  interface TeamInviteCtx {
+    email?: string;
+    sent?: boolean;
+  }
+  const accepted: string[] = [];
+
+  /** An app flow whose first pause hands its token to another trigger: it emails the link at once. */
+  @Controller()
+  class TeamInvite {
+    @Workflow("app/team-invite")
+    @WorkflowSchema<TeamInviteCtx>([{ id: "team-invite-send" }, { id: "team-invite-accept" }])
+    flow(): void {}
+
+    @Step("team-invite-send")
+    send(@WorkflowParam("context") ctx: TeamInviteCtx): unknown {
+      if (ctx.sent) return undefined;
+      ctx.sent = true;
+      ctx.email = useWfState().input<{ email: string }>()?.email;
+      swapStrategy("store");
+      return outletEmail(ctx.email!, "team.invite");
+    }
+
+    @Step("team-invite-accept")
+    accept(@WorkflowParam("context") ctx: TeamInviteCtx): void {
+      accepted.push(ctx.email!);
+    }
+  }
+
+  @Inherit()
+  @Controller("auth")
+  class IssueSplit extends AuthController {
+    /** Public: accepts the emailed link, never starts the flow. */
+    @Post("trigger")
+    @Public()
+    @WfTrigger({ allow: ["auth/login/flow"], resumeOnly: ["app/team-invite"] })
+    override triggerWf(): void {}
+
+    /** The issuing side (the test stands in for a guarded route): starts it, never accepts a link. */
+    @Post("issue")
+    @Public()
+    @WfTrigger({ allow: [], startOnly: ["app/team-invite"] })
+    issue(): void {}
+
+    /** Unrestricted, except that sign-in is start-only here. */
+    @Post("open")
+    @Public()
+    @WfTrigger({ startOnly: ["auth/login/flow"] })
+    open(): void {}
+  }
+
+  it("starts a flow listed only in startOnly; refuses its link there, unconsumed, and the resumeOnly route accepts it", async () => {
+    accepted.length = 0;
+    const app = await prepareFlowApp({
+      extraControllers: [TeamInvite],
+      controllerClass: IssueSplit,
+    });
+    const issued = await app.post("/auth/issue", {
+      wfid: "app/team-invite",
+      input: { email: "s@x.test" },
+    });
+    expect(issued.status, JSON.stringify(issued.body)).toBeLessThan(300);
+    // A durable, single-use link: a refusal that consumed it would burn it.
+    const token = app.emails[0].token;
+    expect(token).toMatch(/^store\./);
+
+    // Refused like a resume outside `allow` / `resumeOnly`.
+    expectResumeRefused(await app.post("/auth/issue", { wfs: token, input: {} }));
+    const done = await app.submit(token);
+    expect(done.status, JSON.stringify(done.body)).toBeLessThan(300);
+    expect(done.body.finished).toBe(true);
+    expect(accepted).toEqual(["s@x.test"]);
+
+    // The public route never starts it; the issuing route starts nothing else.
+    const refused = await app.start("app/team-invite");
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatchObject(NOT_ALLOWED);
+    const login = await app.post("/auth/issue", { wfid: "auth/login/flow" });
+    expect(login.status).toBe(403);
+    expect(login.body).toMatchObject({ ...NOT_ALLOWED, params: { workflow: "auth/login/flow" } });
+  });
+
+  it("allow omitted: the start is admitted and the resume refused; other flows run as usual", async () => {
+    const app = await prepareFlowApp({
+      extraControllers: [TeamInvite],
+      controllerClass: IssueSplit,
+    });
+    const started = await app.post("/auth/open", { wfid: "auth/login/flow" });
+    expect(started.status).toBe(201);
+    expectResumeRefused(await app.post("/auth/open", { wfs: started.body.wfs, input: {} }));
+    expect((await app.submit(started.body.wfs)).status).toBe(201);
+
+    const recovery = await app.post("/auth/open", { wfid: "auth/recovery/flow" });
+    expect(recovery.status).toBe(201);
+    expect((await app.post("/auth/open", { wfs: recovery.body.wfs, input: {} })).status).toBe(201);
+    // No `allow` list to hide: an id that registers nothing stays a 404.
+    const unknown = await app.post("/auth/open", { wfid: "auth/no-such/flow" });
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.code).not.toBe("AOOTH_WORKFLOW_NOT_ALLOWED");
+  });
+
+  it("refuses the resume even when allow lists the flow", async () => {
+    const app = await prepareFlowApp({
+      controllerClass: Inherited({
+        allow: ["auth/login/flow", "auth/recovery/flow"],
+        startOnly: ["/auth/login/flow"],
+      }),
+    });
+    const started = await app.start("auth/login/flow");
+    expect(started.status).toBe(201);
+    expectResumeRefused(await app.submit(started.body.wfs));
+    const recovery = await app.start("auth/recovery/flow");
+    expect((await app.submit(recovery.body.wfs)).status).toBe(201);
+  });
+
+  it("block wins over startOnly; a flow in startOnly and resumeOnly is neither started nor resumed", async () => {
+    @Inherit()
+    @Controller("auth")
+    class Both extends AuthController {
+      @Post("trigger")
+      @Public()
+      @WfTrigger({
+        startOnly: ["auth/recovery/flow", "auth/login/flow"],
+        resumeOnly: ["auth/login/flow"],
+        block: ["auth/recovery/flow"],
+      })
+      override triggerWf(): void {}
+
+      @Post("open")
+      @Public()
+      @WfTrigger()
+      open(): void {}
+    }
+    const app = await prepareFlowApp({ controllerClass: Both });
+    for (const wfid of ["auth/recovery/flow", "auth/login/flow"]) {
+      const refused = await app.start(wfid);
+      expect(refused.status).toBe(403);
+      expect(refused.body).toMatchObject({ ...NOT_ALLOWED, params: { workflow: wfid } });
+      const minted = await app.post("/auth/open", { wfid });
+      expect(minted.status).toBe(201);
+      expectResumeRefused(await app.submit(minted.body.wfs));
+    }
   });
 });
 

@@ -171,6 +171,7 @@ function tagStrategy(name: string, strategy: WfStateStrategy): WfStateStrategy {
 
 const HOOK_NAMES = [
   "around",
+  "beforeResume",
   "beforePersist",
   "renderEnvelope",
   "restoreOnError",
@@ -184,9 +185,20 @@ const HOOK_NAMES = [
  * (a route's hook replaces the provider's hook of the same name).
  *
  * - `around(run)` — wraps everything the request does to workflow state and
- *   the outside world (access checks, consume/start/resume, `beforePersist`,
- *   persist, outlet delivery), e.g. `(run) => db.transaction(run)`. It may
- *   call `run()` again after a failure; each run starts over from the request.
+ *   the outside world (access checks, `beforeResume`, consume/start/resume,
+ *   `beforePersist`, persist, outlet delivery), e.g.
+ *   `(run) => db.transaction(run)`. It may call `run()` again after a failure;
+ *   each run starts over from the request.
+ * - `beforeResume(state, { strategy })` — runs on a resume, inside `around`,
+ *   after the access lists admitted the token and BEFORE it is consumed; throw
+ *   to refuse (e.g. `HttpError(409)` when the invitee is already a member):
+ *   the error reaches the client as thrown, nothing runs and the token stays
+ *   usable. `strategy` is the token's strategy (`encapsulated`, `store`,
+ *   `magic-link`). `state.context` is the flow's context; `state.meta` holds
+ *   bookkeeping of the trigger and of aooth — don't rely on its keys. Treat
+ *   `state` as read-only. It sees the state as read before the token is
+ *   consumed (a check that must hold when the step runs belongs in the step).
+ *   Not called on a start, after an access-list refusal, or for a gone token.
  * - `beforePersist(state, pause)` — runs right before a paused state is
  *   persisted, inside `around`; throw to abort (nothing persisted, no delivery).
  *   `AuthWorkflow`'s rendered `ctx.public` projection is already stripped
@@ -228,10 +240,24 @@ export interface WfTriggerOpts extends WfTriggerHooks {
    */
   resumeOnly?: string[];
   /**
+   * Workflow ids this trigger may START but never RESUME — the mirror of
+   * `resumeOnly`, e.g. a guarded route that starts a flow whose first step
+   * emails a link accepted on another route. Additive to `allow` (a start
+   * needs no `allow` entry); a resume is refused (403
+   * `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED`, the token is not consumed) even when
+   * `allow` lists the flow. `block` still wins. A flow listed here can never
+   * be resumed through this trigger, so it fits flows whose first pause hands
+   * the token to another trigger, not flows that ask the starter for more
+   * input (the bundled `auth/invite/start` asks the issuer for the invite
+   * form, so its issuing route lists it in `allow`). A flow in both
+   * `startOnly` and `resumeOnly` can be neither started nor resumed.
+   */
+  startOnly?: string[];
+  /**
    * Workflow ids this trigger refuses on start AND resume (403
    * `AOOTH_WORKFLOW_NOT_ALLOWED` on a start, `AOOTH_WORKFLOW_RESUME_NOT_ALLOWED`
-   * on a resume), whatever `allow` / `resumeOnly` say. An entry also blocks the
-   * flow it resolves to (`'user/42'` blocks `'user/:id'`).
+   * on a resume), whatever `allow` / `resumeOnly` / `startOnly` say. An entry
+   * also blocks the flow it resolves to (`'user/42'` blocks `'user/:id'`).
    */
   block?: string[];
   /** Per-endpoint token wire override. Defaults to the provider's wire (`{read:['body','query','cookie'], write:'body', name:'wfs'}`). */
@@ -270,8 +296,8 @@ export function deriveWfStateSecret(secret: string): Buffer {
 
 /**
  * The access refusals the wooks trigger raises, in aooth's public form. The
- * engine decides (`allow` / `resumeOnly` / `block`, judged on the resolved
- * flow); aooth keeps its own wire contract:
+ * engine decides (`allow` / `resumeOnly` / `startOnly` / `block`, judged on the
+ * resolved flow); aooth keeps its own wire contract:
  *
  * - `WF_FORBIDDEN` (403) on a start becomes `AOOTH_WORKFLOW_NOT_ALLOWED` (403,
  *   `workflow` param). On a resume the engine never names the stored flow, so
@@ -280,11 +306,14 @@ export function deriveWfStateSecret(secret: string): Buffer {
  * - `WF_NOT_FOUND` (404) — a start whose id resolves to no flow while access
  *   lists are set — becomes `AOOTH_WORKFLOW_NOT_ALLOWED` (403) whenever `allow`
  *   is set: unregistered ids answer like unlisted ones, so a probe cannot tell
- *   which ids `allow` lists. With only `resumeOnly` / `block` set it stays 404.
+ *   which ids `allow` lists. With only `resumeOnly` / `startOnly` / `block` set
+ *   it stays 404: without `allow` every registered flow may be started (bar
+ *   `resumeOnly` / `block`), so there is no list of startable flows to hide.
  *
- * Anything else passes through untouched. The error is recognised by its body
- * code, not by class, so a second installed copy of `@wooksjs/event-http` does
- * not let a raw `WF_FORBIDDEN` through.
+ * Anything else passes through untouched — an app error thrown by a hook
+ * (`beforeResume`, `beforePersist`, `around`) reaches the client as thrown. The
+ * error is recognised by its body code, not by class, so a second installed
+ * copy of `@wooksjs/event-http` does not let a raw `WF_FORBIDDEN` through.
  */
 function mapRefusal(error: unknown, allowed: boolean): unknown {
   const body = (error as { body?: Partial<WfTriggerErrorBody> } | null)?.body;
@@ -441,7 +470,8 @@ export class WfTriggerProvider {
 
   /**
    * App-wide workflow-trigger hooks ({@link WfTriggerHooks}): `around`,
-   * `beforePersist`, `renderEnvelope`, `restoreOnError` / `maxRestores`.
+   * `beforeResume`, `beforePersist`, `renderEnvelope`, `restoreOnError` /
+   * `maxRestores`.
    * Default: none. A route's `@WfTrigger({...})` option of the same name
    * replaces the hook returned here. Called once per trigger request.
    *
@@ -482,7 +512,8 @@ export class WfTriggerProvider {
    * prefix, the strategy's handle hashing and legacy-key rules, the strategy
    * tag), so a peek finds what a resume would. An unknown, expired, malformed
    * or foreign token is `null` — one answer for all. The state carries
-   * server-only context: project what you need, never send it as-is.
+   * server-only context: project what you need, never send it as-is. To refuse
+   * a resume before its token is consumed, use the `beforeResume` hook instead.
    */
   async peek(token: string): Promise<WfState | null> {
     const i = token.indexOf(".");
@@ -539,13 +570,14 @@ export class WfTriggerProvider {
       return beforePersist?.(state, pause);
     };
     const around = opts.around ?? base.around;
-    const { allow, resumeOnly, block } = opts;
+    const { allow, resumeOnly, startOnly, block } = opts;
     const attempt = (run: () => Promise<unknown>) => runTrigger(run, allow !== undefined);
     return handleAsOutletRequest(
       {
         ...hooks,
         allow,
         resumeOnly,
+        startOnly,
         block,
         around: around ? (run) => around(() => attempt(run)) : attempt,
         state: this.stateRegistry(),
