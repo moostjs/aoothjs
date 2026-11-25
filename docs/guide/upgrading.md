@@ -2,6 +2,28 @@
 
 What to check when you move to a newer aooth release. Each entry lists the changes that can break an app or change what users see, and links to the page that documents the current behaviour. All `@aooth/*` packages share one version number — upgrade them together.
 
+## To 0.2.21
+
+### An opened invite link keeps its 7 days until the password is set
+
+Before, the pauses after the emailed link — the username pick, the password form and their re-pauses — stated no expiry of their own, so opening the link re-saved the state with the state store's default TTL: a short default (say one hour, for abandoned sign-ins) killed the link for an invitee who opened the email and came back the next day, and a store with no default let an opened link live on without end. Now every pause before the password is set expires exactly when the emailed link does, 7 days after it was issued, whatever the store's default — so `peekInvite` reports the same `expiresAt` across opens. The steps after the password (MFA enrolment, `extra-step`) keep the store's default, as before: with a durable `store`, the emailed link continues the run there for as long as that default allows — with no `defaultTtl`, until the run finishes. (With the encapsulated `store`, the emailed token restarts at the password form, which is then refused.)
+
+No code change is required; setting a `defaultTtl` on your durable store is recommended. You notice the change when that `defaultTtl` is shorter than 7 days, or unset. Invites issued before 0.2.21 carry no recorded link expiry: their links keep working and behave as before (once opened, the store's default applies). See [How long a paused state lives](/moost/workflows#paused-state-lifetime).
+
+### Recovery retries keep their step's expiry
+
+Retries on a recovery step now keep that step's `recoveryStateTtlMs` window. Before, a wrong code, the resend wait, a refused password or an invalid mode pick fell to the state store's default TTL ("never" for a store without one), and a submitted but invalid form restarted the step's window; both now keep it. First displays are unchanged: each step (the mode picker, the code form — again after a resend — and the password form, also after a magic link) still gets a full `recoveryStateTtlMs` from when it is shown. No code change is required.
+
+The pauses these flows stamp themselves ignore an `@StepTTL` of your own on `choose-username`, `create-password-form`, `pincode-check` or `select-recovery-mode`. New in 0.2.21: the invite pauses before the password and the recovery retries; the first display of each recovery step was already stamped. See [How long a paused state lives](/moost/workflows#paused-state-lifetime).
+
+### Invite emails state the link's real lifetime
+
+Fixed: with the default invite delivery (`'outlet-email'`), the invite email now states the link's own lifetime (7 days, or your re-decorated `@StepTTL`); before, the email outlet fell back to `magicLinkTtlMs`, so apps on the default delivery that set `magicLinkTtlMs` (say, to an hour) sent invite emails with that expiry.
+
+### The send limits show your app-wide 429 message
+
+Fixed: the `message` option of `rateLimitInterceptors` now also words the 429 of the send limits checked inside the auth workflow (`aooth.send`, `aooth.send-user`), which showed the built-in "Too many requests" text before — apps that set an app-wide `message` see it there too, and a rule message given through `policies` still wins. See [Rate Limiting — bundled limits](/moost/rate-limit#bundled-limits).
+
 ## To 0.2.19
 
 ### A password change drops remembered devices

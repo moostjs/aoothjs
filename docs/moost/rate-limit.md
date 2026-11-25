@@ -77,15 +77,15 @@ Before 0.2 the bottom-most decorator silently won and the others were ignored. C
 
 Returns **two** interceptor definitions — register with a spread, globally or via [`RateLimited`](#ratelimited-per-controller-sugar). Options:
 
-| Option       | Default | Effect                                                                                                                                                                                                                              |
-| ------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `limiter`    | —       | The shared `RateLimiter` — wire your `RateLimitStoreRedis` here. Omitted: a memory-store limiter is created once per factory call (single-process dev/test only).                                                                   |
-| `rules`      | —       | App-wide default rules applied to **every** HTTP route without its own `@RateLimit` metadata. Routes opt out with `@RateLimit(false)`.                                                                                              |
-| `key`        | `'ip'`  | Default key strategy for routes whose decorator doesn't set one (the bundled route limits included). Route policies only — `aooth.send` and the one-time-code counters key on `getIp()` ([client IP](#client-ip-behind-a-proxy)).   |
-| `trustProxy` | `false` | **Deprecated** (one-time warning; removed in 0.3). `true` still trusts exactly one proxy hop, read from the app's `proxyHeaders` family. Configure [`trustProxy` on the HTTP app](#client-ip-behind-a-proxy) instead.               |
-| `headers`    | `true`  | Emit draft `RateLimit-*` headers on every response of a limited route.                                                                                                                                                              |
-| `message`    | —       | App-wide default 429 message template.                                                                                                                                                                                              |
-| `policies`   | —       | Re-tune declared policies by `id` without redeclaring their routes: new rules replace the declared ones (key strategy, id and message stay); `false` switches one off. An unknown id throws. See [Bundled limits](#bundled-limits). |
+| Option       | Default | Effect                                                                                                                                                                                                                                                                             |
+| ------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `limiter`    | —       | The shared `RateLimiter` — wire your `RateLimitStoreRedis` here. Omitted: a memory-store limiter is created once per factory call (single-process dev/test only).                                                                                                                  |
+| `rules`      | —       | App-wide default rules applied to **every** HTTP route without its own `@RateLimit` metadata. Routes opt out with `@RateLimit(false)`.                                                                                                                                             |
+| `key`        | `'ip'`  | Default key strategy for routes whose decorator doesn't set one (the bundled route limits included). Route policies only — `aooth.send` and the one-time-code counters key on `getIp()` ([client IP](#client-ip-behind-a-proxy)).                                                  |
+| `trustProxy` | `false` | **Deprecated** (one-time warning; removed in 0.3). `true` still trusts exactly one proxy hop, read from the app's `proxyHeaders` family. Configure [`trustProxy` on the HTTP app](#client-ip-behind-a-proxy) instead.                                                              |
+| `headers`    | `true`  | Emit draft `RateLimit-*` headers on every response of a limited route.                                                                                                                                                                                                             |
+| `message`    | —       | App-wide default 429 message template, for every policy without a message of its own — since 0.2.21 also the workflow send limits `aooth.send` / `aooth.send-user` ([bundled limits](#bundled-limits)).                                                                            |
+| `policies`   | —       | Re-tune declared policies by `id` without redeclaring their routes: new rules replace the declared ones (key strategy, id and `message` option stay; a new rule may carry its own message); `false` switches one off. An unknown id throws. See [Bundled limits](#bundled-limits). |
 
 ### Client IP behind a proxy {#client-ip-behind-a-proxy}
 
@@ -226,6 +226,8 @@ aooth's own controllers declare these policies; like every `@RateLimit` they are
 | auth workflow: each recovery code, magic link or signup code requested                                                           | `aooth.send`                   | `20/15m` | the client IP (`getIp()`), never the `key`      | Every request that could send (whether or not it does) — against mail-bombing an inbox. Enforced inside the workflow; over the limit the request answers the coded `429` and the run ends.            |
 | auth workflow: each code sent after a first factor (email/SMS second factor, MFA enrolment, channel check, federated link proof) | `aooth.send-user`              | `10/1h`  | the account (`user:<id>`)                       | Whoever holds a password can make the account's phone or inbox receive codes — against SMS pumping. Same answer as `aooth.send`.                                                                      |
 
+The two workflow send limits answer with the same coded `429` as the route limits, worded the same way: a rule's own message (through `policies`, below), else the interceptor's app-wide `message` (since 0.2.21), else the built-in text.
+
 Under the default `'ip'` key, `aooth.trigger` is counted before the auth guard on all three routes, so unauthenticated requests to the guarded `/auth/change-password` and `/auth/add-mfa` count against that IP's shared budget too (they still answer `401`); under a named key such as `'user'` it is counted after the guard.
 
 "The `key` option (`'ip'`)" means the route follows the interceptor's `key` like any `@RateLimit` without a key of its own — the client IP unless you set one. The workflow limits key as listed whatever `key` is set to ([client IP](#client-ip-behind-a-proxy)).
@@ -248,6 +250,18 @@ app.applyGlobalInterceptors(
 ```
 
 `policies` takes the **ids** of declared policies: the bundled ones above and every `@RateLimit({ id })` your code declares (declare before you configure — import your controllers first). An unknown id throws when the pair is created, so a typo cannot silently leave a limit in force. Rules are parsed when the pair is created; an empty rule list throws (use `false`).
+
+A rule given here may carry its own [message](../auth/rate-limit#message-templates) — the `| message` suffix, or `{ limit, window, message }`. It words that policy's 429 only, ahead of the policy's `message` option and the interceptor's app-wide `message`, so one limit can read differently from the rest:
+
+```ts
+rateLimitInterceptors({
+  limiter,
+  message: "Too many requests. Try again in {{delta}}.",
+  policies: { "aooth.trigger": "150/5m | Too many sign-in attempts. Try again in {{delta}}." },
+});
+```
+
+Under a moost translator that has a `RATE_LIMITED` text for the request's locale, that translation replaces this text, like any other 429 message; to word one policy differently in a translated language, branch on the body's `params.policy` in your translator. A locale without a `RATE_LIMITED` text keeps the policy's own message.
 
 ## Which policies apply to a route {#which-policies-apply}
 

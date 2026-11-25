@@ -302,7 +302,12 @@ class AppWfTriggerProvider extends WfTriggerProvider {
   // Make the durable `store` strategy real — override storeStrategy(), do NOT assign `this.state`.
   protected override storeStrategy(): WfStateStrategy {
     // hashHandles: a read of the table yields no resumable token
-    return new HandleStateStrategy({ store: new AsWfStore({ table: tables.wfStates }), hashHandles: true })
+    // defaultTtl: pauses with no expiry of their own (sign-in, an invite after its password)
+    return new HandleStateStrategy({
+      store: new AsWfStore({ table: tables.wfStates }),
+      hashHandles: true,
+      defaultTtl: 60 * 60_000,
+    })
   }
 }
 ```

@@ -113,7 +113,11 @@ class MyWfTriggerProvider extends WfTriggerProvider {
     ];
   }
   protected override storeStrategy(): WfStateStrategy {
-    return new HandleStateStrategy({ store: new AsWfStore({ table }), hashHandles: true });
+    return new HandleStateStrategy({
+      store: new AsWfStore({ table }),
+      hashHandles: true,
+      defaultTtl: 60 * 60_000, // pauses with no expiry of their own (sign-in, an invite after its password)
+    });
   }
 }
 // app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, MyWfTriggerProvider]))

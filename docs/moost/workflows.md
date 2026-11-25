@@ -591,6 +591,7 @@ class MyWfTriggerProvider extends WfTriggerProvider {
     return new HandleStateStrategy({
       store: new AsWfStore({ table: db.tables.wfStates }),
       hashHandles: true,
+      defaultTtl: 60 * 60_000, // pauses with no expiry of their own (sign-in, an invite after its password)
     });
   }
 }
@@ -601,6 +602,22 @@ app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, MyWfTriggerProv
 **Pass `hashHandles: true`.** The store then keeps a hash of each handle, so a read of the table yields no resumable token — an unaccepted invite link, a recovery run paused on its password form. aooth hashes the [magic-link](#magic-links) pauses itself; the `store` strategy is yours to configure.
 
 The encapsulated token's secret defaults to `auth.deriveStateKey("wf-state")` (HKDF-derived from the auth secret, stable across restarts) — override `wfStateSecret()` for a dedicated secret, or `wfStateEncapsulatedTtlMs()` to expire idle forms. The same secret keys the [one-time code](#one-time-codes) digests unless `pincodeSecret()` is overridden. `HandleStateStrategy` / `EncapsulatedStateStrategy` come from `@moostjs/event-wf`; `AsWfStore` (a `@atscript/db`-table-backed store) from `@atscript/moost-wf`.
+
+#### How long a paused state lives {#paused-state-lifetime}
+
+A paused state lives as long as its own expiry says, else the state strategy's default TTL (`defaultTtl` of your `HandleStateStrategy`; `wfStateEncapsulatedTtlMs()` for `encapsulated`). The bundled flows set their own expiry here:
+
+| Pauses                                                                                                                                                               | Expiry                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Invite: the emailed link, and every accept-phase pause until the invitee sets a password (username pick, password form, their retries)                               | 7 days from issue (`send-email`'s `@StepTTL`). Opening the link neither shortens nor extends it (since 0.2.21).                                                                                                                                                                 |
+| Recovery, each step once the identifier is submitted: mode picker, code form (shown again after a resend), password form (also the one reached through a magic link) | `recoveryStateTtlMs` from when the step is shown. Retries on the same step — a wrong code, the resend wait, a refused password or pick, an invalid form — keep that window (since 0.2.21; before, the first four fell to the default and an invalid form restarted the window). |
+| Recovery and sign-in [magic links](#magic-links)                                                                                                                     | `magicLinkTtlMs`, confirm step included.                                                                                                                                                                                                                                        |
+
+A recovery step posted again without form data (a page reload) is shown afresh and restarts its window, so the window is an idle timeout for that step, not a hard cap. A recovery step of your own that shows itself without `resolveInput()` (a `throwPublic` / `requireInput()` pause) should call `stampRecoveryExpiry(err)` on that pause to start its own window; otherwise it continues the previous step's.
+
+Everything else gets the strategy's default: the invite steps after the password (MFA enrolment, `extra-step`), signup, change-password, add-mfa and sign-in. An abandoned sign-in at the credentials form is still on the `encapsulated` strategy (`wfStateEncapsulatedTtlMs()`, no TTL by default); once past the password it is on `store`, where `defaultTtl` governs it. After the invitee sets a password, with a durable `store` the same emailed link still continues the run for as long as the default allows — with a store that has no `defaultTtl`, until the run finishes (with the encapsulated `store`, the emailed token restarts at the password form, which is refused). Set a `defaultTtl` on the durable `store` strategy (an hour is typical) so runs left at those steps expire. A [one-time code](#one-time-codes) stops working after `mfa.pincodeTtlMs`, however long the pause that asks for it lives. An invite issued before 0.2.21 carries no recorded link expiry; its accept-phase pauses get the default.
+
+The pauses listed in the table carry these expiries themselves: an `@StepTTL` of your own on `choose-username`, `create-password-form`, `pincode-check` or `select-recovery-mode` does not change them (the invite pauses before the password and the recovery retries are stamped since 0.2.21; the first display of each recovery step was stamped before).
 
 ### `WfTrigger({ allow?, resumeOnly?, startOnly?, block?, token?, ...hooks })`
 

@@ -116,7 +116,12 @@ class MyWfTriggerProvider extends WfTriggerProvider {
   }
   protected override storeStrategy(): WfStateStrategy {
     // durable override — NOT `this.state =`
-    return new HandleStateStrategy({ store: new AsWfStore({ table }), hashHandles: true });
+    // defaultTtl: pauses without their own expiry (sign-in, invite after its password)
+    return new HandleStateStrategy({
+      store: new AsWfStore({ table }),
+      hashHandles: true,
+      defaultTtl: 60 * 60_000,
+    });
   }
 }
 app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, MyWfTriggerProvider]));
@@ -124,6 +129,7 @@ app.setReplaceRegistry(createReplaceRegistry([WfTriggerProvider, MyWfTriggerProv
 
 - Default state = **encapsulated** named-strategy registry (no durable rows; idle form can't 410). A step swaps to `store` after first validated input; `storeStrategy()` supplies the durable backend.
 - Encapsulated secret defaults to `auth.deriveStateKey("wf-state")` (HKDF, stable across restarts); override `wfStateSecret()` / `wfStateEncapsulatedTtlMs()`. `pincodeSecret()` (default = `wfStateSecret()`) keys one-time code digests (an HMAC subkey, never the AES key) — same on every instance.
+- Pause lifetime = the pause's own expiry, else the strategy default (`defaultTtl` / `wfStateEncapsulatedTtlMs()`). Own expiry: invite link + every accept pause BEFORE the password = the link's issue + 7 days (since 0.2.21; never extended, never cut to the default); recovery = each step `recoveryStateTtlMs` from when it is shown (picker, code form — again after a resend —, password form — also after a magic link), its retries keep that window (since 0.2.21); a re-post without form data (reload) shows the step afresh → idle timeout, not a hard cap; a custom recovery step that first shows itself without `resolveInput()` must call `stampRecoveryExpiry(err)` or it continues the previous step's window; magic links = `magicLinkTtlMs`. Everything else = the default: invite steps after the password (durable `store`: the same link continues the run; encapsulated `store`: the emailed token restarts at the password form → refused), signup, change-password, add-mfa, sign-in past the password (the credentials form itself is `encapsulated`, no TTL by default) → ALWAYS set `defaultTtl` on the durable store (no default = such runs never expire). An app `@StepTTL` on `choose-username` / `create-password-form` / `pincode-check` / `select-recovery-mode` does not change these self-stamped pauses.
 - ALWAYS `hashHandles: true` on the `store` strategy: aooth hashes only magic-link pauses; without it a DB read of the table = resumable invite links / paused recovery runs.
 - `handle()` forwards the `strategy` run-option (else the wf adapter throws `Key "wf.strategyName" is not set`). Token wire field is `token` (default `{ read:['body','query','cookie'], write:'body', name:'wfs' }`).
 - `createAuthEmailOutlet({ emailSender, buildMagicLinkUrl, magicLinkTtlMs })` — `buildMagicLinkUrl` is 3-arg `(kind, token, ctx?:{userId?})`.

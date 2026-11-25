@@ -203,7 +203,7 @@ If you're using moost, the unified [`AuthWorkflow`](../moost/workflows)'s `recov
 
 - A single `/auth/trigger` entry point (no per-step routes — the flow is driven by the wf state token).
 - A multi-step `WfFinished` envelope (countdown auto-redirect, magic-link **or** OTP delivery).
-- `recoveryStateTtlMs` capping the request-to-reset window; per-request policy via `resolveXxx(ctx)` getters.
+- `recoveryStateTtlMs` bounding each recovery step from when it is shown (retries on a step keep its window); per-request policy via `resolveXxx(ctx)` getters.
 - No account-existence oracle: an identifier no code can go to gets the same answer as an existing account (below).
 - Post-reset session revocation + `autoLoginOnRecover` (auto-login vs fresh-login redirect).
 

@@ -92,6 +92,7 @@ class AppWfTriggerProvider extends WfTriggerProvider {
     return new HandleStateStrategy({
       store: new AsWfStore({ table: wfStatesTable }),
       hashHandles: true,
+      defaultTtl: 60 * 60_000, // pauses without their own expiry (sign-in, invite after its password)
     });
   }
 }
