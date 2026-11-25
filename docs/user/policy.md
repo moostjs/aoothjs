@@ -115,6 +115,8 @@ All factories are built with `definePasswordPolicy`, so they are transferable. N
 | `ppHasSpecialChar(n=1)`             | `n=1`           | regex count `>= n` for non-alphanumerics                                        |
 | `ppMaxRepeatedChars(maxRepeated=2)` | `maxRepeated=2` | rejects any run longer than `maxRepeated` (e.g. `"aaab"` fails `maxRepeated=2`) |
 
+With `@aooth/auth-moost`, the bundled password forms (`SetPasswordForm`, `ChangePasswordForm`) take their minimum length from `ppHasMinLength(n)` — 8 when you configure none (since 0.2.19). See [Atscript models](/moost/atscript#the-forms-model-from-aooth-auth-moost).
+
 ```ts
 import {
   UserService,

@@ -31,7 +31,7 @@ class LoginController {
 }
 ```
 
-The primary target is **open (public) endpoints** — login, invite acceptance, password reset, token refresh, OAuth/DCR — keyed by client IP. aooth's own refresh, invite and authorization-server token routes ship [limits of their own](#bundled-limits). The same decorator works on guarded endpoints keyed by user id.
+The primary target is **open (public) endpoints** — login, invite acceptance, password reset, token refresh, OAuth/DCR — keyed by client IP. aooth's own workflow-trigger, refresh, invite and authorization-server token routes ship [limits of their own](#bundled-limits). The same decorator works on guarded endpoints keyed by user id.
 
 ## `@RateLimit(...rules, options?)`
 
@@ -81,7 +81,7 @@ Returns **two** interceptor definitions — register with a spread, globally or 
 | ------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `limiter`    | —       | The shared `RateLimiter` — wire your `RateLimitStoreRedis` here. Omitted: a memory-store limiter is created once per factory call (single-process dev/test only).                                                                   |
 | `rules`      | —       | App-wide default rules applied to **every** HTTP route without its own `@RateLimit` metadata. Routes opt out with `@RateLimit(false)`.                                                                                              |
-| `key`        | `'ip'`  | Default key strategy for routes whose decorator doesn't set one.                                                                                                                                                                    |
+| `key`        | `'ip'`  | Default key strategy for routes whose decorator doesn't set one (the bundled route limits included). Route policies only — `aooth.send` and the one-time-code counters key on `getIp()` ([client IP](#client-ip-behind-a-proxy)).   |
 | `trustProxy` | `false` | **Deprecated** (one-time warning; removed in 0.3). `true` still trusts exactly one proxy hop, read from the app's `proxyHeaders` family. Configure [`trustProxy` on the HTTP app](#client-ip-behind-a-proxy) instead.               |
 | `headers`    | `true`  | Emit draft `RateLimit-*` headers on every response of a limited route.                                                                                                                                                              |
 | `message`    | —       | App-wide default 429 message template.                                                                                                                                                                                              |
@@ -89,7 +89,7 @@ Returns **two** interceptor definitions — register with a spread, globally or 
 
 ### Client IP behind a proxy {#client-ip-behind-a-proxy}
 
-Every client IP aooth keys on — `'ip'` rate-limit buckets, the one-time-code failure budgets, the IP recorded on sessions and device-trust bindings — is the one the HTTP app resolves (`useRequest().getIp()`). Tell the HTTP app which proxies to trust, and which header family they write:
+Every client IP aooth keys on — `'ip'` rate-limit buckets, the one-time-code failure budgets and resend wait, the IP recorded on sessions and device-trust bindings — is the one the HTTP app resolves (`useRequest().getIp()`). Tell the HTTP app which proxies to trust, and which header family they write:
 
 ```ts
 import { createHttpApp } from "@wooksjs/event-http";
@@ -102,7 +102,11 @@ const http = new MoostHttp(
 );
 ```
 
-Without `trustProxy` on the app, forwarding headers are ignored and the socket peer is the client. When clients can sit inside the trusted address range (callers on the same network), cap the walk too: `trustProxy: { addresses: ["10.0.0.0/8"], hops: 1 }` trusts a hop only when it is within the first `hops` hops **and** its address matches, so the walk stops after `hops` hops instead of following forwarding entries such a client wrote itself (`@wooksjs/event-http` 0.8.3+).
+Without `trustProxy` on the app, forwarding headers are ignored and the socket peer is the client: behind a load balancer every caller then shares one budget per balancer address.
+
+The interceptor's `key` option governs **route policies only** — every `@RateLimit` without a key of its own, the bundled route limits included. The limits aooth enforces inside the auth workflow — `aooth.send` and the one-time-code counters (failure budgets and resend wait) — always key on `getIp()`, whatever `key` says. So set `trustProxy` behind a proxy even when your `key` reads the client address from a header of its own, and keep such a key in agreement with `getIp()`: otherwise one caller has two identities, one for your routes and another for the workflow limits.
+
+When clients can sit inside the trusted address range (callers on the same network), cap the walk too: `trustProxy: { addresses: ["10.0.0.0/8"], hops: 1 }` trusts a hop only when it is within the first `hops` hops **and** its address matches, so the walk stops after `hops` hops instead of following forwarding entries such a client wrote itself (`@wooksjs/event-http` 0.8.3+).
 
 ::: warning Since 0.2.7: the limiter's own `trustProxy` is deprecated
 `rateLimitInterceptors({ trustProxy: true })` is still honoured, with a one-time warning: it trusts exactly one hop — whatever its address — and now reads the header family the app's `proxyHeaders` names (it used to read `X-Forwarded-For` even under `proxyHeaders: 'forwarded'`, letting a client pick its own bucket). While it is set it also decides the client IP of the one-time-code budgets and session metadata. It is removed in 0.3: move the setting to the HTTP app as above, and prefer an address list over a hop count when the app is also reachable directly.
@@ -150,7 +154,7 @@ type RateLimitKeyStrategy =
 | any other name    | whatever the app supplied | App-defined subject kinds (`'tenant'`, `'apiKey'`, plan tier, …) populated via [`setRateLimitSubject`](#the-subject-seam-setratelimitsubject).                                                                                                              |
 | function          | whatever it returns       | Custom resolver — runs inside the event context **pre-guard**, so it must be self-sufficient (see below). `null` / `undefined` skips the policy.                                                                                                            |
 
-Precedence: decorator `key` option → interceptor `key` option → `'ip'`. Every **named** strategy is evaluated in the post-guard phase and falls back to the IP budget when nobody populated the subject — a misconfigured kind degrades to flood protection, never to one global bucket. The exception is `'refresh-token'`, which skips the policy when no token is presented.
+Precedence (route policies): decorator `key` option → interceptor `key` option → `'ip'`. The workflow limits don't follow it — see [Client IP behind a proxy](#client-ip-behind-a-proxy). Every **named** strategy is evaluated in the post-guard phase and falls back to the IP budget when nobody populated the subject — a misconfigured kind degrades to flood protection, never to one global bucket. The exception is `'refresh-token'`, which skips the policy when no token is presented.
 
 ### The subject seam — `setRateLimitSubject()`
 
@@ -210,16 +214,21 @@ When every policy of a route skips, the request carries no decision and no `Rate
 
 aooth's own controllers declare these policies; like every `@RateLimit` they are enforced only when the interceptor pair is installed:
 
-| Route                                                                                                                            | Policy id                      | Rule     | Key                                             | Why                                                                                                                                                                                        |
-| -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | -------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `POST /auth/refresh`                                                                                                             | `aooth.refresh`                | `150/5m` | `'ip'`                                          | Checked before the auth guard: a flood of junk tokens from one caller costs no credential lookups.                                                                                         |
-| `POST /auth/refresh`                                                                                                             | `aooth.refresh-token`          | `10/1m`  | `'refresh-token'`                               | Caps re-presenting one refresh token from any number of IPs — a client presents a token about once per access-token lifetime (once, with rotation).                                        |
-| `GET /auth/invite/post-redemption`                                                                                               | `aooth.invite-post-redemption` | `30/5m`  | `'ip'`                                          | An anonymous lookup by user id.                                                                                                                                                            |
-| `POST /auth/token`                                                                                                               | `aooth.token`                  | `150/5m` | `'ip'`                                          | Every grant: code redemptions and refreshes cost store work.                                                                                                                               |
-| `POST /auth/token`                                                                                                               | `aooth.token-refresh`          | `10/1m`  | the `refresh_token` of a refresh grant (hashed) | Like `aooth.refresh-token`, for OAuth clients.                                                                                                                                             |
-| `POST /auth/register`                                                                                                            | `aooth.register`               | `20/1h`  | `'ip'`                                          | Each dynamic client registration writes a row.                                                                                                                                             |
-| auth workflow: each recovery code, magic link or signup code requested                                                           | `aooth.send`                   | `20/15m` | `'ip'`                                          | Every request that could send (whether or not it does) — against mail-bombing an inbox. Enforced inside the workflow; over the limit the request answers the coded `429` and the run ends. |
-| auth workflow: each code sent after a first factor (email/SMS second factor, MFA enrolment, channel check, federated link proof) | `aooth.send-user`              | `10/1h`  | the account (`user:<id>`)                       | Whoever holds a password can make the account's phone or inbox receive codes — against SMS pumping. Same answer as `aooth.send`.                                                           |
+| Route                                                                                                                            | Policy id                      | Rule     | Key                                             | Why                                                                                                                                                                                                   |
+| -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | -------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /auth/trigger`, `/auth/change-password`, `/auth/add-mfa` (one budget for the three)                                        | `aooth.trigger`                | `150/5m` | the `key` option (`'ip'`)                       | Since 0.2.19. Every step of the bundled flows posts to a trigger route — passwords, TOTP and one-time codes included — so one caller's guessing is bounded. Generous: a sign-in takes a few requests. |
+| `POST /auth/refresh`                                                                                                             | `aooth.refresh`                | `150/5m` | the `key` option (`'ip'`)                       | Checked before the auth guard: a flood of junk tokens from one caller costs no credential lookups.                                                                                                    |
+| `POST /auth/refresh`                                                                                                             | `aooth.refresh-token`          | `10/1m`  | `'refresh-token'`                               | Caps re-presenting one refresh token from any number of IPs — a client presents a token about once per access-token lifetime (once, with rotation).                                                   |
+| `GET /auth/invite/post-redemption`                                                                                               | `aooth.invite-post-redemption` | `30/5m`  | the `key` option (`'ip'`)                       | An anonymous lookup by user id.                                                                                                                                                                       |
+| `POST /auth/token`                                                                                                               | `aooth.token`                  | `150/5m` | the `key` option (`'ip'`)                       | Every grant: code redemptions and refreshes cost store work.                                                                                                                                          |
+| `POST /auth/token`                                                                                                               | `aooth.token-refresh`          | `10/1m`  | the `refresh_token` of a refresh grant (hashed) | Like `aooth.refresh-token`, for OAuth clients.                                                                                                                                                        |
+| `POST /auth/register`                                                                                                            | `aooth.register`               | `20/1h`  | the `key` option (`'ip'`)                       | Each dynamic client registration writes a row.                                                                                                                                                        |
+| auth workflow: each recovery code, magic link or signup code requested                                                           | `aooth.send`                   | `20/15m` | the client IP (`getIp()`), never the `key`      | Every request that could send (whether or not it does) — against mail-bombing an inbox. Enforced inside the workflow; over the limit the request answers the coded `429` and the run ends.            |
+| auth workflow: each code sent after a first factor (email/SMS second factor, MFA enrolment, channel check, federated link proof) | `aooth.send-user`              | `10/1h`  | the account (`user:<id>`)                       | Whoever holds a password can make the account's phone or inbox receive codes — against SMS pumping. Same answer as `aooth.send`.                                                                      |
+
+Under the default `'ip'` key, `aooth.trigger` is counted before the auth guard on all three routes, so unauthenticated requests to the guarded `/auth/change-password` and `/auth/add-mfa` count against that IP's shared budget too (they still answer `401`); under a named key such as `'user'` it is counted after the guard.
+
+"The `key` option (`'ip'`)" means the route follows the interceptor's `key` like any `@RateLimit` without a key of its own — the client IP unless you set one. The workflow limits key as listed whatever `key` is set to ([client IP](#client-ip-behind-a-proxy)).
 
 The refresh limits key on the IP for floods and on the token itself for replays — not on the session: the session is known only after the token is looked up, which is the work the limit guards. A request without a refresh token is not counted against a token budget; the handler answers `401` (`MISSING_REFRESH_TOKEN`).
 
@@ -232,6 +241,7 @@ app.applyGlobalInterceptors(
     policies: {
       "aooth.refresh": "600/5m", // a large NAT shares one IP
       "aooth.refresh-token": false, // switched off
+      "aooth.trigger": ["10/1m", "150/5m"], // tighter bursts on the trigger routes
     },
   }),
 );
@@ -247,7 +257,7 @@ A route is governed by the **first** of these that exists — they never combine
 2. **Class-level** `@RateLimit` on the controller.
 3. The interceptor's app-wide default `rules`.
 
-So a class-level `@RateLimit` on your subclass of an aooth controller **never applies to the bundled routes** (`/auth/refresh`, `/auth/token`, `/auth/register`, invite redemption, …) — their inherited method-level policies win. To change their limits:
+So a class-level `@RateLimit` on your subclass of an aooth controller — or an app-wide `rules` entry — **never applies to the bundled routes** (`/auth/trigger`, `/auth/change-password`, `/auth/add-mfa`, `/auth/refresh`, `/auth/token`, `/auth/register`, invite redemption, …) — their inherited method-level policies win. To change their limits:
 
 - re-tune them by id with [`policies`](#bundled-limits) — the usual way;
 - or override the handler and put your own method-level `@RateLimit` on it (it replaces the inherited policies of that method).
@@ -273,7 +283,7 @@ Retry-After: 272
   "error": "Too Many Requests",
   "message": "Too many login attempts, please wait 4 minutes 32 seconds",
   "code": "RATE_LIMITED",
-  "params": { "policy": "AuthController.triggerWf", "limit": 6, "window": 300, "retryAfter": 272 }
+  "params": { "policy": "LoginController.login", "limit": 6, "window": 300, "retryAfter": 272 }
 }
 ```
 
@@ -329,6 +339,7 @@ Inject a `clock` into the `RateLimiter` (and the store) to step through windows 
 - **DO** spread the pair: `...rateLimitInterceptors(opts)` — **not** register a single element of the returned array.
 - **DO** pass a shared `limiter` backed by `RateLimitStoreRedis` in any multi-instance deployment — the fallback memory limiter is per-process **and** per-factory-call.
 - **DO** configure `trustProxy` / `proxyHeaders` on the HTTP app — **not** on `rateLimitInterceptors` (deprecated since 0.2.7, removed in 0.3).
+- **DON'T** rely on a custom interceptor `key` alone behind a proxy — it covers route policies only; `aooth.send` and the one-time-code counters key on `getIp()`, so set `trustProxy` and keep the key in agreement with `getIp()`.
 - **DO** stack decorators for "per IP **and** per account" limits — each is its own policy — and give each an explicit `id`.
 - **DO** use `@RateLimit(false)` to exempt health checks / internal routes when app-wide default `rules` are configured.
 - **DO** re-tune the [bundled limits](#bundled-limits) with `policies` — **not** by subclassing the controller to redeclare a route.

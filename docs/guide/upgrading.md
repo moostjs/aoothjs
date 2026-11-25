@@ -2,6 +2,52 @@
 
 What to check when you move to a newer aooth release. Each entry lists the changes that can break an app or change what users see, and links to the page that documents the current behaviour. All `@aooth/*` packages share one version number — upgrade them together.
 
+## To 0.2.19
+
+### A password change drops remembered devices
+
+`UserService.changePassword` and `setPassword` now remove all of the user's trusted devices (the "remember this device" MFA skip) in the same write — so recovery, change-password, a forced change at sign-in and an admin reset all do. Each remembered device asks for the second factor once more on its next sign-in. Remove your own clean-up of `trustedDevices` after a password change; it is no longer needed. See [Trusted devices](/user/mfa#trusted-devices).
+
+A forced password change at sign-in (an initial or expired password) happens before that sign-in's second factor, so the device the user signs in from is asked for the second factor in that same sign-in, even if it was remembered. Remembering it again there works: the new record is written after the password change.
+
+### Accounts lock by default
+
+`UserService` without a `lockout` option now locks an account for 15 minutes after 10 failed sign-ins (`{ threshold: 10, duration: 900_000 }`); before, it never locked. A `lockout` object you already pass keeps its meaning. To keep accounts from locking, pass `lockout: { threshold: 0 }`. What this means in practice:
+
+- **What counts.** Wrong passwords at sign-in, wrong TOTP codes (also in the signed-in manage-MFA step-up), the password proof of a federated account link, and every call your own code makes to `UserService.login()` or `verifyMfa()` all count toward the same threshold.
+- **Permanent locks under `admin-only` / `self-service`.** If your `resolveLockout` returns `mode: 'admin-only'` or `'self-service'` and you configure no `UserService` lockout, accounts now lock **permanently** after 10 failures — those modes make every lock permanent, and before there was no threshold. `self-service` locks are lifted by a password reset, `admin-only` ones only by `unlockAccount`.
+- **The count outlives a temporary lock.** `account.failedLoginAttempts` is reset only by a successful sign-in (or a correct TOTP code, or `unlockAccount`). A lapsed temporary lock leaves it in place, so after the first lock every further wrong password locks the account for another 15 minutes until the user signs in successfully. An account that collected 9 or more failures while lockout was off locks on its next failure.
+- **Recovery does not lift a temporary lock.** A password reset leaves a `temporary` lock and the count in place: the account opens when the lock lapses, and the next successful sign-in (also the reset's own sign-in under `autoLoginOnRecover`) clears the count. To have a reset lift the lock and clear the count, return `mode: 'self-service'` from `resolveLockout` (locks are then permanent until a reset or an admin unlock), or call `users.unlockAccount(ctx.subject)` from `afterPasswordReset`.
+- **Unknown handles.** With the default `lockoutDisclosure: 'uniform'`, unknown handles now read "Account locked" after the same number of failures; pass a shared `lockoutShadowStore` when several instances serve sign-ins.
+
+See [`UserService` — lockout defaults](/user/service#config-reference) and [lockout disclosure](/moost/workflows#lockout-disclosure).
+
+### The workflow trigger routes are rate limited
+
+`POST /auth/trigger`, `/auth/change-password` and `/auth/add-mfa` carry a new bundled limit, `aooth.trigger` — `150/5m` per client IP (or per your interceptor `key`), one budget shared by the three routes, enforced when `rateLimitInterceptors` are installed. Every step of the bundled flows counts, so a caller behind a large NAT may need more; re-tune or switch it off with `rateLimitInterceptors({ policies: { "aooth.trigger": "600/5m" } })` (or `false`).
+
+The new policy is declared on the methods, so it takes precedence over the interceptor's app-wide `rules` and over a class-level `@RateLimit` on your `AuthController` subclass. If you limited these routes that way to something stricter, that limit no longer applies — they now run at `150/5m` — so set your figure with `policies: { "aooth.trigger": … }`. A `@RateLimit` on an overriding method still wins (it replaces `aooth.trigger` for that route), and a subclass that overrode `triggerWf()` only to put a `@RateLimit` on it can drop the override and tune `aooth.trigger` instead. See [Rate Limiting — bundled limits](/moost/rate-limit#bundled-limits).
+
+### Re-invites: kept roles must be grantable, and a resend action
+
+A re-invite that picks no roles keeps the pending invite's roles. When the role picker is on with a whitelist (`resolveAdminForm` → `collectRoles: true`, the default, and `getAvailableRoles()` returns a list — e.g. `invitableRoles` is set), the issuer must now be allowed to grant every role the invite keeps; otherwise the admin form answers `AOOTH_INVALID_ROLE` on `roles`, as for a picked role.
+
+New: submitting the admin form with the `resend` action — `{ action: "resend", formData: { email } }` — sends a fresh link and keeps the invite's roles, extras and issuer (`duplicateInviteCheck` verdict `'resend'`). If you re-send invites by reading the stored link back, switch to the action — it works with hashed handles. A resend does not call `prepareUser` or `inferAdminRoles`: authorization you do there must also be done in `duplicateInviteCheck`, and by default any holder of the invite permission can resend (and so replace the link of) any pending invite. An override of `duplicateInviteCheck` that never returns `'resend'` turns a resend submit into an ordinary re-invite. See [Invites — resending an invite](/moost/invites#resending-an-invite).
+
+`InviteForm.roles` is now optional (`roles?: string[]`) so a resend needs only the email — a change to the form's public type for code that reads it.
+
+If your `AuthWorkflow` subclass overrides `duplicateInviteCheck` with a written-out return type and returns `super.duplicateInviteCheck(input)`, add `"resend"` to that type (or drop the annotation): the base method can now return it, so the old annotation no longer compiles.
+
+### Bundled form changes
+
+- `SetPasswordForm` and `ChangePasswordForm` take the minimum password length from your `ppHasMinLength(n)` policy, else 8 — the fixed `@expect.minLength 8` is gone, so a looser policy is no longer refused by the form, and a stricter one is checked in the browser. Only a policy with the `PP_MIN_LENGTH` code moves the minimum: a length rule of your own with another code leaves the floor of 8 in the bundled flows, and a direct `UserService.setPassword` call has no floor (its policies only). The message is the policy's text, or `"Password must be at least {min} characters long"`: translate that English text for the browser and the `PP_MIN_LENGTH` code for the server — the `MIN_LENGTH` validator code no longer applies to these two fields. The server side of the rule runs in the workflow step, so it also covers a `forms.setPassword` / `forms.changePassword` of your own: without a `ppHasMinLength` policy, a password shorter than 8 characters is refused there too. See [Atscript models](/moost/atscript#the-forms-model-from-aooth-auth-moost).
+- `EmailIdentifierForm`'s description is now "Enter your account email and we will send you instructions to reset your password." (it promised a link even with the default one-time code). If you translated the old text, translate the new one.
+- `InviteForm.roles` is declared as the multiselect it already rendered as (and is now optional, above), and the form declares the never-rendered `resend` action.
+
+### Peers
+
+Needs `moost` / `@moostjs/*` `^0.7.8`, `@wooksjs/*` `^0.8.5`, `@atscript/db` / `@atscript/moost-db` `^0.1.188`, `@atscript/typescript` `^0.2.16` and `@atscript/moost-wf` `^0.1.182` (the atscript-ui client packages at `^0.1.182` too).
+
 ## To 0.2.18
 
 ### Peers
@@ -107,7 +153,7 @@ Applies to every emailed or texted code — recovery, the email/SMS second facto
 - To keep recovery reads equal for every identifier, `resolvePincodeTarget` now also runs for an unknown or inactive identifier, with the placeholder subject `00000000-0000-4000-8000-000000000000`; its result, or any error it throws, is discarded there.
 - A recovery code is bound to the account **and the address** it went to: with registered-channel delivery, a code sent to a channel that changed before the check answers `AOOTH_INVALID_CODE`.
 - The resend wait is enforced on the server, per destination (the typed identifier for recovery and signup, the account and address otherwise) and client IP: a resend inside it answers `AOOTH_RESEND_WAIT` from any state, and a new run inside it pauses on the code form without sending. Two recovery requests for the same identifier from one IP within `mfa.pincodeResendTimeoutMs` send one code. New option `mfa.pincodeMaxSendsGlobal` (10) caps the codes per destination from all IPs per `mfa.pincodeFailureWindowMs`; past it a request sends nothing.
-- New failure budgets per destination, across its codes, per `mfa.pincodeFailureWindowMs` (1 h): `mfa.pincodeMaxFailures` (10) per client IP and `mfa.pincodeMaxFailuresGlobal` (100) from all IPs. Past one, every send and check answers `429 AOOTH_CODE_LIMIT_REACHED` (new code in `AOOTH_HTTP_MESSAGES` — add it to your translations). Behind a proxy, install `rateLimitInterceptors({ trustProxy: true })` so the client IP is the forwarded one.
+- New failure budgets per destination, across its codes, per `mfa.pincodeFailureWindowMs` (1 h): `mfa.pincodeMaxFailures` (10) per client IP and `mfa.pincodeMaxFailuresGlobal` (100) from all IPs. Past one, every send and check answers `429 AOOTH_CODE_LIMIT_REACHED` (new code in `AOOTH_HTTP_MESSAGES` — add it to your translations). These budgets and the resend wait key on the client IP the HTTP app resolves, not on the rate-limit interceptor's `key`: behind a proxy, set `trustProxy` on the HTTP app (see [client IP behind a proxy](/moost/rate-limit#client-ip-behind-a-proxy); the limiter's own `trustProxy` option is deprecated since 0.2.7).
 - New bundled limit `aooth.send-user` (`10/1h` per account) on codes sent after a first factor (second factor, enrolment, link proof), enforced with `rateLimitInterceptors`. Re-tune or switch it off with `policies`.
 - Subclass overrides: `mintPin(ctx, binding, length?, ttlMs?)` takes the binding, and `verifyPin(ctx, code, binding, target)` takes the binding and the destination key and is async; a custom send calls `await claimCodeSend(target, account?)` first and sends only when it returns `true`.
 
@@ -125,7 +171,7 @@ aooth stores the [magic-link](/moost/workflows#magic-links) handles hashed; the 
 
 - `rateLimitInterceptors({ policies })` accepts only declared policy ids — the bundled ones and every `@RateLimit({ id })` — and throws on an unknown one. Import your controllers before you configure the interceptors.
 - The `GET /auth/invite/post-redemption` policy is now named `aooth.invite-post-redemption` (its 429's `params.policy`; before, `AuthController.invitePostRedemption`).
-- A new bundled limit, `aooth.send` (`20/15m` per IP), counts every anonymous send request of the auth workflow — recovery codes, magic links, signup codes. Over it the request answers the coded `429` and the run ends. Re-tune or switch it off with `policies`.
+- A new bundled limit, `aooth.send` (`20/15m` per IP), counts every anonymous send request of the auth workflow — recovery codes, magic links, signup codes. Over it the request answers the coded `429` and the run ends. Re-tune or switch it off with `policies`. It keys on the client IP the HTTP app resolves, never on the interceptor's `key` — set `trustProxy` on the HTTP app behind a proxy, or every caller shares the proxy's budget.
 
 ### Workflow state
 

@@ -153,6 +153,8 @@ The token is an opaque HMAC-signed string bound to the user (and optionally thei
 
 `revokeTrustedDevice` removes a specific token. `listTrustedDevices` returns the raw records (token, ip, issuedAt, expiresAt, name) for a "manage your devices" page.
 
+Every password change — `changePassword` and `setPassword`, so recovery, change-password, a forced change at sign-in and an admin reset alike — removes all of the user's trusted devices in the same write (since 0.2.19). Each device then asks for the second factor on its next sign-in. To drop them without a password change, write the empty list yourself: `users.update(id, { trustedDevices: [] })`.
+
 ## Masking for UI
 
 When showing the user a "send code to" picker, you want the masked target, not the raw email/phone.

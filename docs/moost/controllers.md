@@ -25,15 +25,15 @@ constructor(
 
 ## Endpoint table
 
-| Method | Path                           | Decorators                                                                                                         | Body                                       | Response                      | Notes                                                                                                                                                                                                                                                                                                                                                    |
-| ------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------ | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST` | `/auth/logout`                 | `@Public()`                                                                                                        | `AuthLogoutBody { refreshToken? }`         | `AuthOkResponse { ok: true }` | Defence-in-depth 401 if null context. Revokes the current session's whole token family (`revokeSession`), with token-level revokes as fallback, then `clearCookies()`.                                                                                                                                                                                   |
-| `POST` | `/auth/refresh`                | `@Public()` + two `@RateLimit` policies (`aooth.refresh` `150/5m` per IP, `aooth.refresh-token` `10/1m` per token) | `AuthRefreshBody { refreshToken? }`        | `AuthLoginResponse`           | Falls back to the refresh cookie. 401 on `AuthError`. Writes the rotated pair as cookies; the body carries the tokens under `exposeTokensInBody`, and always when the refresh token was sent in the body (that client already holds tokens).                                                                                                             |
-| `GET`  | `/auth/status`                 | `@Public()`                                                                                                        | —                                          | `AuthContext`                 | 401 when no context.                                                                                                                                                                                                                                                                                                                                     |
-| `POST` | `/auth/trigger`                | `@Public() @WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })`                                                          | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | The single entry-point covering `auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`, `auth/signup/flow` — for both starting and resuming. A `wfs` of any other workflow is refused with 403.                                                                                                                                                    |
-| `GET`  | `/auth/invite/post-redemption` | `@Public() @RateLimit("30/5m", { id: "aooth.invite-post-redemption" })`                                            | `?uid=<userId>`                            | `WfFinished` envelope         | Idempotent "already accepted" envelope for re-clicked invite links after the wf state row is evicted. Needs `UserService`. Unknown id and pending invite both answer the same 404.                                                                                                                                                                       |
-| `POST` | `/auth/change-password`        | `@ArbacResource("auth.change-password") @ArbacAction("self") @WfTrigger({ allow: [CHANGE_PASSWORD_WORKFLOW] })`    | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | **Gated** trigger for `auth/change-password/flow` — NOT `@Public()`, NOT in `DEFAULT_AUTH_WORKFLOWS`. 401 if unauthenticated, 403 unless the role grants `allow("auth.change-password", "*")`. The method-level `@ArbacResource` overrides the class `"auth"`. See [Workflows — Change password](./workflows#change-password-auth-change-password-flow). |
-| `POST` | `/auth/add-mfa`                | `@ArbacResource("auth.add-mfa") @ArbacAction("self") @WfTrigger({ allow: [ADD_MFA_WORKFLOW] })`                    | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | **Gated** trigger for `auth/add-mfa/flow` — the "Manage MFA" flow (add / change / remove, step-up first), the profile-maintenance twin of change-password. NOT `@Public()`, NOT in `DEFAULT_AUTH_WORKFLOWS`. 401/403 identical to above but keyed on `allow("auth.add-mfa", "*")`. See [Workflows — Manage MFA](./workflows#add-mfa-auth-add-mfa-flow).  |
+| Method | Path                           | Decorators                                                                                                                                           | Body                                       | Response                      | Notes                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------ | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/auth/logout`                 | `@Public()`                                                                                                                                          | `AuthLogoutBody { refreshToken? }`         | `AuthOkResponse { ok: true }` | Defence-in-depth 401 if null context. Revokes the current session's whole token family (`revokeSession`), with token-level revokes as fallback, then `clearCookies()`.                                                                                                                                                                                                                                                     |
+| `POST` | `/auth/refresh`                | `@Public()` + two `@RateLimit` policies (`aooth.refresh` `150/5m` per IP, `aooth.refresh-token` `10/1m` per token)                                   | `AuthRefreshBody { refreshToken? }`        | `AuthLoginResponse`           | Falls back to the refresh cookie. 401 on `AuthError`. Writes the rotated pair as cookies; the body carries the tokens under `exposeTokensInBody`, and always when the refresh token was sent in the body (that client already holds tokens).                                                                                                                                                                               |
+| `GET`  | `/auth/status`                 | `@Public()`                                                                                                                                          | —                                          | `AuthContext`                 | 401 when no context.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `POST` | `/auth/trigger`                | `@Public()` + `@RateLimit` (`aooth.trigger` `150/5m` per IP, shared with the other trigger routes) + `@WfTrigger({ allow: DEFAULT_AUTH_WORKFLOWS })` | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | The single entry-point covering `auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`, `auth/signup/flow` — for both starting and resuming. A `wfs` of any other workflow is refused with 403. Re-tune the limit with `rateLimitInterceptors({ policies: { "aooth.trigger": … } })` ([bundled limits](./rate-limit#bundled-limits)).                                                                                |
+| `GET`  | `/auth/invite/post-redemption` | `@Public() @RateLimit("30/5m", { id: "aooth.invite-post-redemption" })`                                                                              | `?uid=<userId>`                            | `WfFinished` envelope         | Idempotent "already accepted" envelope for re-clicked invite links after the wf state row is evicted. Needs `UserService`. Unknown id and pending invite both answer the same 404.                                                                                                                                                                                                                                         |
+| `POST` | `/auth/change-password`        | `@ArbacResource("auth.change-password") @ArbacAction("self") @WfTrigger({ allow: [CHANGE_PASSWORD_WORKFLOW] })`                                      | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | **Gated** trigger for `auth/change-password/flow` — NOT `@Public()`, NOT in `DEFAULT_AUTH_WORKFLOWS`. 401 if unauthenticated, 403 unless the role grants `allow("auth.change-password", "*")`. The method-level `@ArbacResource` overrides the class `"auth"`. Rate limited by the shared `aooth.trigger` policy (since 0.2.19). See [Workflows — Change password](./workflows#change-password-auth-change-password-flow). |
+| `POST` | `/auth/add-mfa`                | `@ArbacResource("auth.add-mfa") @ArbacAction("self") @WfTrigger({ allow: [ADD_MFA_WORKFLOW] })`                                                      | `{ wfs?, input?: { action?, formData? } }` | `WfFinished` envelope         | **Gated** trigger for `auth/add-mfa/flow` — the "Manage MFA" flow (add / change / remove, step-up first), the profile-maintenance twin of change-password. NOT `@Public()`, NOT in `DEFAULT_AUTH_WORKFLOWS`. 401/403 identical to above but keyed on `allow("auth.add-mfa", "*")`. Rate limited by the shared `aooth.trigger` policy (since 0.2.19). See [Workflows — Manage MFA](./workflows#add-mfa-auth-add-mfa-flow).  |
 
 `DEFAULT_AUTH_WORKFLOWS` is the exported `as const` allow-list:
 
@@ -199,21 +199,12 @@ The most common subclass extends the workflow allow-list. Two patterns:
 ### Pattern A — override `triggerWf` with a wider `allow`
 
 ```ts
-import { AuthController, DEFAULT_AUTH_WORKFLOWS, Public, WfTrigger } from "@aooth/auth-moost";
-import { AuthCredential } from "@aooth/auth";
-import { UserService } from "@aooth/user";
-import { Inherit, Controller, Optional } from "moost";
-import { Post } from "@moostjs/event-http";
+import { AuthController, DEFAULT_AUTH_WORKFLOWS, WfTrigger } from "@aooth/auth-moost";
+import { Controller, Inherit } from "moost";
 
 @Inherit()
 @Controller("auth")
 class MyAuthController extends AuthController {
-  constructor(auth: AuthCredential, @Optional() users?: UserService) {
-    super(auth, users); // forward both so post-redemption keeps working
-  }
-
-  @Post("trigger")
-  @Public()
   @WfTrigger({
     allow: [...DEFAULT_AUTH_WORKFLOWS, "project.handover", "tenant.onboard"],
   })
@@ -223,27 +214,35 @@ class MyAuthController extends AuthController {
 }
 ```
 
+The override keeps everything else the base method declares — `@Post("trigger")`, `@Public()` and the [`aooth.trigger`](./rate-limit#bundled-limits) rate limit — and the constructor is inherited too. Tune that limit with `rateLimitInterceptors({ policies: { "aooth.trigger": … } })`; a `@RateLimit` on the override would replace it instead.
+
 ::: warning `@Inherit()` is mandatory on the subclass
-Without `@Inherit()`, moost re-scans method decorators only on the subclass body and the unoverridden endpoints (`logout`, `refresh`, `status`) disappear from the route table. The `@Inherit()` decorator flows the parent class's `@Get('status')` / `@Post('logout')` / `@Post('refresh')` metadata down.
+Without `@Inherit()`, moost re-scans method decorators only on the subclass body and the unoverridden endpoints (`logout`, `refresh`, `status`) disappear from the route table. The `@Inherit()` decorator flows the parent class's `@Get('status')` / `@Post('logout')` / `@Post('refresh')` metadata down, and merges the parent's metadata under a decorated override's own.
 :::
 
 ### What a re-decorated trigger inherits {#trigger-override-semantics}
 
 The override's `@WfTrigger({...})` **replaces** the base route's trigger options as a whole: its `allow` is the only list checked (it can narrow as well as widen the base list), and its hooks (`renderEnvelope`, `around`, …) are the only route-level hooks. The trigger still runs once per request. Repeat any base option you want to keep. An override without its own `@WfTrigger` keeps the base route's options unchanged.
 
-### Pattern B — replace `triggerWf` entirely
+### Pattern B — answer some requests yourself
 
-If you need conditional logic — e.g. routing to a different wf based on a header — return a non-`undefined` value from your override; the after-interceptor will skip the default `handle()` dispatch and use your return value as the response.
+To answer some requests yourself — e.g. refuse them based on a header — put the logic in the override. Whatever it returns other than `undefined` (or throws) is the response, and the workflow trigger is skipped; `undefined` falls through to the bundled trigger. The override needs no decorators: `@Post("trigger")`, `@Public()`, `@WfTrigger` and the `aooth.trigger` limit are inherited.
 
 ```ts
-@Post("trigger")
-@Public()
-@WfTrigger({ allow: [...DEFAULT_AUTH_WORKFLOWS] })
-override async triggerWf(): Promise<unknown> {
-  const tenant = useRequest().rawRequest.headers["x-tenant"];
-  if (tenant === "demo") return { wfid: "demo.login.short-circuit" };
-  // returning undefined falls through to the default WfTriggerProvider.handle()
-  return undefined;
+import { AuthController } from "@aooth/auth-moost";
+import { HttpError } from "@moostjs/event-http";
+import { useRequest } from "@wooksjs/event-http";
+import { Controller, Inherit } from "moost";
+
+@Inherit()
+@Controller("auth")
+class MyAuthController extends AuthController {
+  override triggerWf(): unknown {
+    if (useRequest().headers["x-tenant"] === undefined) {
+      throw new HttpError(400, "Missing tenant");
+    }
+    return undefined; // the bundled trigger handles the request
+  }
 }
 ```
 

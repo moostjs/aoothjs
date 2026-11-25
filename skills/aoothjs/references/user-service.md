@@ -20,20 +20,20 @@
 
 `UserServiceConfig` resolves with these defaults (`user-service.ts:36`):
 
-| Key                      | Default    | Notes                                                                                                                                                                          |
-| ------------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `password.pepper`        | `""`       | Prefixed to every password before scrypt. Irrecoverable if lost.                                                                                                               |
-| `password.historyLength` | `0`        | `0` disables password-history check.                                                                                                                                           |
-| `password.scryptN`       | `16384`    | Stored on the hash string; per-hash forward compat on `verify`.                                                                                                                |
-| `password.scryptR`       | `8`        |                                                                                                                                                                                |
-| `password.scryptP`       | `1`        |                                                                                                                                                                                |
-| `password.keyLength`     | `64`       | Hash output bytes.                                                                                                                                                             |
-| `password.policies`      | `[]`       | Array of `PasswordPolicyDef` or `PasswordPolicyInstance` — normalized on init.                                                                                                 |
-| `lockout.threshold`      | `0`        | `0` disables lockout.                                                                                                                                                          |
-| `lockout.duration`       | `0`        | `0` produces permanent locks when the threshold trips.                                                                                                                         |
-| `clock`                  | `Date.now` | Injectable for tests.                                                                                                                                                          |
-| `deviceTrust.secret`     | _(unset)_  | Required for trusted-device AND seen-device APIs — those throw if absent; `hasDeviceTrustSecret()` is the non-throwing probe.                                                  |
-| `emailField`             | _(unset)_  | Name of the `@aooth.user.email`-annotated column — the UNPROVEN last link in `getCorrespondenceEmail`'s chain. Thread from `getAoothUserHandleSpec(Model).emailField` at boot. |
+| Key                      | Default      | Notes                                                                                                                                                                          |
+| ------------------------ | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `password.pepper`        | `""`         | Prefixed to every password before scrypt. Irrecoverable if lost.                                                                                                               |
+| `password.historyLength` | `0`          | `0` disables password-history check.                                                                                                                                           |
+| `password.scryptN`       | `16384`      | Stored on the hash string; per-hash forward compat on `verify`.                                                                                                                |
+| `password.scryptR`       | `8`          |                                                                                                                                                                                |
+| `password.scryptP`       | `1`          |                                                                                                                                                                                |
+| `password.keyLength`     | `64`         | Hash output bytes.                                                                                                                                                             |
+| `password.policies`      | `[]`         | Array of `PasswordPolicyDef` or `PasswordPolicyInstance` — normalized on init.                                                                                                 |
+| `lockout.threshold`      | `10` / `0`   | `lockout` omitted → `10` (with `duration` 15 min; since 0.2.19). A passed `lockout` object → each missing field is `0`; `{ threshold: 0 }` disables lockout.                   |
+| `lockout.duration`       | 15 min / `0` | `0` produces permanent locks when the threshold trips (so `{ threshold: 5 }` locks permanently).                                                                               |
+| `clock`                  | `Date.now`   | Injectable for tests.                                                                                                                                                          |
+| `deviceTrust.secret`     | _(unset)_    | Required for trusted-device AND seen-device APIs — those throw if absent; `hasDeviceTrustSecret()` is the non-throwing probe.                                                  |
+| `emailField`             | _(unset)_    | Name of the `@aooth.user.email`-annotated column — the UNPROVEN last link in `getCorrespondenceEmail`'s chain. Thread from `getAoothUserHandleSpec(Model).emailField` at boot. |
 
 `getConfig()` returns the resolved config as `Readonly<ResolvedConfig>`; `getPasswordHasher()` exposes the constructed `PasswordHasher` for escape-hatch use.
 
@@ -75,6 +75,10 @@ Deep-merge `patch` via `store.update(id, { set })`, then re-read. Top-level fiel
 
 Hard-delete by `id`. Throws `NOT_FOUND` when no row matched (`store.delete` returned `false`). To cancel a pending invite use `revokeInvitation` instead.
 
+### `refreshInvitation(id, patch) → Promise<boolean>` (since 0.2.19)
+
+Re-invite / resend write in ONE CAS (`store.withCas`): applies `patch` (`{ set }`-style deep merge — new `account.inviteNonce`, and for a re-invite roles / extras / `invitedBy`) only while `account.pendingInvitation` is still set → `true`. Accepted (before or during the call) → `false`, NOTHING written. Unknown id → `NOT_FOUND`; retries saturated under concurrent writes → `CAS_EXHAUSTED` (like every `withCas` write). The invite workflow's `create-user` uses it for both `'reuse'` and `'resend'` (lost race → 409, no email; a row revoked between its lookup and the refresh = vanished → resend 410 `INVITE_CANCELLED`, re-invite creates anew; `CAS_EXHAUSTED` → 409 `AOOTH_USER_CAS_EXHAUSTED`). See [invites.md](./invites.md) #15.
+
 ### `revokeInvitation(id) → Promise<boolean>`
 
 Cancel a pending invite: one CAS write rotates `account.inviteNonce` while `account.pendingInvitation` is still set (a racing `acceptInvitation` then fails), then deletes the row only while its `version` is unchanged (`store.delete(id, { expectedVersion })`) → `true`. Not pending (accepted / never invited) or changed meanwhile (re-invite, accept) → `false`, nothing deleted. Unknown id → `NOT_FOUND`. See [invites.md](./invites.md) #13.
@@ -99,11 +103,11 @@ No side effects, bypasses lockout. Useful for re-auth confirmations (e.g. "confi
 2. `current` mismatch → `INVALID_CREDENTIALS`.
 3. `checkPolicies(new, passwordData)` — failure throws `POLICY_VIOLATION` with `details.policies = [{description, passed}, ...]`.
 4. Parallel `Promise.all` verifies `new` against `current.hash` + every `password.history[]` entry — any match throws `PASSWORD_IN_HISTORY`.
-5. Persist new hash + rotate history (length capped at `historyLength`; `0` keeps history empty).
+5. Persist new hash + rotate history (length capped at `historyLength`; `0` keeps history empty) AND empty `trustedDevices` in the same write (since 0.2.19 — every remembered device asks for MFA again; `seenDevices` untouched).
 
 ### `setPassword(id, new) → Promise<void>`
 
-Admin-style. Same policy + history checks, no current-password verification. Neither `setPassword` nor `changePassword` touches sessions → an admin reset / hand-built change MUST follow with `auth.revokeAllForUser(id)` or old-password sessions stay valid (bundled change-password, recovery + forced change at login already revoke).
+Admin-style. Same policy + history checks, no current-password verification; also empties `trustedDevices` (since 0.2.19). Neither `setPassword` nor `changePassword` touches sessions → an admin reset / hand-built change MUST follow with `auth.revokeAllForUser(id)` or old-password sessions stay valid (bundled change-password, recovery + forced change at login already revoke).
 
 ## Account lifecycle
 

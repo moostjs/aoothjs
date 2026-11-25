@@ -12,7 +12,7 @@ new UserService<T>(store: UserStore<T>, config?: UserServiceConfig)
 
 Orchestrator for credential CRUD, login, lockout, password policy, MFA, and trusted devices. Generic `T` adds custom user columns to every result. See [UserService](/user/service).
 
-Async methods (selected): `createUser`, `getUser(id)`, `getUserSnapshot(id, scope)` (since 0.1.78 — `getUser` memoized per scope until a write; see [UserService](/user/service#getusersnapshot-onuserwrite)), `findByHandle(handle)`, `findByIdentifier(value)`, `login(handle, password, lockoutOverride?)` (every early exit — unknown / inactive / locked — still spends one password hash, so timing does not reveal the account), `assertCanSignIn(id)` (since 0.2.6 — `login`'s account checks without a password, for a magic-link sign-in: throws `NOT_FOUND` / `INACTIVE` / `LOCKED`, lifts an expired lock, returns the row), `recordLogin(id) → Promise<number>` (stamp `lastLogin` + reset `failedLoginAttempts`; the single login-stamp writer — called by `login`, and by passwordless sign-ins that bypass it), `verifyPassword(id, …)`, `changePassword(id, …)`, `setPassword(id, …)`, `deleteUser(id)`, `update(id, patch)`, `activateAccount(id)`, `acceptInvitation(id, nonce) → Promise<boolean>` (since 0.2 — compare-and-set acceptance of a pending invite), `revokeInvitation(id) → Promise<boolean>` (delete a still-pending invited account; `false` when already accepted — see [Invites](/moost/invites#revoking-an-invite)), `deactivateAccount(id)`, `lockAccount(id, …)`, `unlockAccount(id)`, `checkPolicies`, `addMfaMethod(id, …)`, `confirmMfaMethod(id, …)`, `removeMfaMethod(id, …)`, `setDefaultMfaMethod(id, …)`, `setMfaAutoSend(id, …)`, `verifyMfa(id, code, config?, lockoutOverride?)`, `verifyTotpSetupCode(id, …)`, `addTrustedDevice(id, …)`, `verifyTrustedDevice(userId, …)`, `revokeTrustedDevice(id, …)`, `listTrustedDevices(id)`. Sync: `onUserWrite(listener) → unsubscribe` (since 0.1.78 — settled writes with the user id).
+Async methods (selected): `createUser`, `getUser(id)`, `getUserSnapshot(id, scope)` (since 0.1.78 — `getUser` memoized per scope until a write; see [UserService](/user/service#getusersnapshot-onuserwrite)), `findByHandle(handle)`, `findByIdentifier(value)`, `login(handle, password, lockoutOverride?)` (every early exit — unknown / inactive / locked — still spends one password hash, so timing does not reveal the account), `assertCanSignIn(id)` (since 0.2.6 — `login`'s account checks without a password, for a magic-link sign-in: throws `NOT_FOUND` / `INACTIVE` / `LOCKED`, lifts an expired lock, returns the row), `recordLogin(id) → Promise<number>` (stamp `lastLogin` + reset `failedLoginAttempts`; the single login-stamp writer — called by `login`, and by passwordless sign-ins that bypass it), `verifyPassword(id, …)`, `changePassword(id, …)`, `setPassword(id, …)` (both drop every trusted device since 0.2.19), `deleteUser(id)`, `update(id, patch)`, `activateAccount(id)`, `acceptInvitation(id, nonce) → Promise<boolean>` (since 0.2 — compare-and-set acceptance of a pending invite), `refreshInvitation(id, patch) → Promise<boolean>` (since 0.2.19 — compare-and-set re-invite / resend write: applies `patch` only while the invite is still pending; `false` when it was accepted, nothing written), `revokeInvitation(id) → Promise<boolean>` (delete a still-pending invited account; `false` when already accepted — see [Invites](/moost/invites#revoking-an-invite)), `deactivateAccount(id)`, `lockAccount(id, …)`, `unlockAccount(id)`, `checkPolicies`, `addMfaMethod(id, …)`, `confirmMfaMethod(id, …)`, `removeMfaMethod(id, …)`, `setDefaultMfaMethod(id, …)`, `setMfaAutoSend(id, …)`, `verifyMfa(id, code, config?, lockoutOverride?)`, `verifyTotpSetupCode(id, …)`, `addTrustedDevice(id, …)`, `verifyTrustedDevice(userId, …)`, `revokeTrustedDevice(id, …)`, `listTrustedDevices(id)`. Sync: `onUserWrite(listener) → unsubscribe` (since 0.1.78 — settled writes with the user id).
 
 > **Identity keying:** every method takes the stable surrogate **`id`** (the token subject), **except** `login`, which resolves a **handle** via `findByHandle` — the base `username`, then any consumer-declared secondary handle fields (e.g. `email`/`phone`) in configured order. `findByHandle` (login) and `findByIdentifier` (permissive admin/recovery) are the two handle-based reads. See [UserService](/user/service) and [Credentials Model](/user/credentials).
 
@@ -220,6 +220,7 @@ The full record model lives at `src/types.ts`. See [Credentials Model](/user/cre
 ```ts
 interface UserServiceConfig {
   password?: PasswordConfig;
+  /** Omitted: { threshold: 10, duration: 15 min } (since 0.2.19). Passed: each missing field is 0. */
   lockout?: LockoutConfig;
   /** Injectable clock for testability. Defaults to Date.now */
   clock?: () => number;
@@ -229,9 +230,9 @@ interface UserServiceConfig {
   emailField?: string;
 }
 interface LockoutConfig {
-  /** Lock after this many failed attempts (0 = disabled, default) */
+  /** Lock after this many failed attempts (0 = disabled) */
   threshold?: number;
-  /** Lock duration in ms (0 = permanent, default) */
+  /** Lock duration in ms (0 = permanent) */
   duration?: number;
 }
 interface PasswordConfig {

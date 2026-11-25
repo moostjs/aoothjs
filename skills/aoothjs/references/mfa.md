@@ -156,7 +156,7 @@ await svc.addTrustedDevice("alice", record);
 const trusted = await svc.verifyTrustedDevice("alice", req.cookies.dt, req.ip);
 ```
 
-**Token:** opaque HMAC-signed string bound to the user (and optionally their IP). The HMAC key is `config.deviceTrust.secret` — `issue` / `verify` throw a plain `Error` if it's unset. Expiry (`clock() + ttlMs`) is enforced on `verifyTrustedDevice`. Persistence: `addTrustedDevice` appends, `revokeTrustedDevice` filters, `listTrustedDevices` returns the full list.
+**Token:** opaque HMAC-signed string bound to the user (and optionally their IP). The HMAC key is `config.deviceTrust.secret` — `issue` / `verify` throw a plain `Error` if it's unset. Expiry (`clock() + ttlMs`) is enforced on `verifyTrustedDevice`. Persistence: `addTrustedDevice` appends, `revokeTrustedDevice` filters, `listTrustedDevices` returns the full list. Every password change (`changePassword` / `setPassword` — recovery, change-password, forced change, admin reset) empties the list in the same write (since 0.2.19); to drop them without one, `users.update(id, { trustedDevices: [] })`.
 
 `verifyTrustedDevice` succeeds when **all** hold:
 

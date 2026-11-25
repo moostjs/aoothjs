@@ -123,8 +123,7 @@ Method decorator used on the `AuthController.triggerWf()` endpoint (and your sub
 @Inherit()
 @Controller("auth")
 class MyAuthController extends AuthController {
-  @Post("trigger")
-  @Public()
+  // `@Post("trigger")`, `@Public()` and the rate limit are inherited
   @WfTrigger({ allow: [...DEFAULT_AUTH_WORKFLOWS, "project.handover"] })
   override triggerWf(): void {
     /* intentionally empty */

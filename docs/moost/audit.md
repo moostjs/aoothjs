@@ -30,8 +30,15 @@ Two practical placements:
 Emit from inside a `@Step` body (or an overridden `resolveXxx` / `deliver`) where you have the relevant context. For example, record a successful login by overriding the finalize step in your subclass and calling your own emitter:
 
 ```ts
-import { type AuditEvent, AuthWorkflow } from "@aooth/auth-moost";
-import { useHeaders } from "@wooksjs/event-http";
+import { AuthCredential } from "@aooth/auth";
+import {
+  type AuditEvent,
+  type AuthDeliveryPayload,
+  AuthWorkflow,
+  ConsentStore,
+} from "@aooth/auth-moost";
+import { UserService } from "@aooth/user";
+import { Controller, Inherit } from "moost";
 
 const writeAudit = (e: AuditEvent) => auditTable.insert({ ...e, at: Date.now() });
 
@@ -41,13 +48,14 @@ class MyAuth extends AuthWorkflow {
   constructor(users: UserService, auth: AuthCredential, consents: ConsentStore) {
     super({}, users, auth, consents);
   }
-  // override a finalize / step method and emit your event
-  protected override async deliver(payload) {
+  // override a step or hook method and emit your event
+  protected override async deliver(payload: AuthDeliveryPayload): Promise<void> {
     await writeAudit({ kind: `deliver.${payload.kind}`, workflow: "auth", ...this.eventMeta() });
     await super.deliver(payload);
   }
-  private eventMeta() {
-    return { userAgent: useHeaders().get("user-agent") };
+  private eventMeta(): Pick<AuditEvent, "ip" | "userAgent"> {
+    // the client IP the HTTP app resolves (its `trustProxy`) and the User-Agent header
+    return { ip: this.resolveClientIp(), userAgent: this.resolveUserAgent() };
   }
 }
 ```
@@ -58,13 +66,13 @@ For uniform request-level auditing across **all** routes (not just auth), a `def
 
 ## Populating the standard fields
 
-| Field       | Source                                                                                                                    |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `userId`    | `useAuth().getAuthContext()?.userId` (or the workflow's `ctx.subject`).                                                   |
-| `workflow`  | The wfid (`auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`, `auth/signup/flow`, `auth/change-password/flow`). |
-| `ip`        | `useRequest().rawRequest.socket.remoteAddress` at the originating HTTP event.                                             |
-| `userAgent` | `useHeaders().get('user-agent')` at the originating HTTP event.                                                           |
-| `kind`      | Your event-specific discriminant.                                                                                         |
+| Field       | Source                                                                                                                                                                                                                                                           |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `userId`    | `useAuth().getAuthContext()?.userId` (or the workflow's `ctx.subject`).                                                                                                                                                                                          |
+| `workflow`  | The wfid (`auth/login/flow`, `auth/invite/start`, `auth/recovery/flow`, `auth/signup/flow`, `auth/change-password/flow`).                                                                                                                                        |
+| `ip`        | `useRequest().getIp()` at the originating HTTP event — in an `AuthWorkflow` subclass `this.resolveClientIp()`. It is the client IP the HTTP app resolves, so it follows the app's `trustProxy` (behind a proxy, set it — otherwise this is the proxy's address). |
+| `userAgent` | `useHeaders()["user-agent"]` at the originating HTTP event (a plain header object) — in an `AuthWorkflow` subclass `this.resolveUserAgent()`.                                                                                                                    |
+| `kind`      | Your event-specific discriminant.                                                                                                                                                                                                                                |
 
 ## Extending the event shape
 

@@ -35,13 +35,13 @@ POST /auth/trigger  { "wfs": "<wfs>", "input": { "formData": { "email": "ann@exa
 
 The admin phase runs only for a caller whose role grants the `auth.invite` resource (action `start`). It pauses on `InviteForm` (email + roles; roles are validated against `getAvailableRoles()`), creates the pending user, then delivers the link.
 
-| Seam                                       | Receives                                                     | Use it to                                                                                                                            |
-| ------------------------------------------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `resolveInviteContext(ctx, startFormData)` | the start request's `input.formData`, plus the session       | resolve app context once (e.g. `{ tenantId }`). Kept server-side as `ctx.admin.app`. Throw an `HttpError` to refuse the invite.      |
-| `forms.invite`                             | —                                                            | a form that `extends InviteForm` with extra fields (e.g. a display name). The extra fields are kept server-side as `ctx.admin.form`. |
-| `inferAdminRoles(input)`                   | `{ email, invitedBy?, app?, form? }`                         | derive roles server-side; unioned with the admin-picked roles.                                                                       |
-| `duplicateInviteCheck(input)`              | `{ email, existingUser, invitedBy?, app?, form?, pending? }` | decide `'allow' \| 'reject' \| 'reuse'` — see [Re-invites](#re-invites).                                                             |
-| `prepareUser(input)`                       | `{ email, roles, invitedBy?, app?, form? }`                  | return the extra columns of the new user row.                                                                                        |
+| Seam                                       | Receives                                                              | Use it to                                                                                                                            |
+| ------------------------------------------ | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `resolveInviteContext(ctx, startFormData)` | the start request's `input.formData`, plus the session                | resolve app context once (e.g. `{ tenantId }`). Kept server-side as `ctx.admin.app`. Throw an `HttpError` to refuse the invite.      |
+| `forms.invite`                             | —                                                                     | a form that `extends InviteForm` with extra fields (e.g. a display name). The extra fields are kept server-side as `ctx.admin.form`. |
+| `inferAdminRoles(input)`                   | `{ email, invitedBy?, app?, form? }`                                  | derive roles server-side; unioned with the admin-picked roles.                                                                       |
+| `duplicateInviteCheck(input)`              | `{ email, existingUser, invitedBy?, app?, form?, pending?, resend? }` | decide `'allow' \| 'reject' \| 'reuse' \| 'resend'` — see [Re-invites](#re-invites).                                                 |
+| `prepareUser(input)`                       | `{ email, roles, invitedBy?, app?, form? }`                           | return the extra columns of the new user row.                                                                                        |
 
 An extended admin form, wired with `forms: { invite: AppInviteForm }`:
 
@@ -93,15 +93,42 @@ By default the invited email is the login handle. With `inviteUsername: 'choose'
 
 ## Re-invites {#re-invites}
 
-Inviting an email that is still pending is the "resend" — there is no separate resend flow. The default `duplicateInviteCheck` verdict for a pending row is `'reuse'`; an accepted account is `'reject'` (`AOOTH_USER_ALREADY_EXISTS`).
+Inviting an email that is still pending is a **re-invite**: the default `duplicateInviteCheck` verdict for a pending row is `'reuse'`; an accepted account is `'reject'` (`AOOTH_USER_ALREADY_EXISTS`). A re-invite sends a fresh link and updates the pending account:
+
+- **Roles** — the re-invite's roles (picked, plus any `inferAdminRoles` adds) replace the old ones. A re-invite with no roles keeps the old ones, unless its `prepareUser` result has a `roles` key (an extra like any other, below).
+- **Extras** — the re-invite's `prepareUser` result is written over the account: the keys it returns take their new values, keys it no longer returns keep their old values.
+- **Issuer** — `account.invitedBy` becomes the re-inviting user.
+
+The update is one compare-and-set write that applies only while the invite is still pending (`UserService.refreshInvitation`): a re-invite that meets an account accepted in the meantime — even one accepted while the re-invite runs — answers `409` (`AOOTH_USER_ALREADY_EXISTS`), sends nothing and leaves the account exactly as accepted.
+
+### Resending an invite as it is {#resending-an-invite}
+
+To send a fresh link without restating the invite — a "Resend invite" action in an admin UI — submit the admin form with the `resend` action and the pending invitee's email. `InviteForm` declares it as a data-carrying action (`@wf.action.withData`, never rendered), so a form that `extends InviteForm` has it too, and `<AsWfForm>`'s `action("resend", { email })` sends exactly this:
+
+```bash
+# 1. start the invite flow as the issuer
+POST /auth/trigger  { "wfid": "auth/invite/start" }
+# 2. submit the pending invitee's email with the resend action
+POST /auth/trigger  { "wfs": "<wfs>", "input": { "action": "resend", "formData": { "email": "ann@example.com" } } }
+```
+
+The default `duplicateInviteCheck` answers this submit with `'resend'` (since 0.2.19): the account keeps its roles, extras and `invitedBy`, and a fresh link goes out through the configured `inviteDelivery`; roles submitted with it are ignored. An invite accepted meanwhile answers `409` (`AOOTH_USER_ALREADY_EXISTS`); one revoked meanwhile — or never issued — answers `410` (`INVITE_CANCELLED`) and creates and sends nothing. Your start request carries the same app context (`input.formData`) as for an invite.
+
+What to know before you offer it:
+
+- **Your hooks don't run.** A resend calls neither `prepareUser` nor `inferAdminRoles`. An authorization check you do there (tenant, scope) must also be done in `duplicateInviteCheck`, which sees `resend: true`.
+- **Any issuer can resend any pending invite.** By default whoever holds the invite permission can resend — and so replace the link of — any pending invite, whoever issued it. A multi-tenant app scopes that in `duplicateInviteCheck` (below).
+- **No per-address cooldown.** A resend is limited only by the trigger route's [`aooth.trigger`](./rate-limit#bundled-limits) limit; each one sends a message.
+
+**Kept roles must be grantable.** On a resend, and on a re-invite that picks no roles, the roles already on the pending invite are kept — so they are checked like picked roles: every one must be among the issuer's available roles, otherwise the form re-pauses with `AOOTH_INVALID_ROLE` on `roles` and nothing is sent. The check applies when the role picker is on with a whitelist: `resolveAdminForm` returns `collectRoles: true` (the default) and `getAvailableRoles()` returns a list (`invitableRoles` set, or your override). It does not apply with `collectRoles: false` (roles come from your server hooks then) or without a whitelist (`getAvailableRoles()` returns `undefined`, the open default that logs a warning).
 
 ::: warning Since 0.2: a re-invite supersedes every earlier link
-Each issued link carries a fresh marker, stored on the account as `account.inviteNonce`; a `'reuse'` rotates it. A link issued **before** the re-invite then answers **`410` with `code: "INVITE_REPLACED"`** ("This invite was replaced by a newer one") — also when it was opened before the re-invite and is still paused, and also after the newer link was accepted. It never sets a password, a username, an MFA factor or a consent record, and never activates the account: every bundled accept-phase write re-checks that the link is still the current one, and the final acceptance is a single compare-and-set (`UserService.acceptInvitation`), so two links of one account can never both complete. Before 0.2 the old link stayed valid until its own TTL. `'reuse'` still **replaces** the pending row's roles and `prepareUser` extras with the new invite's — nothing is merged.
+Each issued link carries a fresh marker, stored on the account as `account.inviteNonce`; a `'reuse'` or a `'resend'` rotates it. A link issued **before** then answers **`410` with `code: "INVITE_REPLACED"`** ("This invite was replaced by a newer one") — also when it was opened before the re-invite and is still paused, and also after the newer link was accepted. It never sets a password, a username, an MFA factor or a consent record, and never activates the account: every bundled accept-phase write re-checks that the link is still the current one, and the final acceptance is a single compare-and-set (`UserService.acceptInvitation`), so two links of one account can never both complete. Before 0.2 the old link stayed valid until its own TTL.
 :::
 
 `@aooth/user` adds two optional account fields for this, `account.invitedBy` and `account.inviteNonce` — **run your schema sync after upgrading** (two nullable columns). Rows created before the upgrade have no marker; their links keep working until the next re-invite (on SQL stores since 0.2.7 — 0.2.0–0.2.6 answered them `410 INVITE_REPLACED`).
 
-In a multi-tenant app, refuse taking over a pending invite that another issuer (or tenant) owns. `pending.invitedBy` is the issuer of the invite already on the row:
+In a multi-tenant app, refuse taking over (or resending) a pending invite that another issuer (or tenant) owns. `pending.invitedBy` is the issuer of the invite already on the row; `resend` is `true` for a submit with the `resend` action:
 
 ```ts
 protected override duplicateInviteCheck(input: {
@@ -110,10 +137,13 @@ protected override duplicateInviteCheck(input: {
   invitedBy?: string;
   app?: Record<string, unknown>;
   pending?: { invitedBy?: string };
+  resend?: boolean;
 }) {
+  const own = input.pending !== undefined && input.pending.invitedBy === input.invitedBy;
+  if (input.resend) return own ? "resend" : "reject";
   if (!input.existingUser) return "allow";
   if (!input.pending) return "reject"; // already accepted
-  return input.pending.invitedBy === input.invitedBy ? "reuse" : "reject";
+  return own ? "reuse" : "reject";
 }
 ```
 
@@ -261,7 +291,7 @@ The `HttpError` bodies carry the message `code` next to the text, so an SPA can 
 - **DO** validate tenant / scope input in `resolveInviteContext`; it comes from the client's start request.
 - **DO** run your schema sync after upgrading (`account.invitedBy`, `account.inviteNonce`).
 - **DON'T** replace `WfTriggerProvider.outlets` without keeping `createInviteOutlet()` if you use `'deliver'` or `'return-link'`.
-- **DON'T** build a separate "resend invite" flow — invite the same email again.
+- **DON'T** build a separate "resend invite" flow, or re-send a stored link — submit the admin form with the [`resend` action](#resending-an-invite); re-invite the same email to change its roles.
 - **DON'T** read the workflow-state table yourself to show invite details — use [`peekInvite`](#peek-invite); it applies the store's handle hashing and the replaced-invite check.
 - **DON'T** gate a link with a `peekInvite` / `peek()` call of your own in front of the trigger — refuse it in [`beforeResume`](#before-resume), which runs after the access lists, right before the link is consumed.
 - **DON'T** revoke with `deleteUser` — it deletes an account even when its invite was accepted meanwhile; use `revokeInvitation`.
