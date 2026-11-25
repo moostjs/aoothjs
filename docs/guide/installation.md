@@ -52,13 +52,13 @@ Every `@atscript/*`, `@moostjs/*`, `@wooksjs/*` and `moost` peer is pinned to th
 
 | Peer                    | Required when                              |
 | ----------------------- | ------------------------------------------ |
-| `@atscript/db ^0.1.187` | optional — using `@aooth/user/atscript-db` |
+| `@atscript/db ^0.1.188` | optional — using `@aooth/user/atscript-db` |
 
 ### `@aooth/auth`
 
 | Peer                    | Required when                              |
 | ----------------------- | ------------------------------------------ |
-| `@atscript/db ^0.1.187` | optional — using `@aooth/auth/atscript-db` |
+| `@atscript/db ^0.1.188` | optional — using `@aooth/auth/atscript-db` |
 
 `jose ^6.2.3` is shipped as a regular dependency (not a peer) since `CredentialStoreJwt` always uses it — no manual install required.
 
@@ -80,14 +80,14 @@ Single dependency — `@aooth/arbac-core`. Re-exports everything from it; no add
 
 | Peer                           | Required when                                                                  |
 | ------------------------------ | ------------------------------------------------------------------------------ |
-| `moost ^0.7.7`                 | always                                                                         |
-| `@moostjs/event-http ^0.7.7`   | always                                                                         |
-| `@moostjs/event-wf ^0.7.7`     | always — workflows are mandatory for the bundled `AuthController`              |
-| `@wooksjs/event-core ^0.8.4`   | always                                                                         |
-| `@wooksjs/event-http ^0.8.4`   | always                                                                         |
-| `@wooksjs/http-body ^0.8.4`    | always                                                                         |
-| `@atscript/moost-wf ^0.1.181`  | always — provides `formInputInterceptor`, `AsWfStore`, the form-input plumbing |
-| `@atscript/typescript ^0.2.15` | optional — using the `/atscript` subpath                                       |
+| `moost ^0.7.8`                 | always                                                                         |
+| `@moostjs/event-http ^0.7.8`   | always                                                                         |
+| `@moostjs/event-wf ^0.7.8`     | always — workflows are mandatory for the bundled `AuthController`              |
+| `@wooksjs/event-core ^0.8.5`   | always                                                                         |
+| `@wooksjs/event-http ^0.8.5`   | always                                                                         |
+| `@wooksjs/http-body ^0.8.5`    | always                                                                         |
+| `@atscript/moost-wf ^0.1.182`  | always — provides `formInputInterceptor`, `AsWfStore`, the form-input plumbing |
+| `@atscript/typescript ^0.2.16` | optional — using the `/atscript` subpath                                       |
 
 `@aooth/auth`, `@aooth/user`, `@aooth/idp` and `@aooth/arbac-moost` are regular dependencies, installed with it.
 
@@ -95,12 +95,12 @@ Single dependency — `@aooth/arbac-core`. Re-exports everything from it; no add
 
 | Peer                           | Required when                                                          |
 | ------------------------------ | ---------------------------------------------------------------------- |
-| `moost ^0.7.7`                 | always                                                                 |
-| `@moostjs/event-http ^0.7.7`   | always                                                                 |
-| `@wooksjs/event-core ^0.8.4`   | always                                                                 |
-| `@atscript/db ^0.1.187`        | optional — using `AsArbacDbController` / `AsArbacDbReadableController` |
-| `@atscript/moost-db ^0.1.187`  | optional — same                                                        |
-| `@atscript/typescript ^0.2.15` | optional — using the `/atscript` subpath (`AtscriptArbacUserProvider`) |
+| `moost ^0.7.8`                 | always                                                                 |
+| `@moostjs/event-http ^0.7.8`   | always                                                                 |
+| `@wooksjs/event-core ^0.8.5`   | always                                                                 |
+| `@atscript/db ^0.1.188`        | optional — using `AsArbacDbController` / `AsArbacDbReadableController` |
+| `@atscript/moost-db ^0.1.188`  | optional — same                                                        |
+| `@atscript/typescript ^0.2.16` | optional — using the `/atscript` subpath (`AtscriptArbacUserProvider`) |
 
 `@aooth/arbac`, `@aooth/arbac-core` and `@aooth/user` are regular dependencies, installed with it.
 
