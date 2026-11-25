@@ -1,6 +1,6 @@
 import type { Clock, RateLimitDecision, RateLimitStore } from "@aooth/auth";
 import { RateLimiter, RateLimitStoreMemory } from "@aooth/auth";
-import { current } from "@wooksjs/event-core";
+import { createEventContext, current, useLocale } from "@wooksjs/event-core";
 import {
   createHttpApp,
   HttpError,
@@ -9,7 +9,7 @@ import {
   type WooksHttp,
 } from "@wooksjs/event-http";
 import type { TInterceptorDef } from "moost";
-import { getMoostMate } from "moost";
+import { getMoostMate, setTranslator, translateErrorBody } from "moost";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { Wooks } from "wooks";
 
@@ -25,6 +25,8 @@ import {
   TestHandler,
   withHandlerContext,
 } from "./test-utils";
+
+const quietLogger = { info() {}, warn() {}, error() {}, debug() {}, log() {} };
 
 function fakeClock(start = 1_000_000_800_000): Clock & { advance(ms: number): void } {
   let t = start;
@@ -102,6 +104,13 @@ class RlController {
   @Public()
   @RateLimit("1/1m", { id: "shared-bucket" })
   sharedB() {
+    return "ok";
+  }
+
+  @TestHandler()
+  @Public()
+  @RateLimit("1/1m", { id: "worded-bucket", message: "Declared: wait {{delta}}." })
+  worded() {
     return "ok";
   }
 }
@@ -687,6 +696,62 @@ describe("rateLimitInterceptors", () => {
       const res = await runChain(app, off, "RlController", "sharedA");
       expect(res.thrown).toBeUndefined();
       expect(res.decision).toBeNull();
+    }
+  });
+
+  it("a rule message given through policies words that policy's 429; the others keep the app-wide message", async () => {
+    // WHY: an app words one limit's 429 (e.g. a bundled sign-in limit) without
+    // redeclaring its route: the override rule's own message wins over the
+    // policy's declared message and over the app-wide `message`.
+    const app = await prepareTestApp([RlController]);
+    const rejectedBy = async (pair: TInterceptorDef[], method: string, budget: number) => {
+      for (let i = 0; i < budget; i++) await runChain(app, pair, "RlController", method);
+      return (await runChain(app, pair, "RlController", method)).thrown;
+    };
+    const message = "Slow down ({{delta}}).";
+    const pair = rateLimitInterceptors({
+      limiter: new RateLimiter({ clock: fakeClock() }),
+      message,
+      policies: { "worded-bucket": "1/1m | Too many sign-in attempts. Try again in {{delta}}." },
+    });
+    const worded = await rejectedBy(pair, "worded", 1);
+    expect(worded?.body).toMatchObject({
+      statusCode: 429,
+      code: "RATE_LIMITED",
+      message: "Too many sign-in attempts. Try again in 1 minute.",
+      params: { policy: "worded-bucket", limit: 1, window: 60 },
+    });
+    expect((await rejectedBy(pair, "publicRoute", 2))?.message).toBe("Slow down (1 minute).");
+
+    // The object form carries a message too; an override rule without one keeps
+    // the policy's declared message.
+    const objectForm = rateLimitInterceptors({
+      limiter: new RateLimiter({ clock: fakeClock() }),
+      message,
+      policies: { "worded-bucket": { limit: 1, window: "1m", message: "Wait {{delta}}." } },
+    });
+    expect((await rejectedBy(objectForm, "worded", 1))?.message).toBe("Wait 1 minute.");
+    const bare = rateLimitInterceptors({
+      limiter: new RateLimiter({ clock: fakeClock() }),
+      message,
+      policies: { "worded-bucket": "1/1m" },
+    });
+    expect((await rejectedBy(bare, "worded", 1))?.message).toBe("Declared: wait 1 minute.");
+
+    // Under a moost translator, a text for the RATE_LIMITED code replaces it;
+    // a locale without one keeps the policy's wording.
+    const body = worded!.body as { message: string; code: string; params: Record<string, unknown> };
+    const inLocale = (locale: string) =>
+      createEventContext({ logger: quietLogger }, () => {
+        useLocale().set(locale);
+        return translateErrorBody(body).message;
+      });
+    setTranslator({ en: {}, de: { RATE_LIMITED: "Zu viele Anfragen ({retryAfter} s)" } });
+    try {
+      expect(inLocale("de")).toBe("Zu viele Anfragen (60 s)");
+      expect(inLocale("en")).toBe("Too many sign-in attempts. Try again in 1 minute.");
+    } finally {
+      setTranslator(undefined);
     }
   });
 

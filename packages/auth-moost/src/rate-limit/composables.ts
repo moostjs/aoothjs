@@ -15,6 +15,8 @@ export interface RateLimitRuntime {
   /** The deprecated `rateLimitInterceptors({ trustProxy })` — one-hop client IP when `true`. */
   trustProxy: boolean;
   emitHeaders: boolean;
+  /** The app-wide 429 message (`rateLimitInterceptors({ message })`), for rules without their own. */
+  message?: string;
 }
 
 /** Internal: the installed interceptors' runtime, published on every HTTP event. */

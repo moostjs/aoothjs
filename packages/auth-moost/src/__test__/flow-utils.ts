@@ -141,10 +141,15 @@ class FlowTriggerProvider extends WfTriggerProvider {
   static storeMode: "durable" | "encapsulated" = "durable";
   /** Back the magic-link strategy with the durable store (one shared table). */
   static sharedStore = false;
+  /** `defaultTtl` of the durable `store` strategy (`undefined` = never expires). */
+  static storeDefaultTtl: number | undefined = undefined;
   protected override storeStrategy(): WfStateStrategy {
     return FlowTriggerProvider.storeMode === "encapsulated"
       ? super.storeStrategy()
-      : new HandleStateStrategy({ store: FlowTriggerProvider.store });
+      : new HandleStateStrategy({
+          store: FlowTriggerProvider.store,
+          defaultTtl: FlowTriggerProvider.storeDefaultTtl,
+        });
   }
   protected override magicLinkStore(): WfStateStore {
     return FlowTriggerProvider.sharedStore
@@ -191,6 +196,8 @@ export interface PrepareFlowOpts extends AuthOptions {
   storeMode?: "durable" | "encapsulated";
   /** Back the magic-link strategy with the durable store (one shared table). */
   sharedStore?: boolean;
+  /** `defaultTtl` (ms) of the durable `store` strategy. Default: none (never expires). */
+  storeDefaultTtl?: number;
   /** Install `rateLimitInterceptors(rateLimit)` globally. */
   rateLimit?: RateLimitInterceptorOptions;
   /** Options of the workflow app (e.g. `onNotFound`). */
@@ -242,6 +249,7 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
   FlowTriggerProvider.hooks = opts.triggerHooks ?? {};
   FlowTriggerProvider.storeMode = opts.storeMode ?? "durable";
   FlowTriggerProvider.sharedStore = opts.sharedStore ?? false;
+  FlowTriggerProvider.storeDefaultTtl = opts.storeDefaultTtl;
   // A fresh counter store per boot (code cooldowns and budgets, shadow
   // lockouts) unless the test passes one — the default is process-wide.
   activeOpts = { lockoutShadowStore: new RateLimitStoreMemory(), ...opts.workflowOpts };
@@ -258,6 +266,7 @@ export async function prepareFlowApp(opts: PrepareFlowOpts = {}): Promise<Prepar
     httpApp,
     storeMode: _m,
     sharedStore: _s,
+    storeDefaultTtl: _t,
     rateLimit,
     wfOptions,
     extraControllers,

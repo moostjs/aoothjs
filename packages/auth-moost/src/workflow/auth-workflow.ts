@@ -564,7 +564,8 @@ type AltHandled = typeof ALT_HANDLED;
  * Workflow-state TTL for the invite `send-email` step — caps how long a
  * pending invite remains resumable from the magic link. 7 days matches the
  * industry-standard invite-link window (Slack/GitHub/Atlassian). Override by
- * re-decorating the step in a subclass.
+ * re-decorating the step in a subclass. The accept-phase pauses before the
+ * password is set end at the same moment (`ctx.admin.linkExpiresAt`).
  */
 const INVITE_LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -581,6 +582,15 @@ function normalizeUsername(raw: unknown): string {
 
 /** Loose email shape — `account.verifiedEmail` is only recorded for a value that looks like one. */
 const EMAIL_SHAPE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+/** A workflow pause (`StepRetriableError`), duck-typed like moost's `@StepTTL` does. */
+function isPause(err: unknown): err is { inputRequired: unknown; expires?: number } {
+  return !!err && typeof err === "object" && "inputRequired" in err;
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return !!value && typeof (value as { then?: unknown }).then === "function";
+}
 
 /**
  * Read a single field from the raw wf input envelope without validating
@@ -1922,7 +1932,7 @@ export class AuthWorkflow {
     opts?: T,
   ): unknown {
     this.populatePublic(ctx);
-    return wf.requireInput(opts);
+    return this.stampPauseExpiry(ctx, wf.requireInput(opts), false);
   }
 
   /**
@@ -1933,13 +1943,73 @@ export class AuthWorkflow {
    * wrapper the implicit-pause path would ship a stale (or missing)
    * `ctx.public`. Every `useAtscriptWf(...)` call in the workflow routes
    * through this so both pause flavors snapshot the same fresh projection.
+   * Every pause the handle raises (both flavors) also carries the run's pause
+   * expiry ({@link stampPauseExpiry}); a `resolveInput()` pause with no form
+   * submitted is the step's first display.
    */
   protected useAtscriptWfPublic(
     ctx: AuthWfCtx,
     type: Parameters<typeof useAtscriptWf>[0],
   ): ReturnType<typeof useAtscriptWf> {
     this.populatePublic(ctx);
-    return useAtscriptWf(type);
+    const wf = useAtscriptWf(type);
+    const stamped = <R>(fn: () => R, shown = false): R => {
+      const stamp = (err: unknown): never => {
+        throw this.stampPauseExpiry(ctx, err, shown);
+      };
+      try {
+        const out = fn();
+        // Same stamp if the call ever answers with a promise that rejects.
+        return isThenable(out) ? (out.then(undefined, stamp) as R) : out;
+      } catch (err) {
+        return stamp(err);
+      }
+    };
+    return {
+      resolveInput: (opts) =>
+        stamped(
+          () => wf.resolveInput(opts),
+          useWfState().input<{ formData?: unknown }>()?.formData === undefined,
+        ),
+      resolveAction: () => stamped(() => wf.resolveAction()),
+      requireInput: (opts) => this.stampPauseExpiry(ctx, wf.requireInput(opts), false),
+    };
+  }
+
+  /**
+   * Stamp the expiry this run's pauses must carry on a pause that carries none
+   * yet:
+   * - recovery, once the identifier was submitted: a step shown afresh
+   *   (`shown`: no form submitted) starts a new `recoveryStateTtlMs` window
+   *   ({@link stampRecoveryExpiry}); a retry on the same step (wrong code,
+   *   resend wait, refused password or pick, invalid form) keeps that step's
+   *   window (`ctx.recoveryStepExpiresAt`) — a fresh one only when none was
+   *   recorded (a run paused before 0.2.21);
+   * - invite accept, until the password is set: the expiry of the emailed
+   *   link (`ctx.admin.linkExpiresAt`, recorded by `send-email`), so opening
+   *   the link neither shortens nor extends it.
+   *
+   * Every other pause keeps the state strategy's default. An expiry already
+   * past persists as expired (the trigger never revives a state).
+   */
+  private stampPauseExpiry<E>(ctx: AuthWfCtx, err: E, shown: boolean): E {
+    // Duck-typed like moost's `@StepTTL`: the pause error may come from another
+    // `@prostojs/wf` copy, so class identity is not guaranteed.
+    if (!isPause(err) || err.expires !== undefined) return err;
+    if (ctx.recoveryDelivery) {
+      const kept = shown ? undefined : ctx.recoveryStepExpiresAt;
+      if (kept === undefined) return this.freshRecoveryWindow(ctx, err);
+      err.expires = kept;
+    } else if (ctx.accept && !ctx.passwordChanged && ctx.admin?.linkExpiresAt !== undefined) {
+      err.expires = ctx.admin.linkExpiresAt;
+    }
+    return err;
+  }
+
+  /** Stamp a new `recoveryStateTtlMs` window on a recovery pause and record it as the step's. */
+  private freshRecoveryWindow<E extends { expires?: number }>(ctx: AuthWfCtx, err: E): E {
+    err.expires = ctx.recoveryStepExpiresAt = Date.now() + this.opts.recoveryStateTtlMs;
+    return err;
   }
 
   /** Translate `CAS_EXHAUSTED` UserAuthError to 409 Conflict (OCC contract). */
@@ -3029,13 +3099,15 @@ export class AuthWorkflow {
 
   /**
    * Stamp `recoveryStateTtlMs` on a paused-state error so the wf engine's
-   * persisted-state strategy expires the state at that timestamp. Use at
-   * recovery-side `requireInput` throws (recovery-only steps) or wrap a
-   * shared-step `resolveInput()` throw inside a `ctx.postReset` guard.
+   * persisted-state strategy expires the state at that timestamp, and record
+   * it as the current recovery step's window (`ctx.recoveryStepExpiresAt`),
+   * which the step's retries keep. Use at recovery-side `requireInput` throws
+   * (recovery-only steps) or wrap a shared-step `resolveInput()` throw inside a
+   * `ctx.postReset` guard. The bundled recovery steps stamp their pauses
+   * themselves (through `useAtscriptWfPublic` / `throwPublic`).
    */
   protected stampRecoveryExpiry<E extends { expires?: number }>(err: E): E {
-    err.expires = Date.now() + this.opts.recoveryStateTtlMs;
-    return err;
+    return this.freshRecoveryWindow(useWfState().ctx<AuthWfCtx>(), err);
   }
 
   /** Emit the recovery "backToLogin" abort envelope and stamp `ctx.aborted`. */
@@ -3674,6 +3746,12 @@ export class AuthWorkflow {
     const admin = (ctx.admin ??= {});
     if (admin.emailDispatched) return undefined;
     admin.emailDispatched = true;
+    // When the link stops working: this step's `@StepTTL` (a subclass may
+    // re-decorate it). The accept-phase pauses before the password carry it.
+    const ttl = useControllerContext().getMethodMeta<{ wfStepTTL?: number }>()?.wfStepTTL;
+    if (ttl !== undefined) admin.linkExpiresAt = Date.now() + ttl;
+    // What the email tells the invitee (relative ms, as the email outlet reads it).
+    const lifetime = ttl ?? INVITE_LINK_TTL_MS;
     const mode = this.opts.inviteDelivery;
     admin.inviteDelivery = mode;
     // swap BEFORE the email-outlet pause so the magic-link token is a durable store handle the invitee can resume days later; the admin-form pause before this stayed encapsulated
@@ -3684,6 +3762,7 @@ export class AuthWorkflow {
         username: email,
         ...(ctx.subject && { userId: ctx.subject }),
         ...(admin.roles && { roles: admin.roles }),
+        expiresAtMs: lifetime,
       });
     }
     // `deliver` / `return-link`: the resume token exists only once this pause
@@ -3704,7 +3783,7 @@ export class AuthWorkflow {
         channel: "email",
         recipient: email,
         url,
-        expiresInMs: INVITE_LINK_TTL_MS,
+        expiresInMs: lifetime,
       });
       return { sent: true, outlet: "invite" };
     });
@@ -3895,13 +3974,11 @@ export class AuthWorkflow {
     Object.assign(password, pickDefined(copy, SET_PASSWORD_COPY_KEYS));
     const user = await this.refusePasswordFormReplay(ctx);
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.setPassword);
-    let input: { newPassword: string; confirmPassword: string; consents?: string[] };
-    try {
-      input = wf.resolveInput() as typeof input;
-    } catch (err) {
-      if (ctx.postReset && err instanceof StepRetriableError) throw this.stampRecoveryExpiry(err);
-      throw err;
-    }
+    const input = wf.resolveInput() as {
+      newPassword: string;
+      confirmPassword: string;
+      consents?: string[];
+    };
     if (input.newPassword !== input.confirmPassword) {
       throw this.throwPublic(ctx, wf, {
         errors: { confirmPassword: this.msg("PASSWORDS_DO_NOT_MATCH") },
@@ -5013,13 +5090,7 @@ export class AuthWorkflow {
         return undefined;
       }
     }
-    let input: { code: string; rememberDevice?: boolean };
-    try {
-      input = wf.resolveInput() as typeof input;
-    } catch (err) {
-      if (ctx.postReset && err instanceof StepRetriableError) throw this.stampRecoveryExpiry(err);
-      throw err;
-    }
+    const input = wf.resolveInput() as { code: string; rememberDevice?: boolean };
     // Recovery resolves the account again (the state holds nothing about it).
     // No account — a ghost run, or one deactivated / emptied since the send —
     // refuses every code as a wrong one, with the same attempt counting.
@@ -6692,13 +6763,7 @@ export class AuthWorkflow {
   @Public()
   async selectRecoveryMode(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.recoveryModeSelect);
-    let mode: string;
-    try {
-      ({ mode } = wf.resolveInput() as { mode: string });
-    } catch (err) {
-      if (err instanceof StepRetriableError) throw this.stampRecoveryExpiry(err);
-      throw err;
-    }
+    const { mode } = wf.resolveInput() as { mode: string };
     if (mode !== "magicLink" && mode !== "otp") {
       throw this.throwPublic(ctx, wf, { errors: { mode: this.msg("AOOTH_CHOOSE_OPTION") } });
     }

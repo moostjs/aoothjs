@@ -135,7 +135,7 @@ export interface AuthWorkflowOpts {
      */
     pincodeMaxSendsGlobal?: number;
   };
-  /** Persisted-state TTL for the recovery flow — caps the window between OTP request and password reset. Applied at every recovery-side `requireInput` pause via the wf engine's `output.expires`. */
+  /** Persisted-state TTL of each recovery step: the mode picker, the code form and the password form each live this long from when they are shown (a resend shows the code form again); retrying on the same step (a wrong code, the resend wait, a refused password or pick) does not extend it. */
   recoveryStateTtlMs?: number;
   /**
    * Lifetime of a magic link (recovery and sign-in links), from the moment it

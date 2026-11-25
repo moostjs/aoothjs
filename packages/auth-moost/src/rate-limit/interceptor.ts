@@ -69,16 +69,27 @@ export interface RateLimitInterceptorOptions {
    * Re-tune declared policies without redeclaring their routes, by policy id
    * (the `id` a `@RateLimit` names, or a bundled id such as `aooth.refresh` /
    * `aooth.send`): new rules replace the declared ones — the key strategy, id
-   * and message stay — and `false` switches the policy off. E.g.
+   * and `message` option stay — and `false` switches the policy off. E.g.
    * `{ "aooth.refresh": "300/5m", "aooth.refresh-token": false }`. Parsed at
    * registration, like `rules`; an id no policy declared throws.
+   *
+   * A rule may carry its own 429 message (`'<rule> | <message>'`, or
+   * `{ limit, window, message }`), which words that policy's rejections only:
+   * it wins over the policy's `message` option and the app-wide `message`.
+   * E.g. `{ "aooth.trigger": "150/5m | Too many attempts. Wait {{delta}}." }`.
+   * A moost translator that has a `RATE_LIMITED` text for the request's
+   * locale replaces it, like any 429 text (the body's `params.policy` tells
+   * the policies apart); a locale without one keeps this message.
    */
   policies?: Record<string, RateLimitRuleInput | RateLimitRuleInput[] | false>;
   /**
    * App-wide default 429 message template (placeholders `{{limit}}`,
    * `{{window}}`, `{{delta}}` humanized; `{limit}`, `{window}`, `{retryAfter}`
-   * in seconds). Under a moost translator the body is translated by its
-   * `RATE_LIMITED` code, which replaces this English text.
+   * in seconds), for every policy whose rule and `@RateLimit` carry no message
+   * of their own — the send limits checked inside the auth workflow
+   * (`aooth.send`, `aooth.send-user`) included. A moost translator that has a
+   * `RATE_LIMITED` text for the request's locale replaces this English text;
+   * a locale without one keeps it.
    */
   message?: string;
 }
@@ -224,7 +235,13 @@ export function rateLimitInterceptors(opts?: RateLimitInterceptorOptions): TInte
     return config;
   };
 
-  const runtime: RateLimitRuntime = { limiter, overrides, trustProxy, emitHeaders };
+  const runtime: RateLimitRuntime = {
+    limiter,
+    overrides,
+    trustProxy,
+    emitHeaders,
+    message: opts?.message,
+  };
 
   const evaluate = async (phase: "pre" | "post"): Promise<void> => {
     const ctx = current();
@@ -374,8 +391,8 @@ function answerDecision(
 
 /**
  * Internal: check a bundled policy from inside a handler — per client IP
- * unless `key` names another subject (e.g. `user:<id>`), with the limiter and
- * `policies` overrides of the installed `rateLimitInterceptors` (none
+ * unless `key` names another subject (e.g. `user:<id>`), with the limiter,
+ * `policies` overrides and `message` of the installed `rateLimitInterceptors` (none
  * installed → nothing is enforced, like any `@RateLimit`). Over the limit it
  * throws the same coded 429 as the interceptors. Used by the auth workflow
  * for code and link sends (`aooth.send`, `aooth.send-user`).
@@ -389,10 +406,12 @@ export async function enforceRateLimit(
   const runtime = ctx.get(rateLimitRuntimeKey);
   const rules = effectiveRules(runtime.overrides, policy.id, policy.rules);
   if (!rules) return;
+  // A rule's own message, else the app-wide one (these policies declare no `message` option).
   const decision = await runtime.limiter.check(
     policy.id,
     key ?? `ip:${requestClientIp(ctx)}`,
     rules,
+    { defaultMessage: runtime.message },
   );
   answerDecision(decision, [policyHeader(rules)], runtime.emitHeaders, ctx);
 }

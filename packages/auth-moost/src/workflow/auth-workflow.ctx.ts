@@ -495,6 +495,12 @@ export interface AuthWfAdminState {
   inviteNonce?: string;
   /** How the link was delivered (`AuthWorkflowOpts.inviteDelivery`), read at accept. */
   inviteDelivery?: "outlet-email" | "deliver" | "return-link";
+  /**
+   * When the emailed link stops working (ms since epoch), recorded by
+   * `send-email` from its `@StepTTL`. Every accept-phase pause before the
+   * password is set carries this expiry. Absent on invites issued before 0.2.21.
+   */
+  linkExpiresAt?: number;
 }
 
 /**
@@ -894,6 +900,13 @@ export interface AuthWfCtx {
   recoveryAltActions?: AuthWfRecoveryAltActions; // [recovery]
   /** How the recovery code goes out: `'choice'` until the user picks on `RecoveryModeSelectForm`. [recovery] */
   recoveryDelivery?: AuthWfRecoveryDeliveryMode;
+  /**
+   * When the current recovery step's paused state stops working (ms since
+   * epoch): `recoveryStateTtlMs` after the step was shown. Its retries (a wrong
+   * code, the resend wait, a refused password or pick) keep it; the next step
+   * shown starts a new one. [recovery]
+   */
+  recoveryStepExpiresAt?: number;
   /** Server-only state of a recovery or sign-in magic link — never projected to the wire. [recovery, login] */
   magicLink?: AuthWfMagicLinkState;
   // Note: `ctx.audit` REMOVED — audit handled at interceptor level.

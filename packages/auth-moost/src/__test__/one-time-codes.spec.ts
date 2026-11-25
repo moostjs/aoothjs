@@ -360,9 +360,14 @@ describe("code sends are bounded on the server (M-1)", () => {
   }
 
   it("sends after a first factor count per account (aooth.send-user)", async () => {
+    // WHY (message): the app-wide 429 `message` reaches this in-workflow limit
+    // too — before 0.2.21 it answered with the built-in text.
     const app = await boot("durable", "typed", {
       workflowOpts: { mfa: { pincodeResendTimeoutMs: 50 } },
-      rateLimit: { policies: { "aooth.send-user": "2/1h" } },
+      rateLimit: {
+        message: "Slow down: {{limit}} per {{window}}.",
+        policies: { "aooth.send-user": "2/1h" },
+      },
     });
     const def = flowDefs["sign-in second factor (email)"];
     await def.seed(app);
@@ -374,6 +379,7 @@ describe("code sends are bounded on the server (M-1)", () => {
     expect(limited.status).toBe(429);
     expect(limited.body).toMatchObject({
       code: "RATE_LIMITED",
+      message: "Slow down: 2 per 1 hour.",
       params: { policy: "aooth.send-user", limit: 2 },
     });
     expect(delivered.filter((d) => d.kind === "mfa-pincode")).toHaveLength(2);

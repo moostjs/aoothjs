@@ -1,6 +1,7 @@
-import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
+import { type AuthEmailEvent, AuthCredential, CredentialStoreMemory } from "@aooth/auth";
 import { UserAuthError, type UserCredentials, UserService, UserStoreMemory } from "@aooth/user";
 import { Get, Query } from "@moostjs/event-http";
+import { Step, StepTTL, WorkflowParam } from "@moostjs/event-wf";
 import { Controller, Inherit, Injectable, useControllerContext } from "moost";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -12,11 +13,13 @@ import { WfTriggerProvider } from "../wf-trigger/provider";
 import { AuthWorkflow } from "../workflow/auth-workflow";
 import type { AuthWfCtx } from "../workflow/auth-workflow.ctx";
 import { peekInvite } from "../workflow/invite-peek";
+import { createAuthEmailOutlet } from "../workflows/auth-email-outlet";
 import { ExtendedInviteForm } from "./fixtures/invite-ext.as";
 import {
   completeAccept,
   type FlowResponse,
   FlowWorkflow,
+  INVITEE_PASSWORD,
   issueInvite,
   prepareFlowApp,
   type PreparedFlowApp,
@@ -868,5 +871,263 @@ describe("A9: peekInvite reads an invite link without consuming it", () => {
     const cancelled = (await app.users.findByHandle("c@x.test"))!;
     expect(await app.users.revokeInvitation(cancelled.id)).toBe(true);
     expect(await peek(app.emails[1].token)).toBeNull();
+  });
+});
+
+/** The expiry of the newest persisted state: the store's, and the one aooth recorded. */
+const lastExpiry = (app: PreparedFlowApp) => ({
+  store: app.savedExpiries.at(-1),
+  recorded: (app.savedStates.at(-1) as { meta?: Record<string, unknown> }).meta?.aoothExpiresAt,
+});
+
+describe("an invite link opened but not yet accepted keeps the link's 7 days", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+  const WEEK = 7 * DAY;
+
+  /** Freeze the clock, boot with this state-store `defaultTtl`, and issue an invite. */
+  async function boot(storeDefaultTtl?: number) {
+    const issuedAt = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: issuedAt });
+    const app = await prepareFlowApp({
+      controllerClass: InviteInfoController,
+      ...(storeDefaultTtl !== undefined && { storeDefaultTtl }),
+      workflowOpts: { autoLoginOnInvite: false },
+    });
+    const res = await issueInvite(app, "w@x.test");
+    expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+    const peek = async (token: string) =>
+      (await app.get(`/auth/invite/info?wfs=${encodeURIComponent(token)}`)).body.invite;
+    return { app, issuedAt, token: app.emails[0].token, expiresAt: issuedAt + WEEK, peek };
+  }
+
+  const mismatch = {
+    formData: { newPassword: "Str0ng!Passw0rd", confirmPassword: "Other!Passw0rd1", consents: [] },
+  };
+
+  it("under a short store default: two opens and a refused password form keep issue + 7 days; accepting works", async () => {
+    // WHY: the pauses before the password stated no expiry, so the store's
+    // default (one hour here) applied at the first open and cut the 7-day link.
+    const { app, issuedAt, token, expiresAt, peek } = await boot(HOUR);
+    expect(lastExpiry(app)).toEqual({ store: expiresAt, recorded: expiresAt });
+
+    vi.setSystemTime(issuedAt + DAY);
+    const opened = await openLink(app, token);
+    expect(opened.body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+    expect(opened.body.wfs).toBe(token);
+    expect(lastExpiry(app)).toEqual({ store: expiresAt, recorded: expiresAt });
+
+    vi.setSystemTime(issuedAt + 2 * DAY);
+    expect((await openLink(app, token)).body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+    expect(lastExpiry(app)).toEqual({ store: expiresAt, recorded: expiresAt });
+    const refused = await app.submit(token, mismatch);
+    expect(refused.body.inputRequired?.context?.errors).toHaveProperty("confirmPassword");
+    expect(lastExpiry(app)).toEqual({ store: expiresAt, recorded: expiresAt });
+    expect((await peek(token)).expiresAt).toBe(expiresAt);
+
+    vi.setSystemTime(issuedAt + 3 * DAY);
+    await completeAccept(app, token);
+    const row = await app.users.findByHandle("w@x.test");
+    expect(row?.account.pendingInvitation).toBeFalsy();
+    expect(row?.account.active).toBe(true);
+  });
+
+  it("once the password is set, the next pause gets the store default — the link cannot finish after it", async () => {
+    // WHY: only the steps before the password belong to the link. Past it, a
+    // 7-day state would let whoever holds the emailed link finish the
+    // acceptance (and get a session) all week; it lives as long as the store's
+    // default, as it always did.
+    const { app, issuedAt, token } = await boot(HOUR);
+    vi.setSystemTime(issuedAt + DAY);
+    await openLink(app, token);
+    const afterPassword = await app.submit(token, {
+      formData: { newPassword: INVITEE_PASSWORD, confirmPassword: INVITEE_PASSWORD, consents: [] },
+    });
+    expect(afterPassword.body.inputRequired?.payload?.id).toBe("EnrollPickMethodForm");
+    const storeDefault = issuedAt + DAY + HOUR;
+    expect(lastExpiry(app)).toEqual({ store: storeDefault, recorded: storeDefault });
+
+    vi.setSystemTime(storeDefault + 1);
+    expect((await app.submit(token, { action: "skip" })).status).toBe(410);
+    expect((await app.users.findByHandle("w@x.test"))?.account.pendingInvitation).toBe(true);
+  });
+
+  it("under a store with no default TTL, an opened link still expires at issue + 7 days", async () => {
+    // WHY: with no default, the opened link's state never expired at all.
+    const { app, issuedAt, token, expiresAt, peek } = await boot();
+    vi.setSystemTime(issuedAt + DAY);
+    expect((await openLink(app, token)).body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+    expect(lastExpiry(app)).toEqual({ store: expiresAt, recorded: expiresAt });
+    expect((await peek(token)).expiresAt).toBe(expiresAt);
+
+    vi.setSystemTime(expiresAt + 1);
+    expect(await peek(token)).toBeNull();
+    expect((await openLink(app, token)).status).toBe(410);
+  });
+
+  it("under a store default longer than what is left of the week, the link still ends at issue + 7 days", async () => {
+    // WHY: opening the link must not extend it either.
+    const { app, issuedAt, token, expiresAt } = await boot(30 * DAY);
+    vi.setSystemTime(issuedAt + 6 * DAY);
+    expect((await openLink(app, token)).body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+    expect(lastExpiry(app)).toEqual({ store: expiresAt, recorded: expiresAt });
+    vi.setSystemTime(expiresAt + 1);
+    expect((await openLink(app, token)).status).toBe(410);
+  });
+
+  it("a resend issues a fresh link with 7 days from the resend, and opening it keeps them", async () => {
+    // WHY: each link carries its own expiry; a resend is a new link.
+    const { app, issuedAt, token } = await boot(HOUR);
+    vi.setSystemTime(issuedAt + DAY);
+    await openLink(app, token);
+    vi.setSystemTime(issuedAt + 2 * DAY);
+    const sent = await resendInvite(app, "w@x.test", {});
+    expect(sent.status, JSON.stringify(sent.body)).toBeLessThan(300);
+    const fresh = app.emails[1].token;
+    expect(fresh).not.toBe(token);
+    const expiresAt = issuedAt + 2 * DAY + WEEK;
+    expect(lastExpiry(app)).toEqual({ store: expiresAt, recorded: expiresAt });
+    vi.setSystemTime(issuedAt + 3 * DAY);
+    expect((await openLink(app, fresh)).body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+    expect(lastExpiry(app)).toEqual({ store: expiresAt, recorded: expiresAt });
+  });
+
+  it("an invite issued before 0.2.21 (no recorded link expiry) resumes as before, under the store default", async () => {
+    // WHY: links already in inboxes at the upgrade must keep working.
+    const { app, issuedAt, token } = await boot(HOUR);
+    const handle = token.slice("store.".length);
+    const entry = (await app.durableStore.get(handle))!;
+    const admin = (entry.state.context as AuthWfCtx).admin!;
+    expect(admin.linkExpiresAt).toBe(issuedAt + WEEK);
+    delete admin.linkExpiresAt;
+    await app.durableStore.set(handle, entry.state, entry.expiresAt);
+
+    vi.setSystemTime(issuedAt + DAY);
+    expect((await openLink(app, token)).body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+    const storeDefault = issuedAt + DAY + HOUR;
+    expect(lastExpiry(app)).toEqual({ store: storeDefault, recorded: storeDefault });
+    await completeAccept(app, token);
+    expect((await app.users.findByHandle("w@x.test"))?.account.active).toBe(true);
+  });
+
+  it("'choose': the username form, and a refused name, keep the link's expiry", async () => {
+    // WHY: the username pick comes before the password — it belongs to the link.
+    const issuedAt = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: issuedAt });
+    const app = await prepareFlowApp({
+      storeDefaultTtl: HOUR,
+      workflowOpts: { inviteUsername: "choose", autoLoginOnInvite: false },
+    });
+    await issueInvite(app, "c@x.test");
+    const expiresAt = issuedAt + WEEK;
+    vi.setSystemTime(issuedAt + DAY);
+    const pick = await openLink(app, app.emails[0].token);
+    expect(pick.body.inputRequired?.payload?.id).toBe("InviteChooseUsernameForm");
+    expect(lastExpiry(app)).toEqual({ store: expiresAt, recorded: expiresAt });
+    vi.setSystemTime(issuedAt + 2 * DAY);
+    const refused = await openLink(app, pick.body.wfs, { formData: { username: "two words" } });
+    expect(refused.body.inputRequired?.context?.errors).toHaveProperty("username");
+    expect(lastExpiry(app)).toEqual({ store: expiresAt, recorded: expiresAt });
+  });
+
+  it("under the encapsulated `store` strategy, an opened link still ends at issue + 7 days", async () => {
+    // WHY: with client-held state each pause is a new token; the bundled
+    // encapsulated default has no TTL, so an opened link lived on without end.
+    const issuedAt = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: issuedAt });
+    const app = await prepareFlowApp({
+      controllerClass: InviteInfoController,
+      storeMode: "encapsulated",
+      workflowOpts: { autoLoginOnInvite: false },
+    });
+    await issueInvite(app, "e@x.test");
+    const peek = async (token: string) =>
+      (await app.get(`/auth/invite/info?wfs=${encodeURIComponent(token)}`)).body.invite;
+    vi.setSystemTime(issuedAt + DAY);
+    const opened = await openLink(app, app.emails[0].token);
+    expect(opened.body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+    expect((await peek(opened.body.wfs)).expiresAt).toBe(issuedAt + WEEK);
+    vi.setSystemTime(issuedAt + WEEK + 1);
+    expect((await openLink(app, opened.body.wfs)).status).toBe(410);
+  });
+
+  it("a subclass that re-decorates send-email's @StepTTL: the link, its opened pauses and the email follow it", async () => {
+    // WHY: the link's lifetime is the step's `@StepTTL`, which an app may
+    // change; the accept pauses and the `deliver` email must not keep 7 days.
+    const THREE_DAYS = 3 * DAY;
+    const delivered: Array<{ url?: string; expiresInMs?: number }> = [];
+    @Inherit()
+    @Injectable()
+    @Controller()
+    class ShortInvite extends FlowWorkflow {
+      @Step("send-email")
+      @StepTTL(THREE_DAYS)
+      @Public()
+      override sendInviteEmail(@WorkflowParam("context") ctx: AuthWfCtx): unknown {
+        return super.sendInviteEmail(ctx);
+      }
+      protected override deliver(payload: unknown): void {
+        delivered.push(payload as { url?: string; expiresInMs?: number });
+      }
+    }
+    const issuedAt = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: issuedAt });
+    const app = await prepareFlowApp({
+      workflowClass: ShortInvite,
+      storeDefaultTtl: HOUR,
+      workflowOpts: { inviteDelivery: "deliver", inviteLinkUrl, autoLoginOnInvite: false },
+    });
+    expect((await issueInvite(app, "s@x.test")).status).toBeLessThan(300);
+    const expiresAt = issuedAt + THREE_DAYS;
+    expect(delivered).toEqual([expect.objectContaining({ expiresInMs: THREE_DAYS })]);
+    expect(lastExpiry(app)).toEqual({ store: expiresAt, recorded: expiresAt });
+    const token = new URL(delivered[0].url!).searchParams.get("wfs")!;
+    vi.setSystemTime(issuedAt + DAY);
+    expect((await openLink(app, token)).body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+    expect(lastExpiry(app)).toEqual({ store: expiresAt, recorded: expiresAt });
+  });
+
+  /** The email `createAuthEmailOutlet` sends for the invite this app issues. */
+  async function inviteEmail(workflowClass?: typeof FlowWorkflow): Promise<AuthEmailEvent> {
+    const app = await prepareFlowApp({
+      ...(workflowClass && { workflowClass }),
+      workflowOpts: { autoLoginOnInvite: false },
+    });
+    expect((await issueInvite(app, "o@x.test")).status).toBeLessThan(300);
+    const sent: AuthEmailEvent[] = [];
+    const outlet = createAuthEmailOutlet({
+      emailSender: { send: async (event) => void sent.push(event) },
+      buildMagicLinkUrl: (_kind, token) => `https://app.test/invite?wfs=${token}`,
+      magicLinkTtlMs: () => HOUR,
+    });
+    const { token, ...request } = app.emails[0];
+    await outlet.deliver(request as never, token);
+    return sent[0];
+  }
+
+  it("default delivery: the invite email is told the link's lifetime, not magicLinkTtlMs", async () => {
+    // WHY: the outlet context carried no lifetime, so the email outlet used the
+    // app's `magicLinkTtlMs` (one hour here) and the email said "expires in
+    // 1 hour" for a link that lives 7 days — or a re-decorated `@StepTTL`.
+    const THREE_DAYS = 3 * DAY;
+    @Inherit()
+    @Injectable()
+    @Controller()
+    class ShortInvite extends FlowWorkflow {
+      @Step("send-email")
+      @StepTTL(THREE_DAYS)
+      @Public()
+      override sendInviteEmail(@WorkflowParam("context") ctx: AuthWfCtx): unknown {
+        return super.sendInviteEmail(ctx);
+      }
+    }
+    const issuedAt = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: issuedAt });
+    expect((await inviteEmail()).expiresAt).toBe(issuedAt + WEEK);
+    expect((await inviteEmail(ShortInvite)).expiresAt).toBe(issuedAt + THREE_DAYS);
   });
 });

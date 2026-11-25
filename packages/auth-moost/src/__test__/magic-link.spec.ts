@@ -1,5 +1,5 @@
 import { Controller, Inherit, Injectable } from "moost";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { createShadowStore } from "../workflow/auth-workflow";
 import type { AuthWfCtx, AuthWfRecoveryDeliveryMode } from "../workflow/auth-workflow.ctx";
@@ -461,5 +461,67 @@ describe("the Quick Start walkthroughs (docs/guide/quick-start.md)", () => {
     expect(s4.body.inputRequired).toBeDefined();
     const s5 = await app.post("/auth/trigger", { wfs: s4.body.wfs, input: { formData: {} } });
     expect(s5.body.finished).toBe(true);
+  });
+});
+
+/** Freeze the clock, boot and seed alice; returns the start time. */
+async function bootAt(workflowOpts: Partial<AuthWorkflowOpts> = {}) {
+  const t0 = Date.now();
+  vi.useFakeTimers({ toFake: ["Date"], now: t0 });
+  const app = await boot(workflowOpts);
+  await seedAlice(app);
+  return { app, t0 };
+}
+
+describe("recovery step windows around a magic link and the picker", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const MIN = 60_000;
+
+  it("a link picked late and clicked near its end: the password form gets a full recoveryStateTtlMs", async () => {
+    // WHY: the password form reached through the link is a new step; it must
+    // not inherit what is left of the picker's (or the request's) window.
+    const { app, t0 } = await bootAt();
+    recoveryMode = "choice";
+    const picker = await requestRecovery(app, EMAIL);
+    vi.setSystemTime(t0 + 50 * MIN);
+    expect((await app.submit(picker.body.wfs, { formData: { mode: "magicLink" } })).body).toEqual({
+      sent: true,
+      outlet: "email",
+    });
+    vi.setSystemTime(t0 + 61 * MIN);
+    const atPassword = await use(app, app.emails[0].token);
+    expect(atPassword.body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+    expect(app.savedExpiries.at(-1)).toBe(t0 + 61 * MIN + 60 * MIN);
+    vi.setSystemTime(t0 + 61 * MIN + 59 * MIN);
+    expect((await app.submit(atPassword.body.wfs, setPasswordInput)).body.finished).toBe(true);
+  });
+
+  it("with recoveryStateTtlMs shorter than magicLinkTtlMs, a late click still gets the full window", async () => {
+    // WHY: a window counted from the request instead of from the password
+    // form would make every click after recoveryStateTtlMs land on an
+    // already-expired form.
+    const { app, t0 } = await bootAt({ recoveryStateTtlMs: 5 * MIN });
+    await requestRecovery(app, EMAIL);
+    vi.setSystemTime(t0 + 14 * MIN);
+    const atPassword = await use(app, app.emails[0].token);
+    expect(atPassword.body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+    vi.setSystemTime(t0 + 18 * MIN);
+    expect((await app.submit(atPassword.body.wfs, setPasswordInput)).body.finished).toBe(true);
+  });
+
+  it("an invalid pick keeps the picker's window", async () => {
+    // WHY: the picker's retry carried no expiry; under the bundled encapsulated
+    // strategy (no default TTL) the re-paused picker never expired.
+    const { app, t0 } = await bootAt();
+    recoveryMode = "choice";
+    const picker = await requestRecovery(app, EMAIL);
+    vi.setSystemTime(t0 + 50 * MIN);
+    const refused = await app.submit(picker.body.wfs, { formData: { mode: "carrier-pigeon" } });
+    expect(refused.body.inputRequired?.context?.errors).toHaveProperty("mode");
+    vi.setSystemTime(t0 + 60 * MIN + 1);
+    expect((await app.submit(refused.body.wfs, { formData: { mode: "otp" } })).status).toBe(410);
   });
 });

@@ -1,6 +1,6 @@
 import type { AuthDeliveryPayload } from "../workflow/auth-workflow";
 import { Controller, Inherit, Injectable } from "moost";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { RateLimitInterceptorOptions } from "../rate-limit/interceptor";
 import { FlowWorkflow, prepareFlowApp, type PreparedFlowApp, setPasswordInput } from "./flow-utils";
@@ -316,6 +316,30 @@ describe("the bundled per-IP limit on anonymous sends (aooth.send, M2/L4)", () =
     expect(delivered).toHaveLength(1);
   });
 
+  it("words its 429 with the app-wide `message`; a rule message through policies still wins", async () => {
+    // WHY: the interceptor's `message` is the app-wide 429 text, but the sends
+    // checked inside the workflow never received it and showed the built-in text.
+    const message = "Slow down: {{limit}} per {{window}}.";
+    const app = await boot("typed", "durable", { message, policies: { "aooth.send": "1/15m" } });
+    expect((await request(app, UNKNOWN)).status).toBe(201);
+    const limited = await request(app, UNKNOWN);
+    expect(limited.status).toBe(429);
+    expect(limited.body).toMatchObject({
+      code: "RATE_LIMITED",
+      message: "Slow down: 1 per 15 minutes.",
+      params: { policy: "aooth.send", limit: 1 },
+    });
+
+    const worded = await boot("typed", "durable", {
+      message,
+      policies: { "aooth.send": "1/15m | Too many codes requested ({{limit}} per {{window}})." },
+    });
+    expect((await request(worded, UNKNOWN)).status).toBe(201);
+    expect((await request(worded, UNKNOWN)).body.message).toBe(
+      "Too many codes requested (1 per 15 minutes).",
+    );
+  });
+
   it("can be switched off with policies", async () => {
     const app = await boot("typed", "durable", { policies: { "aooth.send": false } });
     for (let i = 0; i < 25; i++) expect((await request(app, UNKNOWN)).status).toBe(201);
@@ -370,5 +394,99 @@ describe("auto-login refuses an inactive account (H2, L-b)", () => {
     expect(typeof (done.body.data as { accessToken?: string }).accessToken).toBe("string");
     expect((await app.users.getUser(userId)).account.lastLogin).toBeTruthy();
     expect(afterLogins).toEqual([userId]);
+  });
+});
+
+/** Freeze the clock at `t0`, boot (optionally with a store default) and seed the known account. */
+async function bootAt(storeDefaultTtl?: number) {
+  const t0 = Date.now();
+  vi.useFakeTimers({ toFake: ["Date"], now: t0 });
+  deliverySource = "typed";
+  delivered.length = 0;
+  minted.length = 0;
+  const app = await prepareFlowApp({
+    workflowClass: EnumWorkflow,
+    ...(storeDefaultTtl !== undefined && { storeDefaultTtl }),
+  });
+  await app.seedUser(KNOWN, PASSWORD);
+  return { app, t0 };
+}
+
+describe("each recovery step lives recoveryStateTtlMs from when it is shown; retries keep it", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const MIN = 60_000;
+  const TTL = 60 * MIN;
+  const wrongCode = { formData: { code: "000000", rememberDevice: false } };
+  const mismatch = {
+    formData: { newPassword: "NewPassword456!", confirmPassword: "Different456!", consents: [] },
+  };
+
+  for (const [label, storeDefaultTtl] of [
+    ["no store default", undefined],
+    ["a 30-day store default", 30 * 24 * 60 * MIN],
+  ] as const) {
+    it(`a wrong code and a password mismatch keep their step's window (${label})`, async () => {
+      // WHY: retries carried no expiry and fell to the state store's default —
+      // never, under a store without one; a retry must not extend it either.
+      const { app, t0 } = await bootAt(storeDefaultTtl);
+      const atCode = await request(app, KNOWN);
+      expect(app.savedExpiries.at(-1)).toBe(t0 + TTL);
+      vi.setSystemTime(t0 + MIN);
+      const wrong = await app.submit(atCode.body.wfs, wrongCode);
+      expect(wrong.body.inputRequired?.context?.errors).toBeDefined();
+      expect(app.savedExpiries.at(-1)).toBe(t0 + TTL);
+
+      // The password form is a new step: a new window from when it is shown.
+      vi.setSystemTime(t0 + 2 * MIN);
+      const atPassword = await app.submit(wrong.body.wfs, {
+        formData: { code: minted.at(-1), rememberDevice: false },
+      });
+      expect(atPassword.body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+      const passwordWindow = t0 + 2 * MIN + TTL;
+      expect(app.savedExpiries.at(-1)).toBe(passwordWindow);
+      vi.setSystemTime(t0 + 3 * MIN);
+      const refused = await app.submit(atPassword.body.wfs, mismatch);
+      expect(refused.body.inputRequired?.context?.errors).toHaveProperty("confirmPassword");
+      expect(app.savedExpiries.at(-1)).toBe(passwordWindow);
+
+      vi.setSystemTime(passwordWindow + 1);
+      expect((await app.submit(refused.body.wfs, setPasswordInput)).status).toBe(410);
+    });
+  }
+
+  it("the resend wait keeps the code form's window; a resend shows the form again with a new one", async () => {
+    // WHY: pins 0.2.20 for a resend (a new code, a new window) while the
+    // refused early resend is a retry that keeps the window.
+    const { app, t0 } = await bootAt();
+    const atCode = await request(app, KNOWN);
+    vi.setSystemTime(t0 + 10_000);
+    const early = await app.submit(atCode.body.wfs, { action: "resend" });
+    expect(early.body.inputRequired?.context?.errors?.__form).toMatch(/wait/i);
+    expect(app.savedExpiries.at(-1)).toBe(t0 + TTL);
+    vi.setSystemTime(t0 + 2 * MIN);
+    const resent = await app.submit(early.body.wfs, { action: "resend" });
+    expect(resent.body.inputRequired?.payload?.id).toBe("PincodeForm");
+    expect(minted).toHaveLength(2);
+    expect(app.savedExpiries.at(-1)).toBe(t0 + 2 * MIN + TTL);
+  });
+
+  it("a retry on a state paused before 0.2.21 (no recorded window) gets a bounded one", async () => {
+    // WHY: runs in flight at the upgrade carry no recorded window; their retries
+    // must still expire, not fall to the store's default.
+    const { app, t0 } = await bootAt();
+    const atCode = await request(app, KNOWN);
+    const handle = String(atCode.body.wfs).slice("store.".length);
+    const entry = (await app.durableStore.get(handle))!;
+    const ctx = entry.state.context as { recoveryStepExpiresAt?: number };
+    expect(ctx.recoveryStepExpiresAt).toBe(t0 + TTL);
+    delete ctx.recoveryStepExpiresAt;
+    await app.durableStore.set(handle, entry.state, entry.expiresAt);
+
+    vi.setSystemTime(t0 + 10 * MIN);
+    await app.submit(atCode.body.wfs, wrongCode);
+    expect(app.savedExpiries.at(-1)).toBe(t0 + 10 * MIN + TTL);
   });
 });
