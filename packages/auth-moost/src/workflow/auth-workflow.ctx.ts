@@ -458,12 +458,20 @@ export interface AuthWfAdminState {
    * Re-invite decision stamp — set by `admin-form` when `duplicateInviteCheck`
    * returns `'reuse'` (the default for a row still parked on
    * `account.pendingInvitation`). `create-user` then refreshes the existing
-   * row (fresh roles + extras, `pendingInvitation` re-asserted) instead of
-   * creating, and `send-email` mints a fresh magic link. Re-validated in
-   * `create-user` against a fresh read: non-pending row → 409, vanished row →
-   * normal create path.
+   * row (fresh roles + extras, a rotated link marker) instead of creating,
+   * and `send-email` mints a fresh magic link. The refresh is one
+   * compare-and-set write applied only while the row is pending
+   * (`UserService.refreshInvitation`): accepted → 409, vanished row → normal
+   * create path.
    */
   reuseExisting?: boolean;
+  /**
+   * Resend decision stamp — set by `admin-form` (with `reuseExisting`) when
+   * `duplicateInviteCheck` returns `'resend'`. `infer-roles` and
+   * `build-user-extras` then leave the row alone and `create-user` rotates only
+   * the link marker; a vanished row answers 410 `INVITE_CANCELLED`.
+   */
+  resend?: boolean;
   /**
    * Outlet-pause idempotency marker for `send-email`. Flipped to `true`
    * after the first dispatch so the invitee's magic-link resume — which

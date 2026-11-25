@@ -984,7 +984,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<AppHandle> {
     protected override duplicateInviteCheck(input: {
       email: string;
       existingUser: UserCredentials | null;
-    }): Promise<"allow" | "reject" | "reuse"> | "allow" | "reject" | "reuse" {
+    }): Promise<"allow" | "reject" | "reuse" | "resend"> | "allow" | "reject" | "reuse" | "resend" {
       if (g.__aoothE2eAllowDuplicateInvites) return "allow";
       return super.duplicateInviteCheck(input);
     }

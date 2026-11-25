@@ -1,13 +1,17 @@
 import type { TArbacRole } from "@aooth/arbac-moost";
 import { type AuthContext, AuthCredential, CredentialStoreMemory } from "@aooth/auth";
 import { UserService } from "@aooth/user";
+import { HttpError } from "@moostjs/event-http";
+import { useRequest } from "@wooksjs/event-http";
 import { Controller, getMoostMate, Inherit, Optional } from "moost";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
-import { AuthController } from "../auth.controller";
+import { AuthController, DEFAULT_AUTH_WORKFLOWS } from "../auth.controller";
+import { WfTrigger } from "../wf-trigger/decorator";
 import type { AuthLoginResponse } from "../auth.dto";
 import type { TRateLimitMeta } from "../rate-limit/mate";
 import { type MyClaims, parseCookieValue, prepareControllerApp } from "./controller-utils";
+import { prepareFlowApp } from "./flow-utils";
 
 // A consumer subclass — the real downstream shape (extend AuthController, add
 // app workflows). Defined once at module scope so its moost/infact identity is
@@ -42,6 +46,11 @@ async function seedAndIssue(
 /** A `POST /auth/refresh` request presenting `refreshToken` in the body. */
 function junk(refreshToken: string): RequestInit & { json: unknown } {
   return { method: "POST", json: { refreshToken } };
+}
+
+/** A `POST /auth/trigger` request starting the login flow. */
+function trigger(headers?: Record<string, string>): RequestInit & { json: unknown } {
+  return { method: "POST", json: { wfid: "auth/login/flow" }, ...(headers && { headers }) };
 }
 
 /** Both auth cookies were cleared (`Max-Age=0`) on this response. */
@@ -562,6 +571,122 @@ describe("AuthController", () => {
       // The outlet trigger throws when wfid is not in `allow`. The HTTP
       // adapter surfaces uncaught throws as 500.
       expect(res.status).toBeGreaterThanOrEqual(400);
+    });
+  });
+
+  describe("workflow-trigger routes rate limit (aooth.trigger)", () => {
+    // WHY: every password, TOTP and code submission of the bundled flows goes
+    // through a trigger route; without a bundled limit one caller can guess
+    // without bound unless the app subclasses the controller.
+
+    it.each(["triggerWf", "changePassword", "addMfa"] as const)(
+      "%s ships the one default policy: 150/5m, keyed like the other bundled route policies",
+      (method) => {
+        const meta = getMoostMate<TRateLimitMeta>().read(AuthController.prototype, method);
+        expect(
+          meta?.rateLimitPolicies?.map((p) => ({
+            id: p.options?.id,
+            key: p.options?.key,
+            rules: p.rules.map((r) => [r.limit, r.window]),
+          })),
+        ).toEqual([{ id: "aooth.trigger", key: undefined, rules: [[150, 300_000]] }]);
+      },
+    );
+
+    it("the three trigger routes share one budget per caller", async () => {
+      const app = await prepareControllerApp({
+        rateLimit: { policies: { "aooth.trigger": "2/5m" } },
+      });
+      // Counted before the auth guard: an anonymous call answers 401, still counted.
+      expect((await app.request("/auth/change-password", trigger())).status).toBe(401);
+      expect((await app.request("/auth/add-mfa", trigger())).status).toBe(401);
+      const limited = await app.request("/auth/trigger", trigger());
+      expect(limited.status).toBe(429);
+      expect(limited.body).toMatchObject({ params: { policy: "aooth.trigger", limit: 2 } });
+    });
+
+    it("caps one caller with the coded 429, re-tuned through policies", async () => {
+      const app = await prepareControllerApp({
+        rateLimit: { policies: { "aooth.trigger": "2/5m" } },
+      });
+      for (let i = 0; i < 2; i++) {
+        const res = await app.request("/auth/trigger", trigger());
+        expect(res.status).not.toBe(429);
+        expect(res.response?.headers.get("ratelimit-policy")).toBe("2;w=300");
+      }
+      const limited = await app.request("/auth/trigger", trigger());
+      expect(limited.status).toBe(429);
+      expect(limited.body).toMatchObject({
+        code: "RATE_LIMITED",
+        params: { policy: "aooth.trigger", limit: 2, window: 300 },
+      });
+    });
+
+    it("follows the interceptor's key", async () => {
+      const app = await prepareControllerApp({
+        rateLimit: {
+          key: () => `client:${useRequest().headers["x-client"] as string}`,
+          policies: { "aooth.trigger": "1/5m" },
+        },
+      });
+      expect((await app.request("/auth/trigger", trigger({ "x-client": "a" }))).status).not.toBe(
+        429,
+      );
+      expect((await app.request("/auth/trigger", trigger({ "x-client": "b" }))).status).not.toBe(
+        429,
+      );
+      expect((await app.request("/auth/trigger", trigger({ "x-client": "a" }))).status).toBe(429);
+    });
+
+    it("a subclass that re-declares only @WfTrigger keeps the public route and the limit", async () => {
+      @Inherit()
+      @Controller("auth")
+      class WiderAllow extends AuthController {
+        @WfTrigger({ allow: [...DEFAULT_AUTH_WORKFLOWS, "app/extra"] })
+        override triggerWf(): void {}
+      }
+      const app = await prepareControllerApp({
+        controllerClass: WiderAllow,
+        rateLimit: { policies: { "aooth.trigger": "1/5m" } },
+      });
+      const first = await app.request("/auth/trigger", trigger());
+      expect(first.status).not.toBe(404);
+      expect(first.status).not.toBe(401);
+      expect((await app.request("/auth/trigger", trigger())).body).toMatchObject({
+        params: { policy: "aooth.trigger" },
+      });
+    });
+
+    // The documented "answer some requests yourself" override: no decorators,
+    // a throw (or returned value) is the response, `undefined` falls through.
+    it("an undecorated override keeps the route and the trigger; what it throws is the response", async () => {
+      @Inherit()
+      @Controller("auth")
+      class TenantGate extends AuthController {
+        override triggerWf(): unknown {
+          if (useRequest().headers["x-tenant"] === undefined) {
+            throw new HttpError(400, "Missing tenant");
+          }
+          return undefined;
+        }
+      }
+      const app = await prepareFlowApp({ controllerClass: TenantGate });
+      const refused = await app.start("auth/login/flow");
+      expect(refused.status).toBe(400);
+      expect(refused.body).toMatchObject({ message: "Missing tenant" });
+      const started = await app.start("auth/login/flow", { "x-tenant": "t-1" });
+      expect(started.body.inputRequired?.payload?.id).toBe("LoginCredentialsForm");
+    });
+
+    it("policies: { 'aooth.trigger': false } switches it off", async () => {
+      const app = await prepareControllerApp({
+        rateLimit: { policies: { "aooth.trigger": false } },
+      });
+      for (let i = 0; i < 3; i++) {
+        const res = await app.request("/auth/trigger", trigger());
+        expect(res.status).not.toBe(429);
+        expect(res.response?.headers.get("ratelimit-policy")).toBeNull();
+      }
     });
   });
 

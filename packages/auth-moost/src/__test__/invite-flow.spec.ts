@@ -1,5 +1,5 @@
 import { AuthCredential, CredentialStoreMemory } from "@aooth/auth";
-import { UserService, UserStoreMemory } from "@aooth/user";
+import { UserAuthError, type UserCredentials, UserService, UserStoreMemory } from "@aooth/user";
 import { Get, Query } from "@moostjs/event-http";
 import { Controller, Inherit, Injectable, useControllerContext } from "moost";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -15,6 +15,7 @@ import { peekInvite } from "../workflow/invite-peek";
 import { ExtendedInviteForm } from "./fixtures/invite-ext.as";
 import {
   completeAccept,
+  type FlowResponse,
   FlowWorkflow,
   issueInvite,
   prepareFlowApp,
@@ -288,6 +289,324 @@ describe("S7 (F43): a re-invite supersedes earlier links", () => {
     expect(seen).toEqual({ infer: issuer, prepare: issuer });
     const user = await app.users.findByHandle("p@x.test");
     expect(user?.account.invitedBy).toBe(issuer);
+  });
+});
+
+/**
+ * The issuer may grant `Grantable.roles`; each `prepareUser` call returns the
+ * next `tenantId`, so a re-run of it would show on the row.
+ */
+@Inherit()
+@Injectable()
+@Controller()
+class Grantable extends FlowWorkflow {
+  static roles: string[] = [];
+  static prepared = 0;
+  protected override getAvailableRoles(): string[] {
+    return Grantable.roles;
+  }
+  protected override prepareUser(): Record<string, unknown> {
+    Grantable.prepared++;
+    return { tenantId: `t-${Grantable.prepared}` };
+  }
+}
+
+/** A `Grantable` app with two issuers (all roles grantable) and their auth headers. */
+async function bootGrantable() {
+  Grantable.roles = ["admin", "editor", "viewer"];
+  Grantable.prepared = 0;
+  const app = await prepareFlowApp({
+    workflowClass: Grantable,
+    workflowOpts: { autoLoginOnInvite: false },
+  });
+  const ids = {
+    first: await app.seedUser("first-admin", "Password123!"),
+    second: await app.seedUser("second-admin", "Password123!"),
+  };
+  const as = async (id: string) => ({
+    authorization: `Bearer ${(await app.auth.issue(id)).accessToken}`,
+  });
+  return { app, ids, first: await as(ids.first), second: await as(ids.second) };
+}
+
+/**
+ * The admin UI's resend: start the invite flow, then fire the `resend` action
+ * with the email — the body the form client posts for a data-carrying action
+ * (`{ action, formData }`).
+ */
+async function resendInvite(
+  app: PreparedFlowApp,
+  email: string,
+  headers: Record<string, string>,
+  extra: object = {},
+) {
+  const start = await app.start("auth/invite/start", headers);
+  return app.submit(start.body.wfs, { action: "resend", formData: { email, ...extra } }, headers);
+}
+
+/**
+ * Make the invitee accept (and get activated) right after `create-user`'s
+ * fresh read of their row — the second `findByHandle` of an issue run, after
+ * `admin-form`'s — so the run's refresh meets an accepted account. Returns
+ * the account as accepted (read once the acceptance is done).
+ */
+function acceptDuringCreateUser(app: PreparedFlowApp, email: string): () => unknown {
+  const read = app.users.findByHandle.bind(app.users);
+  let reads = 0;
+  let accepted: unknown;
+  vi.spyOn(app.users, "findByHandle").mockImplementation(async (handle: string) => {
+    const row = await read(handle);
+    if (handle === email && ++reads === 2 && row) {
+      expect(await app.users.acceptInvitation(row.id, row.account.inviteNonce)).toBe(true);
+      await app.users.activateAccount(row.id);
+      accepted = await read(handle);
+    }
+    return row;
+  });
+  return () => accepted;
+}
+
+/** The pending invitee's row, with the columns the invite flow writes. */
+async function inviteRow(app: PreparedFlowApp, email: string) {
+  return (await app.users.findByHandle(email)) as unknown as {
+    roles?: string[];
+    tenantId?: string;
+    account: { invitedBy?: string; pendingInvitation?: boolean };
+  } | null;
+}
+
+describe("re-sending a pending invite as it is (the 'resend' verdict)", () => {
+  // WHY: an admin "Resend invite" action had no way to issue a fresh link
+  // without restating the invite (a re-invite replaces roles and extras),
+  // and reading the stored link back is impossible with hashed handles.
+
+  it("issues a fresh link and keeps the roles, extras and issuer; the older link answers 410 INVITE_REPLACED", async () => {
+    const { app, ids, first, second } = await bootGrantable();
+    await issueInvite(app, "r@x.test", { roles: ["editor"] }, first);
+    const sent = await resendInvite(app, "r@x.test", second);
+    expect(sent.status, JSON.stringify(sent.body)).toBeLessThan(300);
+
+    expect(app.emails.map((e) => e.target)).toEqual(["r@x.test", "r@x.test"]);
+    expect(app.emails[1].context).toMatchObject({ roles: ["editor"] });
+    const row = await inviteRow(app, "r@x.test");
+    expect(row?.roles).toEqual(["editor"]);
+    expect(row?.tenantId).toBe("t-1");
+    expect(Grantable.prepared).toBe(1);
+    expect(row?.account.invitedBy).toBe(ids.first);
+    expect(row?.account.pendingInvitation).toBe(true);
+
+    const stale = await openLink(app, app.emails[0].token);
+    expect(stale.status).toBe(410);
+    expect(stale.body).toMatchObject({ code: "INVITE_REPLACED" });
+    const fresh = await openLink(app, app.emails[1].token);
+    expect(fresh.body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+  });
+
+  it("refuses with the invalid-role error when the issuer may not grant a role the invite keeps", async () => {
+    const { app, first } = await bootGrantable();
+    await issueInvite(app, "k@x.test", { roles: ["admin"] }, first);
+    Grantable.roles = ["viewer"];
+    const refused = await resendInvite(app, "k@x.test", first);
+    expect(refused.body.inputRequired?.context?.errors).toEqual({ roles: "Invalid role" });
+    expect(app.emails).toHaveLength(1);
+    // Nothing rotated: the original link still opens.
+    const original = await openLink(app, app.emails[0].token);
+    expect(original.body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+  });
+
+  it("the same rule covers a re-invite that picks no roles (it keeps them); picking grantable ones replaces them", async () => {
+    const { app, first } = await bootGrantable();
+    await issueInvite(app, "n@x.test", { roles: ["admin"] }, first);
+    Grantable.roles = ["viewer"];
+    const keeps = await issueInvite(app, "n@x.test", { roles: [] }, first);
+    expect(keeps.body.inputRequired?.context?.errors).toEqual({ roles: "Invalid role" });
+    expect((await inviteRow(app, "n@x.test"))?.roles).toEqual(["admin"]);
+
+    const replaces = await issueInvite(app, "n@x.test", { roles: ["viewer"] }, first);
+    expect(replaces.status, JSON.stringify(replaces.body)).toBeLessThan(300);
+    expect((await inviteRow(app, "n@x.test"))?.roles).toEqual(["viewer"]);
+  });
+
+  it("an invite revoked meanwhile answers 410 INVITE_CANCELLED and creates nothing", async () => {
+    const { app, first } = await bootGrantable();
+    await issueInvite(app, "gone@x.test", { roles: ["editor"] }, first);
+    const row = await app.users.findByHandle("gone@x.test");
+    expect(await app.users.revokeInvitation(row!.id)).toBe(true);
+    const res = await resendInvite(app, "gone@x.test", first);
+    expect(res.status).toBe(410);
+    expect(res.body).toMatchObject({ code: "INVITE_CANCELLED" });
+    expect(await app.users.findByHandle("gone@x.test")).toBeNull();
+    expect(app.emails).toHaveLength(1);
+  });
+
+  it("an invite accepted meanwhile answers 409 and stays accepted", async () => {
+    const { app, first } = await bootGrantable();
+    await issueInvite(app, "done@x.test", { roles: ["editor"] }, first);
+    const opened = await openLink(app, app.emails[0].token);
+    await completeAccept(app, opened.body.wfs);
+    const res = await resendInvite(app, "done@x.test", first);
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ code: "AOOTH_USER_ALREADY_EXISTS" });
+    expect((await inviteRow(app, "done@x.test"))?.account.pendingInvitation).toBeFalsy();
+  });
+
+  it("ignores roles submitted with a resend", async () => {
+    const { app, first } = await bootGrantable();
+    await issueInvite(app, "i@x.test", { roles: ["editor"] }, first);
+    const sent = await resendInvite(app, "i@x.test", first, { roles: ["admin"] });
+    expect(sent.status, JSON.stringify(sent.body)).toBeLessThan(300);
+    expect((await inviteRow(app, "i@x.test"))?.roles).toEqual(["editor"]);
+    expect(app.emails[1].context).toMatchObject({ roles: ["editor"] });
+  });
+
+  it("a resend for an email that was never invited answers 410, creates nothing and sends nothing", async () => {
+    const { app, first } = await bootGrantable();
+    const res = await resendInvite(app, "never@x.test", first);
+    expect(res.status).toBe(410);
+    expect(res.body).toMatchObject({ code: "INVITE_CANCELLED" });
+    expect(await app.users.findByHandle("never@x.test")).toBeNull();
+    expect(app.emails).toEqual([]);
+    expect(Grantable.prepared).toBe(0);
+  });
+
+  it("an app `duplicateInviteCheck` that ignores `resend` turns it into a plain re-invite", async () => {
+    @Inherit()
+    @Injectable()
+    @Controller()
+    class IgnoresResend extends Grantable {
+      protected override duplicateInviteCheck(input: { existingUser: UserCredentials | null }) {
+        if (input.existingUser?.account?.pendingInvitation) return "reuse" as const;
+        return input.existingUser ? ("reject" as const) : ("allow" as const);
+      }
+    }
+    Grantable.roles = ["admin", "editor", "viewer"];
+    Grantable.prepared = 0;
+    const app = await prepareFlowApp({
+      workflowClass: IgnoresResend,
+      workflowOpts: { autoLoginOnInvite: false },
+    });
+    const first = await app.seedUser("first-admin", "Password123!");
+    const second = await app.seedUser("second-admin", "Password123!");
+    const as = async (id: string) => ({
+      authorization: `Bearer ${(await app.auth.issue(id)).accessToken}`,
+    });
+    await issueInvite(app, "p@x.test", { roles: ["editor"] }, await as(first));
+    const sent = await resendInvite(app, "p@x.test", await as(second));
+    expect(sent.status, JSON.stringify(sent.body)).toBeLessThan(300);
+    const row = await inviteRow(app, "p@x.test");
+    // A re-invite with no roles: roles kept, `prepareUser` re-run, issuer taken over.
+    expect(row?.roles).toEqual(["editor"]);
+    expect(Grantable.prepared).toBe(2);
+    expect(row?.tenantId).toBe("t-2");
+    expect(row?.account.invitedBy).toBe(second);
+  });
+});
+
+/**
+ * The refresh lost to the acceptance: the coded 409, no new link sent, the
+ * account exactly as accepted, and the accepted link ends at "already accepted".
+ */
+async function expectLostRefresh(
+  app: PreparedFlowApp,
+  email: string,
+  res: FlowResponse,
+  accepted: unknown,
+) {
+  expect(res.status, JSON.stringify(res.body)).toBe(409);
+  expect(res.body).toMatchObject({ code: "AOOTH_USER_ALREADY_EXISTS" });
+  expect(app.emails).toHaveLength(1);
+  const row = await inviteRow(app, email);
+  expect(accepted).toBeDefined();
+  expect(row).toEqual(accepted);
+  expect((row?.account as { active?: boolean } | undefined)?.active).toBe(true);
+  const opened = await openLink(app, app.emails[0].token);
+  expect(opened.body.inputRequired?.payload?.id).toBeUndefined();
+  expect(opened.body.message?.text).toBe("This invite was already accepted.");
+}
+
+describe("an invite accepted while a re-issue runs is left exactly as accepted", () => {
+  // WHY: `create-user` reads the row, sees it pending, then writes the new
+  // link marker (and a re-invite's roles, extras and issuer). An acceptance
+  // landing between the two must win: a refresh landing on the live account
+  // would change its roles or re-arm a link for it.
+
+  it("on a resend", async () => {
+    const { app, first, second } = await bootGrantable();
+    await issueInvite(app, "race1@x.test", { roles: ["editor"] }, first);
+    const accepted = acceptDuringCreateUser(app, "race1@x.test");
+    const res = await resendInvite(app, "race1@x.test", second);
+    await expectLostRefresh(app, "race1@x.test", res, accepted());
+  });
+
+  it("on a re-invite", async () => {
+    const { app, first, second } = await bootGrantable();
+    await issueInvite(app, "race2@x.test", { roles: ["editor"] }, first);
+    const accepted = acceptDuringCreateUser(app, "race2@x.test");
+    const res = await issueInvite(app, "race2@x.test", { roles: ["viewer"] }, second);
+    await expectLostRefresh(app, "race2@x.test", res, accepted());
+    // Nothing of the re-invite landed: roles, extras and issuer as accepted.
+    const row = await inviteRow(app, "race2@x.test");
+    expect(row?.roles).toEqual(["editor"]);
+    expect(row?.tenantId).toBe("t-1");
+  });
+});
+
+/**
+ * Revoke the invite right after `create-user`'s lookup of the row (the second
+ * `findByHandle` of an issue run) — before its refresh reads the row.
+ */
+function revokeDuringCreateUser(app: PreparedFlowApp, email: string): void {
+  const read = app.users.findByHandle.bind(app.users);
+  let reads = 0;
+  vi.spyOn(app.users, "findByHandle").mockImplementation(async (handle: string) => {
+    const row = await read(handle);
+    if (handle === email && ++reads === 2 && row) {
+      expect(await app.users.revokeInvitation(row.id)).toBe(true);
+    }
+    return row;
+  });
+}
+
+describe("a re-issue meeting a row revoked after its lookup, or exhausted retries", () => {
+  // WHY: the row can disappear between `create-user`'s lookup and the
+  // refresh's own read (a revoke), and the refresh's compare-and-set can run
+  // out of retries under contention. Both have documented answers — not a 500.
+
+  it("a resend answers 410 INVITE_CANCELLED, creates nothing and sends nothing", async () => {
+    const { app, first } = await bootGrantable();
+    await issueInvite(app, "rv1@x.test", { roles: ["editor"] }, first);
+    revokeDuringCreateUser(app, "rv1@x.test");
+    const res = await resendInvite(app, "rv1@x.test", first);
+    expect(res.status, JSON.stringify(res.body)).toBe(410);
+    expect(res.body).toMatchObject({ code: "INVITE_CANCELLED" });
+    vi.restoreAllMocks();
+    expect(await app.users.findByHandle("rv1@x.test")).toBeNull();
+    expect(app.emails).toHaveLength(1);
+  });
+
+  it("a re-invite continues as a new invite", async () => {
+    const { app, first } = await bootGrantable();
+    await issueInvite(app, "rv2@x.test", { roles: ["editor"] }, first);
+    const revoked = (await app.users.findByHandle("rv2@x.test"))!.id;
+    revokeDuringCreateUser(app, "rv2@x.test");
+    const res = await issueInvite(app, "rv2@x.test", { roles: ["viewer"] }, first);
+    expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+    vi.restoreAllMocks();
+    const row = await inviteRow(app, "rv2@x.test");
+    expect((row as unknown as { id: string }).id).not.toBe(revoked);
+    expect(row?.account.pendingInvitation).toBe(true);
+    expect(row?.roles).toEqual(["viewer"]);
+    expect(app.emails).toHaveLength(2);
+  });
+
+  it("exhausted compare-and-set retries answer 409 AOOTH_USER_CAS_EXHAUSTED and send nothing", async () => {
+    const { app, first } = await bootGrantable();
+    await issueInvite(app, "cas@x.test", { roles: ["editor"] }, first);
+    vi.spyOn(app.users, "refreshInvitation").mockRejectedValue(new UserAuthError("CAS_EXHAUSTED"));
+    const res = await resendInvite(app, "cas@x.test", first);
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ code: "AOOTH_USER_CAS_EXHAUSTED" });
+    expect(app.emails).toHaveLength(1);
   });
 });
 

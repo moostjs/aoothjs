@@ -47,7 +47,13 @@ export interface RateLimitInterceptorOptions {
    * `@RateLimit(...)` metadata. Opt out per-route with `@RateLimit(false)`.
    */
   rules?: RateLimitRuleInput[];
-  /** Default key strategy for routes whose `@RateLimit` doesn't set one. Default: `'ip'`. */
+  /**
+   * Default key strategy for routes whose `@RateLimit` doesn't set one (the
+   * bundled route policies included). Default: `'ip'`. Route policies only:
+   * `aooth.send` and the one-time-code counters always key on the client IP
+   * the HTTP app resolves (`useRequest().getIp()`) — keep a custom key in
+   * agreement with it.
+   */
   key?: RateLimitKeyStrategy;
   /**
    * @deprecated Set `trustProxy` (and `proxyHeaders`) on the HTTP app instead;

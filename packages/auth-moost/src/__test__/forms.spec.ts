@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 
+import { createFormDef, getDeclaredFormActions } from "@atscript/ui";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -52,13 +53,39 @@ describe("default form .as models", () => {
     expect(email.metadata.get("meta.required")).toBeTruthy();
   });
 
-  it("SetPasswordForm requires both newPassword and confirmPassword with min length 8", () => {
+  it("SetPasswordForm requires both newPassword and confirmPassword, with no fixed minimum length", () => {
     const newPwd = getProp(SetPasswordForm, "newPassword");
     const confirm = getProp(SetPasswordForm, "confirmPassword");
-    expect(newPwd.metadata.get("expect.minLength")).toMatchObject({ length: 8 });
-    expect(confirm.metadata.get("expect.minLength")).toMatchObject({ length: 8 });
+    expect(newPwd.metadata.get("meta.required")).toBeTruthy();
+    expect(confirm.metadata.get("meta.required")).toBeTruthy();
+    // The minimum comes from the configured policy (see password-forms.spec.ts).
+    expect(newPwd.metadata.get("expect.minLength")).toBeUndefined();
+    expect(confirm.metadata.get("expect.minLength")).toBeUndefined();
     expect(newPwd.metadata.get("ui.form.autocomplete")).toBe("new-password");
     expect(confirm.metadata.get("ui.form.autocomplete")).toBe("new-password");
+  });
+
+  it("InviteForm: roles is an optional multiselect; `resend` is a never-rendered, data-carrying action", () => {
+    const roles = getProp(InviteForm, "roles");
+    expect(roles.metadata.get("ui.form.type")).toBe("multiselect");
+    expect(roles.metadata.get("meta.required")).toBeFalsy();
+    expect(roles.optional).toBe(true);
+    const resend = getProp(InviteForm, "resend");
+    expect(resend.optional).toBe(true);
+    expect(resend.metadata.get("ui.form.fn.hidden")).toBeTruthy();
+    // WHY: the form client posts `formData` only with a data-carrying action;
+    // a plain action would reach the server without the email.
+    expect(getDeclaredFormActions(createFormDef(InviteForm))).toContainEqual({
+      id: "resend",
+      withData: true,
+    });
+    // A resend needs nothing but the email.
+    expect(() => InviteForm.validator().validate({ email: "ann@example.com" })).not.toThrow();
+  });
+
+  it("EmailIdentifierForm's description holds for a code and for a link", () => {
+    const description = EmailIdentifierForm.metadata.get("meta.description") as string;
+    expect(description).not.toMatch(/\blink\b|\bcode\b/i);
   });
 
   it("ProveControlForm requires a password with current-password autocomplete", () => {
@@ -85,13 +112,12 @@ describe("default form .as models", () => {
     expect(getProp(ProveControlOtpForm, "resend")).toBeDefined();
   });
 
-  it("InviteForm has required email and roles", () => {
+  it("InviteForm has a required email and a roles field", () => {
     const email = getProp(InviteForm, "email");
     const roles = getProp(InviteForm, "roles");
     expect(email.metadata.get("meta.required")).toBeTruthy();
     expect(email.type?.tags as string[] | undefined).toContain("email");
     expect(roles).toBeDefined();
-    expect(roles.optional).toBeFalsy();
   });
 
   it("each form validator accepts well-formed input", () => {
@@ -128,7 +154,7 @@ describe("default form .as models", () => {
     expect(() => MfaCodeForm.validator().validate({ code: "abcd" })).toThrow();
     expect(() => EmailIdentifierForm.validator().validate({ email: "not-an-email" })).toThrow();
     expect(() =>
-      SetPasswordForm.validator().validate({ newPassword: "short", confirmPassword: "short" }),
+      SetPasswordForm.validator().validate({ newPassword: "", confirmPassword: "" }),
     ).toThrow();
     // OTP proof code is digit-only; a non-numeric code is rejected.
     expect(() => ProveControlOtpForm.validator().validate({ code: "abcd" })).toThrow();

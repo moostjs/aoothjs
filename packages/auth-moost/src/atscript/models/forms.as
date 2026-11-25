@@ -169,9 +169,12 @@ export interface MfaCodeForm {
  * `?username=` query param (carried in by the login workflow's
  * `forgotPassword` alt-action). Without this annotation the field is
  * stripped by `extractPassContext` before reaching the client.
+ *
+ * The description holds for every recovery delivery mode (a one-time code by
+ * default, a magic link, or the user's choice of the two).
  */
 @meta.label 'Forgot your password?'
-@meta.description 'Enter your account email and we will send you a recovery link.'
+@meta.description 'Enter your account email and we will send you instructions to reset your password.'
 @wf.context.pass 'public'
 export interface EmailIdentifierForm {
     @ui.form.order 10
@@ -227,10 +230,10 @@ export interface SignupForm {
 /**
  * Set new password form.
  *
- * Cross-field equality — `confirmPassword === newPassword` — is enforced by
- * the `@ui.form.validate` rule below (client + server validators key on the
- * same expression). The workflow step retains a defensive equality check as
- * a belt-and-braces guard.
+ * The `@ui.form.validate` rules below run in the browser; the workflow step
+ * repeats each one on the server: cross-field equality
+ * (`confirmPassword === newPassword`) and the minimum length — the configured
+ * `PP_MIN_LENGTH` password policy's (`ctx.public.password.policies`), else 8.
  *
  * `@wf.context.pass 'public'` whitelists the `AuthWfPasswordUiState`
  * group on `ctx.password` so the prior preparePasswordRules /
@@ -285,7 +288,7 @@ export interface SetPasswordForm extends WithInlineConsentForm {
     @ui.form.autocomplete 'new-password'
     @meta.sensitive
     @meta.required
-    @expect.minLength 8
+    @ui.form.validate '(v, _d, ctx, _e, t) => { const p = (ctx?.public?.password?.policies || []).find((r) => r.code === "PP_MIN_LENGTH"); const min = typeof p?.params?.min === "number" ? p.params.min : 8; return !v || v.length >= min || p?.errorMessage || t("Password must be at least {min} characters long", { min }) }'
     newPassword: string
 
     @ui.form.order 20
@@ -294,7 +297,6 @@ export interface SetPasswordForm extends WithInlineConsentForm {
     @ui.form.autocomplete 'new-password'
     @meta.sensitive
     @meta.required
-    @expect.minLength 8
     @ui.form.validate '(v, data, ctx, _e, t) => v === data.newPassword || ctx?.public?.messages?.PASSWORDS_DO_NOT_MATCH || t("Passwords must match")'
     confirmPassword: string
 
@@ -338,6 +340,12 @@ export interface SetPasswordForm extends WithInlineConsentForm {
  *
  * No cancel alt-action: an admin who wants to back out navigates away from
  * the page (the wf state token expires per the engine's TTL).
+ *
+ * `resend` is a data-carrying action that is never rendered: an admin UI fires
+ * it with the pending invitee's `email` (`{ action: "resend", formData:
+ * { email } }`) to re-send that invite as it is — a fresh link, its roles and
+ * extras kept (`duplicateInviteCheck` → `'resend'`). `roles` is optional so
+ * that submit needs nothing else; an invite without roles submits none.
  */
 @meta.label 'Send an invitation'
 @meta.description 'Enter the recipient email address and pick the roles to grant on acceptance. They will receive a magic link to set their password.'
@@ -350,13 +358,15 @@ export interface InviteForm {
     @meta.required
     email: string.email
 
-    // UX: select-on-array currently renders single-text-per-item via AsArray;
-    // dedicated multi-select widget tracked as atscript-ui follow-up.
     @ui.form.order 20
-    @ui.form.type 'select'
+    @ui.form.type 'multiselect'
     @ui.form.fn.options '(_, _data, context) => Array.isArray(context.public?.admin?.availableRoles) ? context.public.admin.availableRoles.map(r => ({ key: r, label: r })) : []'
     @meta.label 'Roles'
-    roles: string[]
+    roles?: string[]
+
+    @wf.action.withData 'resend'
+    @ui.form.fn.hidden '() => true'
+    resend?: ui.action
 }
 
 /**
@@ -928,7 +938,7 @@ export interface ChangePasswordForm {
     @ui.form.autocomplete 'new-password'
     @meta.sensitive
     @meta.required
-    @expect.minLength 8
+    @ui.form.validate '(v, _d, ctx, _e, t) => { const p = (ctx?.public?.password?.policies || []).find((r) => r.code === "PP_MIN_LENGTH"); const min = typeof p?.params?.min === "number" ? p.params.min : 8; return !v || v.length >= min || p?.errorMessage || t("Password must be at least {min} characters long", { min }) }'
     newPassword: string
 
     @ui.form.order 20
@@ -937,7 +947,6 @@ export interface ChangePasswordForm {
     @ui.form.autocomplete 'new-password'
     @meta.sensitive
     @meta.required
-    @expect.minLength 8
     @ui.form.validate '(v, data, ctx, _e, t) => v === data.newPassword || ctx?.public?.messages?.PASSWORDS_DO_NOT_MATCH || t("Passwords must match")'
     confirmPassword: string
 

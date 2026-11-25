@@ -73,6 +73,21 @@ export const REFRESH_RATE_LIMITS = {
 } as const;
 
 /**
+ * Default rate limit of the bundled workflow-trigger routes — `POST
+ * /auth/trigger`, `/auth/change-password` and `/auth/add-mfa` — by policy id;
+ * the three share one budget per caller. Re-tune or switch it off with
+ * `rateLimitInterceptors({ policies })`.
+ */
+export const TRIGGER_RATE_LIMITS = {
+  /**
+   * Per client IP (or the interceptor's `key`) — every step of every bundled
+   * flow posts to a trigger route, so it is generous; it bounds password and
+   * code guessing from one caller.
+   */
+  "aooth.trigger": "150/5m",
+} as const;
+
+/**
  * Public REST endpoints for credential management. Four endpoints total:
  *
  * - `POST /auth/logout` — best-effort token revocation + cookie clear.
@@ -240,8 +255,14 @@ export class AuthController {
     return auth;
   }
 
+  /**
+   * The bundled workflows' single public entry point (start and resume). Rate
+   * limited by `aooth.trigger` ({@link TRIGGER_RATE_LIMITS}, shared with the
+   * other trigger routes), enforced when `rateLimitInterceptors` are installed.
+   */
   @Post("trigger")
   @Public()
+  @RateLimit(TRIGGER_RATE_LIMITS["aooth.trigger"], { id: "aooth.trigger" })
   @WfTrigger({ allow: [...DEFAULT_AUTH_WORKFLOWS] })
   triggerWf(): void {
     // Body intentionally empty — `@WfTrigger`'s after-interceptor writes the
@@ -261,11 +282,12 @@ export class AuthController {
    * `allow("auth.change-password", "*")` grant and forbids it (SSO-only orgs)
    * by omitting that grant. The flow binds `ctx.subject` from the session in
    * `init-change-password`, so it is structurally "change MY password" — there
-   * is no target-user parameter.
+   * is no target-user parameter. Shares the `aooth.trigger` rate limit.
    */
   @Post("change-password")
   @ArbacResource("auth.change-password")
   @ArbacAction("self")
+  @RateLimit(TRIGGER_RATE_LIMITS["aooth.trigger"], { id: "aooth.trigger" })
   @WfTrigger({ allow: [CHANGE_PASSWORD_WORKFLOW] })
   changePassword(): void {
     // Body intentionally empty — see `triggerWf`.
@@ -281,10 +303,12 @@ export class AuthController {
    * `allow("auth.add-mfa", "*")` grant and forbids it by omitting it. The flow
    * binds `ctx.subject` from the session in `init-add-mfa`, so it is
    * structurally "add a factor to MY account" with no target-user parameter.
+   * Shares the `aooth.trigger` rate limit.
    */
   @Post("add-mfa")
   @ArbacResource("auth.add-mfa")
   @ArbacAction("self")
+  @RateLimit(TRIGGER_RATE_LIMITS["aooth.trigger"], { id: "aooth.trigger" })
   @WfTrigger({ allow: [ADD_MFA_WORKFLOW] })
   addMfa(): void {
     // Body intentionally empty — see `triggerWf`.

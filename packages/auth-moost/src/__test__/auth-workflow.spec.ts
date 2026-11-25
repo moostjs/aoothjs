@@ -1096,7 +1096,7 @@ describe("AuthWorkflow invite re-invite ('reuse' verdict)", () => {
     expect(await check(null)).toBe("allow");
   });
 
-  it("create-user reuse — refreshes the pending row in place: roles replaced, extras merged, pending re-asserted, subject = existing id", async () => {
+  it("create-user reuse — refreshes the pending row in place: roles replaced, extras merged, still pending, subject = existing id", async () => {
     const { wf, users } = makeWorkflowWithDeps();
     const row = await users.createUser("invitee@example.com", undefined, {
       roles: ["admin", "editor"],

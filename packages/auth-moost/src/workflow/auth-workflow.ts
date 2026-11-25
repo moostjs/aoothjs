@@ -28,6 +28,7 @@ import {
 } from "@aooth/auth";
 import type { NormalizedProfile } from "@aooth/idp";
 import {
+  type DeepPartial,
   type FederatedProfileSnapshot,
   generateMfaCode,
   generateTotpSecret,
@@ -36,6 +37,7 @@ import {
   maskPhone,
   type MfaMethod,
   type MfaMethodInfo,
+  PASSWORD_POLICY_MESSAGES,
   pickDefinedProfile,
   SEEN_DEVICES_DEFAULT_CAP,
   type TrustedDeviceRecord,
@@ -103,7 +105,9 @@ import {
   type AoothMessageParams,
   type AoothMessages,
   currentLocale,
+  renderAoothMessage,
   resolveAoothMessage,
+  translateCode,
 } from "./auth-messages";
 import { INVITE_OUTLET, setPendingInviteLink } from "./invite-outlet";
 import { MAGIC_LINK_OUTLET, MAGIC_LINK_STRATEGY } from "./magic-link-outlet";
@@ -503,6 +507,12 @@ export function parseInviteRoles(input?: string[]): string[] {
   return [...seen];
 }
 
+/** The role ids on a user row (its `roles` column, the one the invite flow writes). */
+function rolesOf(user: UserCredentials): string[] {
+  const roles = (user as { roles?: unknown }).roles;
+  return Array.isArray(roles) ? roles.filter((r): r is string => typeof r === "string") : [];
+}
+
 /**
  * Single source of truth for the "this invite was already accepted" finish
  * envelope. Used by both `idempotent-redirect` (in-workflow) and by
@@ -557,6 +567,12 @@ type AltHandled = typeof ALT_HANDLED;
  * re-decorating the step in a subclass.
  */
 const INVITE_LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Minimum length the bundled password forms ask for when no `PP_MIN_LENGTH`
+ * password policy is configured — the same fallback as the forms' own check.
+ */
+const FALLBACK_PASSWORD_MIN_LENGTH = 8;
 
 /** One canonical form of a chosen username: Unicode NFKC, surrounding whitespace trimmed. */
 function normalizeUsername(raw: unknown): string {
@@ -929,20 +945,24 @@ export class AuthWorkflow {
   }
 
   /**
-   * Override the structural duplicate rule for `admin-form`. Default: a row
-   * still parked on `account.pendingInvitation` → `'reuse'` (re-invite:
-   * `create-user` refreshes the existing record in place and `send-email`
-   * mints a fresh magic link — see `createUser`); any other existing row →
-   * `'reject'`; nothing → `'allow'`.
+   * Override the structural duplicate rule for `admin-form`. Default: a
+   * submit with the `resend` action → `'resend'`; a row still parked on
+   * `account.pendingInvitation` → `'reuse'` (re-invite: `create-user`
+   * refreshes the existing record in place and `send-email` mints a fresh
+   * magic link — see `createUser`); any other existing row → `'reject'`;
+   * nothing → `'allow'`.
    *
    * Multi-tenant apps that allow re-inviting the same email into a different
    * tenant override to `'allow'`. Apps that want the strict legacy behavior
    * ("Invite already pending" error on a duplicate invite of a pending user)
    * return `'reject'` for pending rows. Compare `invitedBy` / `app` with
    * `pending` and `existingUser` to refuse taking over another issuer's (or
-   * tenant's) pending invite. On `'reuse'` the row's roles and extras are
-   * REPLACED by this invite's, and every link issued before is superseded
-   * (answers 410 "replaced").
+   * tenant's) pending invite. On `'reuse'` the row takes this invite's roles
+   * (when it picks any) and `prepareUser` extras. On `'resend'` the row keeps
+   * its roles, extras and issuer; only a fresh link is issued (an invite
+   * accepted or revoked meanwhile answers 409 / 410). Either way every link
+   * issued before is superseded (answers 410 "replaced"), and the issuer must
+   * be allowed to grant every role the pending invite keeps.
    */
   protected duplicateInviteCheck(input: {
     email: string;
@@ -955,7 +975,10 @@ export class AuthWorkflow {
     form?: Record<string, unknown>;
     /** The pending invite already on `existingUser`, when there is one. */
     pending?: { invitedBy?: string };
-  }): Promise<"allow" | "reject" | "reuse"> | "allow" | "reject" | "reuse" {
+    /** The admin form was submitted with the `resend` action. */
+    resend?: boolean;
+  }): Promise<"allow" | "reject" | "reuse" | "resend"> | "allow" | "reject" | "reuse" | "resend" {
+    if (input.resend) return "resend";
     if (input.existingUser?.account?.pendingInvitation) return "reuse";
     return input.existingUser ? "reject" : "allow";
   }
@@ -3390,25 +3413,30 @@ export class AuthWorkflow {
    * `ctx.admin.roles`. Server-side enforces the `availableRoles` whitelist
    * (populated by `prepare-available-roles`) and, via {@link effectiveInviteRoles},
    * ignores any submitted roles when `resolveAdminForm` set `collectRoles:false`.
-   * Calls `duplicateInviteCheck` to decide whether to reject duplicates.
+   * Calls `duplicateInviteCheck` to decide whether to reject duplicates. The
+   * whitelist also covers the roles a pending invite keeps: on `'resend'`, and
+   * on a `'reuse'` that picks no roles, every role already on the row must be
+   * one the issuer may grant.
    */
   @Step("admin-form")
   @ArbacResource("auth.invite")
   @ArbacAction("start")
   async adminForm(@WorkflowParam("context") ctx: AuthWfCtx): Promise<unknown> {
     const wf = this.useAtscriptWfPublic(ctx, this.opts.forms.invite);
+    const resend = wf.resolveAction() === "resend";
     const { email, roles, ...extra } = wf.resolveInput() as {
       email: string;
-      roles: string[];
+      roles?: string[];
     } & Record<string, unknown>;
-    const parsed = this.effectiveInviteRoles(ctx, roles);
-    if (Array.isArray(ctx.admin?.availableRoles)) {
+    const parsed = this.effectiveInviteRoles(ctx, roles ?? []);
+    const refuseUnavailableRoles = (picked: string[]): void => {
+      if (!Array.isArray(ctx.admin?.availableRoles)) return;
       const allowed = new Set(ctx.admin.availableRoles);
-      const bad = parsed.find((r) => !allowed.has(r));
-      if (bad !== undefined) {
+      if (picked.some((r) => !allowed.has(r))) {
         throw this.throwPublic(ctx, wf, { errors: { roles: this.msg("AOOTH_INVALID_ROLE") } });
       }
-    }
+    };
+    refuseUnavailableRoles(parsed);
     if (Object.keys(extra).length > 0) (ctx.admin ??= {}).form = extra;
     const existing = await this.users.findByHandle(email);
     const invitedBy = useAuth().getAuthContext()?.userId;
@@ -3423,6 +3451,7 @@ export class AuthWorkflow {
       ...(existing?.account?.pendingInvitation && {
         pending: pendingIssuer === undefined ? {} : { invitedBy: pendingIssuer },
       }),
+      ...(resend && { resend }),
     });
     if (action === "reject") {
       if (existing?.account?.pendingInvitation) {
@@ -3434,17 +3463,36 @@ export class AuthWorkflow {
         });
       throw this.throwPublic(ctx, wf, { errors: { email: this.msg("DUPLICATE_INVITE_REJECTED") } });
     }
-    if (action === "reuse") {
+    // Roles a pending invite keeps — on a resend, or a re-invite that picks
+    // none — must be grantable by this issuer, like picked ones.
+    const kept =
+      existing?.account?.pendingInvitation &&
+      (action === "resend" || (action === "reuse" && parsed.length === 0))
+        ? rolesOf(existing)
+        : [];
+    refuseUnavailableRoles(kept);
+    if (action === "reuse" || action === "resend") {
       // Decision stamp only — `create-user` re-validates against a fresh read
-      // (pending-invitation guard + vanished-row fall-through), so a stale or
-      // wrong verdict can't silently re-pend an accepted account.
-      (ctx.admin ??= {}).reuseExisting = true;
-      if (pendingIssuer !== undefined && invitedBy !== undefined && pendingIssuer !== invitedBy) {
+      // (vanished-row fall-through) and refreshes through
+      // `UserService.refreshInvitation`, which writes only while the row is
+      // still pending — an accepted account (even one accepted between that
+      // read and the write) is never touched.
+      const admin = (ctx.admin ??= {});
+      admin.reuseExisting = true;
+      if (action === "resend") {
+        admin.resend = true;
+      } else if (
+        pendingIssuer !== undefined &&
+        invitedBy !== undefined &&
+        pendingIssuer !== invitedBy
+      ) {
         this.warnCrossIssuerReuse();
       }
     }
     ctx.email = email;
-    if (parsed.length > 0) (ctx.admin ??= {}).roles = parsed;
+    // A resend's link carries the roles the invite keeps (the email lists them).
+    const linkRoles = action === "resend" ? kept : parsed;
+    if (linkRoles.length > 0) (ctx.admin ??= {}).roles = linkRoles;
     return undefined;
   }
 
@@ -3456,7 +3504,8 @@ export class AuthWorkflow {
   @ArbacResource("auth.invite")
   @ArbacAction("start")
   async inferRoles(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
-    if (!ctx.email) return undefined;
+    // A resend keeps the pending invite's roles as they are.
+    if (!ctx.email || ctx.admin?.resend) return undefined;
     const inferred = await this.inferAdminRoles({ email: ctx.email, ...this.inviteHookInput(ctx) });
     if (inferred.length === 0) return undefined;
     const admin = (ctx.admin ??= {});
@@ -3475,6 +3524,11 @@ export class AuthWorkflow {
   @ArbacAction("start")
   async buildUserExtras(@WorkflowParam("context") ctx: AuthWfCtx): Promise<undefined> {
     if (!ctx.email) throw new HttpError(500, "Workflow state corrupted: missing email");
+    // A resend keeps the pending invite's extras: nothing to prepare.
+    if (ctx.admin?.resend) {
+      ctx.admin.userExtras = {};
+      return undefined;
+    }
     // Stamped by `admin-form`; a resumed run whose admin-form predates it
     // falls back to the session.
     const invitedBy = ctx.admin?.invitedBy ?? useAuth().getAuthContext()?.userId;
@@ -3513,16 +3567,27 @@ export class AuthWorkflow {
    *
    * Re-invite (`ctx.admin.reuseExisting`, stamped by `admin-form` on a
    * `'reuse'` verdict): REFRESH the existing row instead of creating — apply
-   * the freshly-picked roles + `prepareUser` extras, re-assert
-   * `pendingInvitation`, and leave password/MFA state untouched (a pending
+   * the freshly-picked roles + `prepareUser` extras, rotate the link marker
+   * (and `invitedBy`), and leave password/MFA state untouched (a pending
    * record never had usable credentials). `send-email` downstream then mints
-   * a fresh durable handle, i.e. a new full-TTL magic link. Guarded by a
-   * FRESH `pendingInvitation` read: a `'reuse'` verdict for an accepted
-   * account 409s as a logic error rather than silently re-pending a live
-   * user; a row that vanished since `admin-form` falls through to the normal
-   * create path. The refresh is a deep-merge update: arrays (`roles`)
-   * replace wholesale, but extras keys the current `prepareUser` no longer
-   * returns linger from the original invite.
+   * a fresh durable handle, i.e. a new full-TTL magic link. A row that
+   * vanished since `admin-form` falls through to the normal create path. The
+   * refresh is a deep-merge update: arrays (`roles`) replace wholesale, but
+   * extras keys the current `prepareUser` no longer returns linger from the
+   * original invite.
+   *
+   * Resend (`ctx.admin.resend`, the `'resend'` verdict): rotate only the
+   * link marker — roles, extras and `invitedBy` stay. One revoked meanwhile
+   * (the row is gone) answers 410 `INVITE_CANCELLED` instead of creating an
+   * account.
+   *
+   * Both refreshes go through `UserService.refreshInvitation` — one
+   * compare-and-set write applied only while the row is still pending — so an
+   * invite accepted before or during the refresh answers 409, nothing is
+   * sent, and the accepted account is left exactly as it was. The refresh
+   * never writes `pendingInvitation`; only the create path stamps it. A row
+   * revoked between the lookup and the refresh counts as vanished (above);
+   * exhausted CAS retries answer 409 `AOOTH_USER_CAS_EXHAUSTED`.
    */
   @Step("create-user")
   @ArbacResource("auth.invite")
@@ -3538,24 +3603,32 @@ export class AuthWorkflow {
     // A fresh marker per issued link: a later re-invite rotates the row's
     // marker, which supersedes this run's link (checked at accept).
     admin.inviteNonce = randomBytes(16).toString("base64url");
-    const pendingAccount = {
-      pendingInvitation: true,
+    // What a link (re)issue rotates on the row — never `pendingInvitation`.
+    const rotated = {
       inviteNonce: admin.inviteNonce,
-      ...(admin.invitedBy && { invitedBy: admin.invitedBy }),
+      ...(admin.invitedBy && !admin.resend && { invitedBy: admin.invitedBy }),
     };
     if (admin.reuseExisting) {
       const existing = await this.users.findByHandle(ctx.email);
+      // `undefined` = the row vanished (gone at the lookup, or revoked between
+      // the lookup and the refresh's own read).
+      let refreshed: boolean | undefined;
       if (existing) {
-        if (!existing.account?.pendingInvitation) {
-          throw this.httpError(409, "AOOTH_USER_ALREADY_EXISTS");
+        const patch = admin.resend ? { account: rotated } : { ...fields, account: rotated };
+        try {
+          refreshed = await this.withStoreErrorTranslation(() =>
+            this.users.refreshInvitation(existing.id, patch as DeepPartial<UserCredentials>),
+          );
+        } catch (err) {
+          if (!(err instanceof UserAuthError && err.type === "NOT_FOUND")) throw err;
         }
-        await this.users.update(existing.id, {
-          ...fields,
-          account: pendingAccount,
-        } as Partial<UserCredentials>);
+      }
+      if (refreshed === false) throw this.httpError(409, "AOOTH_USER_ALREADY_EXISTS");
+      if (refreshed && existing) {
         ctx.subject = existing.id;
         return undefined;
       }
+      if (admin.resend) throw this.httpError(410, "INVITE_CANCELLED");
     }
     let created: UserCredentials;
     try {
@@ -3567,7 +3640,7 @@ export class AuthWorkflow {
       throw err;
     }
     await this.users.update(created.id, {
-      account: pendingAccount,
+      account: { pendingInvitation: true, ...rotated },
     } as Partial<UserCredentials>);
     // The subject is the stable id (NOT the email handle) — downstream steps
     // resolve the user via id-keyed UserService calls.
@@ -3834,6 +3907,7 @@ export class AuthWorkflow {
         errors: { confirmPassword: this.msg("PASSWORDS_DO_NOT_MATCH") },
       });
     }
+    this.refuseShortPassword(ctx, wf, input.newPassword);
     // Invite accept: never set a password through a used link (a superseded
     // or cancelled one was already refused when `user` was read).
     if (ctx.accept && !user?.account?.pendingInvitation) {
@@ -3938,6 +4012,7 @@ export class AuthWorkflow {
         errors: { confirmPassword: this.msg("PASSWORDS_DO_NOT_MATCH") },
       });
     }
+    this.refuseShortPassword(ctx, wf, input.newPassword);
     try {
       await this.users.changePassword(
         ctx.subject,
@@ -3954,6 +4029,29 @@ export class AuthWorkflow {
     }
     delete ctx.passwordFormStamp;
     return undefined;
+  }
+
+  /**
+   * The bundled password forms' length rule, checked on the server as the
+   * form checks it in the browser: the configured `PP_MIN_LENGTH` policy
+   * (`UserService.getTransferablePolicies()` — what `prepare-password-rules`
+   * ships to the form; `UserService` enforces it with the other policies),
+   * else {@link FALLBACK_PASSWORD_MIN_LENGTH} characters, answered on
+   * `newPassword` with the `PP_MIN_LENGTH` text. Read from the service, not
+   * the context, so it holds whatever steps a schema runs before.
+   */
+  private refuseShortPassword(
+    ctx: AuthWfCtx,
+    wf: { requireInput(opts?: { errors?: Record<string, string> }): unknown },
+    password: string,
+  ): void {
+    if (this.users.getTransferablePolicies().some((p) => p.code === "PP_MIN_LENGTH")) return;
+    const min = FALLBACK_PASSWORD_MIN_LENGTH;
+    if (password.length >= min) return;
+    const english = renderAoothMessage(PASSWORD_POLICY_MESSAGES.PP_MIN_LENGTH, { min });
+    throw this.throwPublic(ctx, wf, {
+      errors: { newPassword: translateCode("PP_MIN_LENGTH", { min }, english) },
+    });
   }
 
   /**
@@ -4600,9 +4698,13 @@ export class AuthWorkflow {
 
   /**
    * Resolve the client IP from the active HTTP request — the IP the HTTP app
-   * resolves (its `trustProxy` / `proxyHeaders`), the same one the rate
-   * limiter keys on — swallowing the case where there is no HTTP context
-   * (unit tests that hand-roll the wf runtime).
+   * resolves (its `trustProxy` / `proxyHeaders`) — swallowing the case where
+   * there is no HTTP context (unit tests that hand-roll the wf runtime).
+   *
+   * Feeds the IP recorded on sessions ({@link resolveIssueMetadata}) and the
+   * `cookie+ip` device-trust binding only. Overriding it does not change the
+   * client IP of the rate limits (`'ip'` policies, `aooth.send`) or of the
+   * one-time-code counters: those always use the HTTP app's resolution.
    */
   protected resolveClientIp(): string | undefined {
     return requestClientIp() || undefined;

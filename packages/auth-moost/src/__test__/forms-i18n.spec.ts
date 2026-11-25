@@ -234,8 +234,8 @@ describe("forms served under a translator", () => {
 });
 
 describe("workflow form validation under a translator", () => {
-  it("a set-password minLength error is worded in the request's language", async () => {
-    setTranslator({ en: {}, de: DE });
+  it("a set-password minimum-length error is worded in the request's language (by PP_MIN_LENGTH)", async () => {
+    setTranslator({ en: {}, de: { ...DE, PP_MIN_LENGTH: "Mindestens {min} Zeichen" } });
     const app = await prepareFlowApp({ httpApp: localizedHttpApp });
     const de = { "accept-language": "de" };
     const id = await app.seedUser("alice", "Password123!");
