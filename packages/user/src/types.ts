@@ -15,7 +15,8 @@ export interface UserCredentials {
   /**
    * Persisted device-trust records ("remember this device, skip MFA next
    * time"). Managed by `UserService.{issue,add,verify,revoke,list}TrustedDevice`.
-   * Absent when the user has never opted in.
+   * Absent when the user has never opted in. Emptied by every password change
+   * (`changePassword` / `setPassword`).
    */
   trustedDevices?: TrustedDeviceRecord[];
   /**
@@ -114,6 +115,12 @@ export interface MfaMethod {
 
 export interface UserServiceConfig {
   password?: PasswordConfig;
+  /**
+   * Failed-sign-in lockout (password and TOTP failures share one counter).
+   * Omitted: 10 failures lock the account for 15 minutes. Passed: its own
+   * fields apply, each defaulting to `0` — `{ threshold: 0 }` turns lockout
+   * off, `duration: 0` makes a lock permanent.
+   */
   lockout?: LockoutConfig;
   /** Injectable clock for testability. Defaults to Date.now */
   clock?: () => number;

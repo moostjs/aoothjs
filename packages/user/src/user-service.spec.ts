@@ -14,6 +14,13 @@ async function createActiveUser(svc: UserService, username: string, password?: s
   return user;
 }
 
+/** `n` failed sign-ins of `handle`, each answered with an error. */
+async function failLogins(service: UserService, handle: string, n: number): Promise<void> {
+  for (let i = 0; i < n; i++) {
+    await expect(service.login(handle, "wrong")).rejects.toBeInstanceOf(UserAuthError);
+  }
+}
+
 describe("UserService", () => {
   let store: UserStoreMemory;
   let svc: UserService;
@@ -302,6 +309,61 @@ describe("UserService", () => {
       await svc.recordLogin(alice.id);
       const user = await svc.getUser(alice.id);
       expect(user.account.failedLoginAttempts).toBe(0);
+    });
+  });
+
+  describe("lockout default", () => {
+    // WHY: without a lockout an online attacker can guess passwords (and TOTP
+    // codes, which share the counter) without limit. An omitted `lockout`
+    // locks; an explicit one keeps its own defaults.
+    it("locks after 10 failed sign-ins for 15 minutes when `lockout` is omitted", async () => {
+      const alice = await createActiveUser(svc, "alice", "pass123");
+      await failLogins(svc, "alice", 9);
+      expect((await svc.getUser(alice.id)).account.locked).toBe(false);
+      await failLogins(svc, "alice", 1);
+      const locked = await svc.getUser(alice.id);
+      expect(locked.account.locked).toBe(true);
+      expect(locked.account.lockEnds).toBe(now + 15 * 60_000);
+      await expect(svc.login("alice", "pass123")).rejects.toMatchObject({ type: "LOCKED" });
+      now += 15 * 60_000 + 1;
+      expect((await svc.login("alice", "pass123")).user.id).toBe(alice.id);
+    });
+
+    it("counts wrong TOTP codes toward the same default lockout", async () => {
+      const alice = await createActiveUser(svc, "alice", "pass123");
+      await svc.addMfaMethod(alice.id, {
+        name: "totp",
+        confirmed: true,
+        value: generateTotpSecret(),
+      });
+      await failLogins(svc, "alice", 5);
+      for (let i = 0; i < 5; i++) {
+        await expect(svc.verifyMfa(alice.id, "000000", { clock: () => now })).rejects.toMatchObject(
+          { type: "MFA_INVALID" },
+        );
+      }
+      expect((await svc.getUser(alice.id)).account.locked).toBe(true);
+    });
+
+    it.each([
+      ["{ threshold: 0 }", { threshold: 0 }],
+      ["{}", {}],
+      ["{ duration: 60_000 } (no threshold)", { duration: 60_000 }],
+    ])("an explicit lockout %s never locks", async (_label, lockout) => {
+      const off = new UserService(store, {
+        password: { ...FAST_SCRYPT },
+        lockout,
+        clock: () => now,
+      });
+      const alice = await createActiveUser(off, "alice", "pass123");
+      await failLogins(off, "alice", 25);
+      expect((await off.getUser(alice.id)).account.locked).toBe(false);
+      expect(off.getConfig().lockout.threshold).toBe(0);
+    });
+
+    it("an explicit threshold without a duration keeps the permanent lock", () => {
+      const svcPermanent = new UserService(store, { lockout: { threshold: 5 } });
+      expect(svcPermanent.getConfig().lockout).toEqual({ threshold: 5, duration: 0 });
     });
   });
 
@@ -713,6 +775,87 @@ describe("UserService", () => {
     });
   });
 
+  describe("refreshInvitation", () => {
+    // WHY: a re-invite / resend reads the row, then writes the new link marker
+    // (and a re-invite's roles and extras). An acceptance landing between the
+    // two must keep the account exactly as accepted — a refresh landing on it
+    // would re-arm a link (or change roles) for a live account.
+    async function pendingInvite(username: string) {
+      const user = await svc.createUser(username, undefined, { roles: ["editor"] });
+      await svc.update(user.id, {
+        account: { pendingInvitation: true, inviteNonce: "n-1", invitedBy: "issuer-1" },
+      } as never);
+      return user.id;
+    }
+    const reInvite = {
+      roles: ["admin"],
+      tenantId: "t-2",
+      account: { inviteNonce: "n-2", invitedBy: "issuer-2" },
+    } as never;
+
+    it("applies the refresh to a pending account and returns true", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      expect(await svc.refreshInvitation(id, reInvite)).toBe(true);
+      const row = (await store.findById(id)) as unknown as {
+        roles: string[];
+        tenantId: string;
+        account: { pendingInvitation: boolean; inviteNonce: string; invitedBy: string };
+      };
+      expect(row.roles).toEqual(["admin"]);
+      expect(row.tenantId).toBe("t-2");
+      expect(row.account).toMatchObject({
+        pendingInvitation: true,
+        inviteNonce: "n-2",
+        invitedBy: "issuer-2",
+      });
+    });
+
+    it("leaves an accepted account byte-for-byte unchanged and returns false", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      expect(await svc.acceptInvitation(id, "n-1")).toBe(true);
+      const accepted = await store.findById(id);
+      expect(await svc.refreshInvitation(id, reInvite)).toBe(false);
+      expect(await store.findById(id)).toEqual(accepted);
+    });
+
+    it("an acceptance landing between the refresh's read and its write wins", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      // The refresh has read the row (still pending); the invitee accepts
+      // before its write lands.
+      const realFind = store.findById.bind(store);
+      let raced = false;
+      store.findById = async (rowId) => {
+        const row = await realFind(rowId);
+        if (!raced) {
+          raced = true;
+          expect(await svc.acceptInvitation(rowId, "n-1")).toBe(true);
+        }
+        return row;
+      };
+      const before = await realFind(id);
+      expect(before?.account.pendingInvitation).toBe(true);
+      expect(await svc.refreshInvitation(id, reInvite)).toBe(false);
+      const after = await realFind(id);
+      expect(after?.account.pendingInvitation).toBe(false);
+      expect(after?.account.inviteNonce).toBe("n-1");
+      expect((after as unknown as { roles: string[] }).roles).toEqual(["editor"]);
+      expect(after?.account.invitedBy).toBe("issuer-1");
+    });
+
+    it("never touches a regular (never invited) account", async () => {
+      const user = await createActiveUser(svc, "alice");
+      const before = await store.findById(user.id);
+      expect(await svc.refreshInvitation(user.id, reInvite)).toBe(false);
+      expect(await store.findById(user.id)).toEqual(before);
+    });
+
+    it("throws NOT_FOUND for an unknown id", async () => {
+      await expect(svc.refreshInvitation("nope", reInvite)).rejects.toMatchObject({
+        type: "NOT_FOUND",
+      });
+    });
+  });
+
   describe("revokeInvitation", () => {
     async function pendingInvite(username: string, nonce = "n-1") {
       const user = await svc.createUser(username);
@@ -995,7 +1138,8 @@ describe("UserService", () => {
     it("should return resolved configuration", () => {
       const config = svc.getConfig();
       expect(config.password.scryptN).toBe(1024);
-      expect(config.lockout.threshold).toBe(0);
+      // No `lockout` passed: the locking default.
+      expect(config.lockout).toEqual({ threshold: 10, duration: 15 * 60_000 });
       expect(typeof config.clock).toBe("function");
     });
   });
@@ -1304,6 +1448,58 @@ describe("UserService", () => {
       expect(names).toHaveLength(2);
       expect(names).toContain("macbook");
       expect(names).toContain("phone");
+    });
+
+    // WHY: a trusted device skips MFA. A password reset or change after a
+    // compromise must not leave the attacker's remembered device able to skip
+    // the second factor once they learn the new password.
+    it.each(["changePassword", "setPassword"] as const)(
+      "%s drops every trusted device (the seen-device ledger is not an MFA bypass and stays)",
+      async (method) => {
+        const r1 = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000, name: "macbook" });
+        const r2 = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000, name: "phone" });
+        await dtSvc.addTrustedDevice(aliceId, r1);
+        await dtSvc.addTrustedDevice(aliceId, r2);
+        const seen = dtSvc.issueSeenDevice(aliceId, { ttlMs: 60_000 });
+        await dtSvc.addSeenDevice(aliceId, seen);
+
+        if (method === "changePassword") {
+          await dtSvc.changePassword(aliceId, "Password1!", "NewPassword2!");
+        } else {
+          await dtSvc.setPassword(aliceId, "NewPassword2!");
+        }
+
+        expect(await dtSvc.listTrustedDevices(aliceId)).toEqual([]);
+        expect(await dtSvc.verifyTrustedDevice(aliceId, r1.token)).toBe(false);
+        expect(await dtSvc.verifyTrustedDevice(aliceId, r2.token)).toBe(false);
+        expect(await dtSvc.verifySeenDevice(aliceId, seen.token)).toBe(true);
+      },
+    );
+
+    // WHY: a custom user model or store may have no `trustedDevices` column;
+    // a password change of a user who never remembered a device must not
+    // write one.
+    it("a password change of a user without trusted devices writes no `trustedDevices`", async () => {
+      const patches: Array<Record<string, unknown>> = [];
+      const originalUpdate = dtStore.update.bind(dtStore);
+      dtStore.update = async (id, patch) => {
+        patches.push(patch.set ?? {});
+        return originalUpdate(id, patch);
+      };
+      await dtSvc.setPassword(aliceId, "NewPassword2!");
+      await dtSvc.changePassword(aliceId, "NewPassword2!", "NewPassword3!");
+      const passwordWrites = patches.filter((set) => "password" in set);
+      expect(passwordWrites).toHaveLength(2);
+      for (const set of passwordWrites) expect(set).not.toHaveProperty("trustedDevices");
+    });
+
+    it("a refused password change leaves the remembered devices in place", async () => {
+      const rec = dtSvc.issueTrustedDevice(aliceId, { ttlMs: 60_000 });
+      await dtSvc.addTrustedDevice(aliceId, rec);
+      await expect(dtSvc.changePassword(aliceId, "wrong", "NewPassword2!")).rejects.toMatchObject({
+        type: "INVALID_CREDENTIALS",
+      });
+      expect(await dtSvc.verifyTrustedDevice(aliceId, rec.token)).toBe(true);
     });
 
     it("issueTrustedDevice throws clearly when deviceTrust.secret is not configured", () => {

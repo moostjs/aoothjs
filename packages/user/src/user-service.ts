@@ -33,6 +33,9 @@ interface ResolvedConfig {
   emailField?: string;
 }
 
+/** The lockout when `UserServiceConfig.lockout` is omitted: 10 failures lock for 15 minutes. */
+const DEFAULT_LOCKOUT: Required<LockoutConfig> = { threshold: 10, duration: 15 * 60_000 };
+
 function resolveConfig(config?: UserServiceConfig): ResolvedConfig {
   return {
     password: {
@@ -45,10 +48,11 @@ function resolveConfig(config?: UserServiceConfig): ResolvedConfig {
       policies: normalizePolicies(config?.password?.policies),
       maxAgeMs: config?.password?.maxAgeMs ?? 0,
     },
-    lockout: {
-      threshold: config?.lockout?.threshold ?? 0,
-      duration: config?.lockout?.duration ?? 0,
-    },
+    // An explicit `lockout` object keeps its own defaults (threshold 0 = off,
+    // duration 0 = permanent); only an omitted one gets the locking default.
+    lockout: config?.lockout
+      ? { threshold: config.lockout.threshold ?? 0, duration: config.lockout.duration ?? 0 }
+      : { ...DEFAULT_LOCKOUT },
     clock: config?.clock ?? Date.now,
     ...(config?.deviceTrust && { deviceTrust: config.deviceTrust }),
     ...(config?.emailField && { emailField: config.emailField }),
@@ -344,6 +348,11 @@ export class UserService<T extends object = object> {
     return this.hasher.verify(password, user.password.hash);
   }
 
+  /**
+   * Change the password after verifying the current one. Applies the password
+   * policies and history, and drops every trusted device (remembered MFA skip)
+   * in the same write.
+   */
   async changePassword(
     id: string,
     currentPassword: string,
@@ -362,6 +371,11 @@ export class UserService<T extends object = object> {
     await this.applyPasswordChange(id, user, newPassword);
   }
 
+  /**
+   * Set a new password without the current one (recovery, a forced change, an
+   * admin reset). Applies the password policies and history, and drops every
+   * trusted device (remembered MFA skip) in the same write.
+   */
   async setPassword(id: string, newPassword: string): Promise<void> {
     const user = await this.getUser(id);
     await this.applyPasswordChange(id, user, newPassword);
@@ -411,6 +425,26 @@ export class UserService<T extends object = object> {
       return { set: { account: { pendingInvitation: false } } };
     });
     return accepted;
+  }
+
+  /**
+   * Refresh a pending invitation — a re-invite or a resend — in ONE
+   * compare-and-set write: applies `patch` (the new link marker
+   * `account.inviteNonce` and, for a re-invite, its roles, extras and issuer)
+   * only while the row is still pending. Returns `false` (nothing written)
+   * when the invite was accepted — also when the acceptance lands while the
+   * refresh runs — so no part of a refresh reaches a live account. Throws
+   * `UserAuthError("NOT_FOUND")` when no row matches `id`, and
+   * `UserAuthError("CAS_EXHAUSTED")` when concurrent writes outlast the retries.
+   */
+  async refreshInvitation(id: string, patch: DeepPartial<UserCredentials & T>): Promise<boolean> {
+    let refreshed = false;
+    await this.store.withCas(id, (user) => {
+      refreshed = user.account.pendingInvitation === true;
+      if (!refreshed) return null;
+      return { set: patch };
+    });
+    return refreshed;
   }
 
   /**
@@ -995,6 +1029,11 @@ export class UserService<T extends object = object> {
         ? [user.password.hash, ...user.password.history].filter(Boolean).slice(0, limit)
         : [];
 
+    // A new password drops every remembered device in the same write: a
+    // trusted-device cookie skips MFA, so it must not outlive the password
+    // it was earned with (recovery, change, forced change, admin reset alike).
+    // Written only when the row has some, so a model without the column never
+    // receives it.
     await this.store.update(id, {
       set: {
         password: {
@@ -1003,6 +1042,7 @@ export class UserService<T extends object = object> {
           lastChanged: this.config.clock(),
           isInitial: false,
         },
+        ...(user.trustedDevices?.length ? { trustedDevices: [] } : {}),
       },
     });
   }
