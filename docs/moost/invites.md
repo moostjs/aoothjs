@@ -306,7 +306,7 @@ Until the invitee sets a password, the link works for whoever holds it, as issue
 <!-- dropLink: router.replace({ query: { ...route.query, wfs: undefined } }) -->
 ```
 
-The token then lives per tab (`wf:<name>`), survives a reload and never reaches the URL or the history; the saved token wins over no link or the same link, a different link starts from itself, and the entry is removed when the run is over. A client of your own does the same: keep the latest token in `sessionStorage`, prefer it over the URL on load, and remove the link's token from the URL after the first answer. Don't put the post-password token into the URL or the history: it continues the acceptance and can sign the invitee in.
+The token then lives per tab in `sessionStorage` (key `wf:<page>:<name>`, the page being the route with its params filled in except the link's, so an admin page and the invitee's page never share a run), survives a reload and never reaches the URL or the history; the saved token wins over no link or the same link, a different link starts from itself, and the entry is removed when the run is over. A client of your own does the same: keep the latest token in `sessionStorage`, prefer it over the URL on load, and remove the link's token from the URL after the first answer. Don't put the post-password token into the URL or the history: it continues the acceptance and can sign the invitee in.
 
 Runs paused **after** the password before 0.2.24 recorded no claim: their emailed link (with a durable `store`, the same token as the browser's) keeps working until the run finishes or the state's TTL ends, as before. A link of the encapsulated `store` whose password was set before 0.2.24 can no longer set it again (`410 INVITE_LINK_USED`).
 
