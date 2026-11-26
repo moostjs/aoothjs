@@ -1,7 +1,7 @@
 import { effectiveScope } from "@aooth/arbac";
 import type { ControlGate } from "@aooth/arbac";
-import { translateQueryTree } from "@atscript/db";
 import type { AtscriptQueryNode, TCrudOp, TMetaResponse } from "@atscript/db";
+import { NAV_ANNOTATIONS } from "@atscript/db/shared";
 import { DB_CRUD_HANDLERS, resolveTerminalRef, VALUE_HELP_CRUD_HANDLERS } from "@atscript/moost-db";
 import type { TDbIndexFieldPaths } from "@atscript/moost-db";
 import type {
@@ -385,11 +385,38 @@ function hasWritableDescendant(path: string, writable: MetaVisibility["writable"
 
 function withoutRef(node: TSerializedAnnotatedTypeInner): TSerializedAnnotatedTypeInner {
   const { ref: _ref, ...rest } = node;
-  return rest;
+  // Without a `ui.valueHelp` of its own the `ref` was the field's picker binding: its fills and
+  // columns go with it
+  return rest.metadata && rest.metadata[UI_VALUE_HELP] === undefined
+    ? { ...rest, metadata: withoutPickerKeys(rest.metadata) }
+    : rest;
 }
 
 /** The `/meta` annotation key of a dictionary value-help binding (`@ui.valueHelp`, since 0.1.75); a string constant — arbac-moost does not import `@atscript/ui`. */
 const UI_VALUE_HELP = "ui.valueHelp";
+
+/**
+ * `@ui.valueHelp.fill` / `@ui.valueHelp.column` (@atscript/ui 0.1.190): they name fields of the
+ * field's own binding (`ui.valueHelp`, else its `ref`) — fill sources and picker-dialog columns.
+ */
+const UI_VALUE_HELP_FILL = "ui.valueHelp.fill";
+const UI_VALUE_HELP_COLUMN = "ui.valueHelp.column";
+
+function withoutPickerKeys(metadata: Record<string, unknown>): Record<string, unknown> {
+  const { [UI_VALUE_HELP_FILL]: _fill, [UI_VALUE_HELP_COLUMN]: _column, ...rest } = metadata;
+  return rest;
+}
+
+/** The dictionary fields a flat-map entry's fills read and its picker dialog shows. */
+function pickerFieldsOf(entry: TAtscriptAnnotatedType | undefined): string[] {
+  const fills = entry?.metadata?.get?.(UI_VALUE_HELP_FILL) as
+    | Array<{ targetField?: unknown }>
+    | undefined;
+  const columns = entry?.metadata?.get?.(UI_VALUE_HELP_COLUMN) as unknown[] | undefined;
+  return [...(fills ?? []).map((f) => f?.targetField), ...(columns ?? [])].filter(
+    (f): f is string => typeof f === "string",
+  );
+}
 
 /** A table a field points at, and the fields it names there. */
 interface Target {
@@ -399,7 +426,7 @@ interface Target {
 
 function withoutBinding(node: TSerializedAnnotatedTypeInner): TSerializedAnnotatedTypeInner {
   const { [UI_VALUE_HELP]: _binding, ...metadata } = node.metadata;
-  return { ...node, metadata };
+  return { ...node, metadata: withoutPickerKeys(metadata) };
 }
 
 // Per runtime flat-map entry: static, so resolved once (`null` = no binding).
@@ -407,8 +434,8 @@ const bindingCache = new WeakMap<object, Target | null>();
 
 /**
  * The runtime `ui.valueHelp` binding of a flat-map entry — the dictionary and
- * the fields it names there: the committed `field` plus every field its
- * static filter reads. `undefined` = no binding; `null` = a binding that
+ * the fields it names there: the committed `field`, every field its static
+ * filter reads, its fill sources and dialog columns. `undefined` = no binding; `null` = a binding that
  * cannot be resolved (callers fail closed and strip it).
  */
 function bindingOf(entry: unknown): Target | null | undefined {
@@ -418,32 +445,38 @@ function bindingOf(entry: unknown): Target | null | undefined {
   if (!raw) return undefined;
   let binding = bindingCache.get(entry as object);
   if (binding === undefined) {
-    binding = resolveBinding(raw);
+    binding = resolveBinding(raw, pickerFieldsOf(entry as TAtscriptAnnotatedType));
     bindingCache.set(entry as object, binding);
   }
   return binding;
 }
 
-function resolveBinding(raw: {
-  target?: unknown;
-  field?: unknown;
-  filter?: AtscriptQueryNode;
-}): Target | null {
+function resolveBinding(
+  raw: { target?: unknown; field?: unknown; filter?: AtscriptQueryNode },
+  pickerFields: string[],
+): Target | null {
   try {
     const t = raw.target as (() => object) | { type: () => object } | undefined;
     const type = typeof t === "function" ? t() : t?.type();
     if (!type) return null;
     const fields = typeof raw.field === "string" ? [raw.field] : [];
-    if (raw.filter) {
-      translateQueryTree(raw.filter, (ref) => {
-        fields.push(ref.field);
-        return ref.field;
-      });
-    }
-    return { type, fields };
+    if (raw.filter) collectLeftFields(raw.filter, fields);
+    return { type, fields: [...fields, ...pickerFields] };
   } catch {
     return null;
   }
+}
+
+/**
+ * The dictionary fields a value-help filter reads: the left side of each
+ * comparison. A right-hand field reference names a field of the form the
+ * picker opens in (a host reference, `@atscript/ui` 0.1.190), not of the dictionary.
+ */
+function collectLeftFields(node: AtscriptQueryNode, out: string[]): void {
+  if ("$and" in node) for (const child of node.$and) collectLeftFields(child, out);
+  else if ("$or" in node) for (const child of node.$or) collectLeftFields(child, out);
+  else if ("$not" in node) collectLeftFields(node.$not, out);
+  else out.push(node.left.field);
 }
 
 /** Every table a flat-map entry points at: its `ref` target and its value-help binding. */
@@ -457,11 +490,18 @@ function targetsOf(entry: unknown): Target[] {
 function refTargetOf(entry: unknown): Target | undefined {
   const def = entry as TAtscriptAnnotatedType | undefined;
   if (!def?.ref) return undefined;
+  // Without a `ui.valueHelp` of its own the `ref` (an FK) is the field's picker binding
+  const picker = def.metadata?.get?.(UI_VALUE_HELP) === undefined ? pickerFieldsOf(def) : [];
   const terminal = resolveTerminalRef(def);
-  if (terminal) return { type: terminal.type, fields: terminal.field ? [terminal.field] : [] };
+  if (terminal) {
+    return {
+      type: terminal.type,
+      fields: [...(terminal.field ? [terminal.field] : []), ...picker],
+    };
+  }
   try {
     const { type, field } = def.ref;
-    return { type: type(), fields: field ? [field] : [] };
+    return { type: type(), fields: [...(field ? [field] : []), ...picker] };
   } catch {
     return undefined;
   }
@@ -620,10 +660,10 @@ function withVisibleTargets(
 
 const NO_NAMES: ReadonlySet<string> = new Set();
 
-/** A nav prop inside a joined type: atscript-db stamps `db.rel.to` / `from` / `via`. */
+/** A nav prop inside a joined type: it carries one of atscript-db's navigation annotations. */
 function isNavProp(prop: TSerializedAnnotatedTypeInner): boolean {
   const meta = prop.metadata as Record<string, unknown> | undefined;
-  return !!meta && ("db.rel.to" in meta || "db.rel.from" in meta || "db.rel.via" in meta);
+  return !!meta && NAV_ANNOTATIONS.some((key) => key in meta);
 }
 
 /**

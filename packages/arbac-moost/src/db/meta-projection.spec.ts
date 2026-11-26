@@ -936,18 +936,23 @@ describe("pruneMetaByVisibility — client round trip (deserializeAnnotatedType)
 // ── fail-closed bindings ───────────────────────────────────────────────────
 
 describe("pruneMetaByVisibility — value-help binding resolution fails closed", () => {
-  const dictType = {};
-  const entry = {
+  // (an object type with no props: an FK `ref` resolves its terminal through it)
+  const dictType = {
+    type: { kind: "object", props: new Map(), tags: new Set() },
+    metadata: new Map(),
+  };
+  const binding = (filter?: unknown) => ({
     metadata: {
       get: (k: string) =>
-        k === "ui.valueHelp" ? { target: () => dictType, field: "code" } : undefined,
+        k === "ui.valueHelp" ? { target: () => dictType, field: "code", filter } : undefined,
     },
-  };
+  });
+  const entry = binding();
   const bound = (): TSerializedAnnotatedType => ({
     ...leaf(),
     metadata: { "ui.valueHelp": { field: "code" } },
   });
-  const run = (type: TSerializedAnnotatedType, flat: Map<string, unknown>) => {
+  const run = (type: TSerializedAnnotatedType, flat: Map<string, unknown>, dictVis = vis({})) => {
     const meta = { ...usersMeta(), type, relations: [] } as unknown as TMetaResponse;
     const table = {
       primaryKeys: ["id"],
@@ -956,8 +961,91 @@ describe("pruneMetaByVisibility — value-help binding resolution fails closed",
       flatMap: flat,
     } as unknown as VisibilityTableSource;
     const v = { ...buildScopeVisibility([{}], table), table };
-    return pruneMetaByVisibility(meta, v, new Map([[dictType, vis({})]])).type as any;
+    return pruneMetaByVisibility(meta, v, new Map([[dictType, dictVis]])).type as any;
   };
+
+  // `country = Customer.billingCountry`: a host reference (@atscript/ui 0.1.190) — `country` is
+  // the dictionary's, `billingCountry` a field of the form
+  const hostRef = binding({
+    $and: [
+      {
+        left: { type: () => dictType, field: "country" },
+        op: "$eq",
+        right: { type: () => ({}), field: "billingCountry" },
+      },
+    ],
+  });
+
+  it("a right-hand host field is not looked up in the dictionary: the binding stays", () => {
+    const out = run(
+      obj({ id: leaf(), color: bound() }),
+      new Map([["color", hostRef]]),
+      vis({ code: 1, country: 1 }),
+    );
+    expect(out.type.props.color.metadata["ui.valueHelp"]).toBeDefined();
+  });
+
+  it("a hidden left-hand dictionary field still strips the binding", () => {
+    const out = run(
+      obj({ id: leaf(), color: bound() }),
+      new Map([["color", hostRef]]),
+      vis({ code: 1 }),
+    );
+    expect(out.type.props.color.metadata["ui.valueHelp"]).toBeUndefined();
+  });
+
+  // `@ui.valueHelp.fill 'cityName', 'name'` + `@ui.valueHelp.column 'region'` (@atscript/ui 0.1.190):
+  // `name` and `region` are fields of the field's own binding — `ui.valueHelp`, else its `ref`
+  const PICKER = {
+    "ui.valueHelp.fill": [{ local: "cityName", targetField: "name" }],
+    "ui.valueHelp.column": ["region"],
+  };
+  const pickerEntry = (viaRef: boolean) => {
+    const get = (k: string) =>
+      !viaRef && k === "ui.valueHelp"
+        ? { target: () => dictType, field: "code" }
+        : (PICKER as Record<string, unknown>)[k];
+    return {
+      ...(viaRef ? { ref: { type: () => dictType, field: "code" } } : {}),
+      metadata: { get, has: (k: string) => get(k) !== undefined },
+    };
+  };
+  const pickerNode = (viaRef: boolean): TSerializedAnnotatedType => ({
+    ...leaf(),
+    ...(viaRef ? { ref: { type: leaf(), field: "code" } } : {}),
+    metadata: { ...(viaRef ? {} : { "ui.valueHelp": { field: "code" } }), ...PICKER },
+  });
+  const pick = (viaRef: boolean, dictVis: MetaVisibility) => {
+    const out = run(
+      obj({ id: leaf(), city: pickerNode(viaRef) }),
+      new Map([["city", pickerEntry(viaRef)]]),
+      dictVis,
+    );
+    const { ref, metadata } = out.type.props.city;
+    return {
+      binding: viaRef ? ref : metadata["ui.valueHelp"],
+      fill: metadata["ui.valueHelp.fill"],
+      column: metadata["ui.valueHelp.column"],
+    };
+  };
+
+  for (const viaRef of [false, true]) {
+    const by = viaRef ? "an FK ref" : "a ui.valueHelp binding";
+    it(`${by}: visible fill sources and columns keep it with its fills and columns`, () => {
+      const kept = pick(viaRef, vis({ code: 1, name: 1, region: 1 }));
+      expect([kept.binding, kept.fill, kept.column].every((v) => v !== undefined)).toBe(true);
+    });
+
+    it(`${by}: a hidden fill source or column strips it with its fills and columns`, () => {
+      for (const dictVis of [vis({ code: 1, region: 1 }), vis({ code: 1, name: 1 })]) {
+        expect(pick(viaRef, dictVis)).toEqual({
+          binding: undefined,
+          fill: undefined,
+          column: undefined,
+        });
+      }
+    });
+  }
 
   it("keeps a resolvable binding at an object path (control)", () => {
     const out = run(obj({ id: leaf(), color: bound() }), new Map([["color", entry]]));
@@ -1350,5 +1438,22 @@ describe("gateMetaControls — /meta capabilities follow the controls policy", (
       );
       expect(flags(out, "groupable")).toEqual(["status", "openedAt"]);
     });
+  });
+});
+
+// ── navigation annotations ─────────────────────────────────────────────────
+
+describe("pruneMetaByVisibility — every navigation annotation marks a nav prop", () => {
+  // A nav prop's joined type belongs to the related table: kept as is (without a relation
+  // visibility), where a plain object field's children are pruned by this table's projection
+  it.each(["db.rel.to", "db.rel.from", "db.rel.via", "db.rel.store"])("%s", (key) => {
+    const rel = { ...obj({ id: leaf(), secret: leaf() }), metadata: { [key]: true } };
+    const meta = {
+      ...usersMeta(),
+      type: obj({ id: leaf(), rel }),
+      relations: [],
+    } as unknown as TMetaResponse;
+    const out = pruneMetaByVisibility(meta, vis({ "rel.secret": 0 })).type as any;
+    expect(Object.keys(out.type.props.rel.type.props)).toEqual(["id", "secret"]);
   });
 });
