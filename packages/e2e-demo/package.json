@@ -1,6 +1,6 @@
 {
   "name": "@aooth/e2e-demo",
-  "version": "0.2.25",
+  "version": "0.2.26",
   "private": true,
   "description": "End-to-end test harness for @aooth/* packages",
   "type": "module",
