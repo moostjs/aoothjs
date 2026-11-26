@@ -82,7 +82,22 @@ export const enrollTrioSteps: TWorkflowSchema<AuthWfCtx> = [
   // email/phone into its login handle. Default no-op; turns ON when the
   // consumer overrides `resolvePromoteHandleField`. Fires once per flow
   // (guarded by `promoteToHandleDone`). Shared by both trio call sites —
-  // add-mfa AND login/invite forced first-time enrolment.
+  // add-mfa AND login forced first-time enrolment. An invite accept promotes
+  // only once its acceptance is final ({@link invitePromoteToHandle}): until
+  // then a re-issue may hand the row to a new link.
+  {
+    id: "promote-to-handle",
+    condition: (ctx) => !ctx.accept && !!ctx.mfaEnroll?.done && !ctx.promoteToHandleDone,
+  },
+];
+
+/**
+ * The invite accept's `promote-to-handle` — placed after `activate-user`: a
+ * channel confirmed through the link becomes a login handle only once the
+ * acceptance is final (never on a row a re-issue may still start over), and a
+ * promotion that fails or pauses leaves an active account behind.
+ */
+export const invitePromoteToHandle: TWorkflowSchema<AuthWfCtx> = [
   {
     id: "promote-to-handle",
     condition: (ctx) => !!ctx.mfaEnroll?.done && !ctx.promoteToHandleDone,

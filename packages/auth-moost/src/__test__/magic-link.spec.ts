@@ -103,6 +103,33 @@ async function use(app: PreparedFlowApp, token: string, headers?: Record<string,
 
 const keysOf = (store: unknown) => [...(store as { store: Map<string, unknown> }).store.keys()];
 
+describe("sign-in link and the failed sign-in count", () => {
+  // WHY: a link send proves nothing — it must neither count as a failure nor
+  // reset the count (the lockout would otherwise lose track of guesses).
+  it("sending a sign-in link leaves the count of an unlocked account as it is", async () => {
+    const app = await boot({}, { userConfig: { lockout: { threshold: 5, duration: 60_000 } } });
+    const id = await seedAlice(app);
+    await app.users.update(id, { account: { failedLoginAttempts: 4 } } as never);
+    const sent = await requestSignInLink(app, EMAIL);
+    expect(sent.body).toEqual({ sent: true, outlet: "email" });
+    expect(app.emails).toHaveLength(1);
+    expect((await app.users.getUser(id)).account).toMatchObject({
+      locked: false,
+      failedLoginAttempts: 4,
+    });
+  });
+
+  it("a sign-in completed through the link resets the count", async () => {
+    const app = await boot({}, { userConfig: { lockout: { threshold: 5, duration: 60_000 } } });
+    const id = await seedAlice(app);
+    await app.users.update(id, { account: { failedLoginAttempts: 4 } } as never);
+    await requestSignInLink(app, EMAIL);
+    const done = await use(app, app.emails[0].token);
+    expect(done.body.finished).toBe(true);
+    expect((await app.users.getUser(id)).account.failedLoginAttempts).toBe(0);
+  });
+});
+
 describe("recovery magic link", () => {
   it("sends a single-use link; using it leads to the password step like a verified code", async () => {
     const app = await boot();

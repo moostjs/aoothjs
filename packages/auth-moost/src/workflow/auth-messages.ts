@@ -104,6 +104,9 @@ export const AOOTH_MESSAGES = {
   DUPLICATE_INVITE_REJECTED: "Duplicate invite rejected",
   INVITE_CANCELLED: "This invite has been cancelled",
   INVITE_REPLACED: "This invite was replaced by a newer one",
+  /** HTTP 410 — the invite link was already used to set a password (and its post-redemption envelope). */
+  INVITE_LINK_USED:
+    "This invitation link has already been used. Sign in, or ask for a new invitation.",
   INVITE_ALREADY_ACCEPTED: "This invite was already accepted.",
   CHOOSE_USERNAME_TAKEN: "This username is taken",
   USERNAME_NOT_ALLOWED: "This username is not allowed",

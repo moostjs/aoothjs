@@ -483,6 +483,195 @@ describe("UserService", () => {
       const locked = await lockSvc.getUser(alice.id);
       expect(locked.account.lockEnds).toBe(now + 60000);
     });
+
+    // WHY: a correct password used to reset the count even with a second
+    // factor still due — so whoever knows the password got `threshold - 1`
+    // TOTP guesses per password entry, without end.
+    describe("with a second factor due, the count is reset only when the sign-in completes", () => {
+      async function withTotp(username: string) {
+        const user = await createActiveUser(lockSvc, username, "pass123");
+        const secret = generateTotpSecret();
+        await lockSvc.addMfaMethod(user.id, { name: "totp", confirmed: true, value: secret });
+        return { id: user.id, secret };
+      }
+      const wrongCode = (id: string) =>
+        expect(lockSvc.verifyMfa(id, "000000", { clock: () => now })).rejects.toMatchObject({
+          type: "MFA_INVALID",
+        });
+
+      it("wrong codes keep counting across password entries and lock at the threshold", async () => {
+        const { id } = await withTotp("alice");
+        for (let round = 0; round < 2; round++) {
+          expect((await lockSvc.login("alice", "pass123")).mfaRequired).toBe(true);
+          await wrongCode(id);
+        }
+        expect((await lockSvc.getUser(id)).account.failedLoginAttempts).toBe(2);
+        await lockSvc.login("alice", "pass123");
+        await wrongCode(id);
+        expect((await lockSvc.getUser(id)).account.locked).toBe(true);
+        await expect(lockSvc.login("alice", "pass123")).rejects.toMatchObject({ type: "LOCKED" });
+      });
+
+      it("a correct code resets it; without a second factor the password does", async () => {
+        const { id, secret } = await withTotp("alice");
+        await lockSvc.login("alice", "pass123");
+        await wrongCode(id);
+        await lockSvc.login("alice", "pass123");
+        expect((await lockSvc.getUser(id)).account.failedLoginAttempts).toBe(1);
+        await lockSvc.verifyMfa(id, generateTotpCode(secret, { clock: () => now }), {
+          clock: () => now,
+        });
+        expect((await lockSvc.getUser(id)).account.failedLoginAttempts).toBe(0);
+
+        const bob = await createActiveUser(lockSvc, "bob", "pass123");
+        await failLogins(lockSvc, "bob", 2);
+        expect((await lockSvc.login("bob", "pass123")).mfaRequired).toBe(false);
+        expect((await lockSvc.getUser(bob.id)).account.failedLoginAttempts).toBe(0);
+      });
+
+      it("recordLogin({ keepFailedCount }) stamps the login and keeps the count", async () => {
+        const user = await createActiveUser(lockSvc, "carol", "pass123");
+        await failLogins(lockSvc, "carol", 2);
+        await lockSvc.recordLogin(user.id, { keepFailedCount: true });
+        expect((await lockSvc.getUser(user.id)).account).toMatchObject({
+          lastLogin: now,
+          failedLoginAttempts: 2,
+        });
+      });
+    });
+
+    // WHY: if the count outlived a lapsed lock, every single wrong password
+    // after the first lock would lock the account again — one request per lock
+    // period keeps it locked for good, and a typo costs another full period.
+    describe("a lapsed timed lock starts the count over", () => {
+      it("one wrong password after the lock lapses counts as the first", async () => {
+        const alice = await createActiveUser(lockSvc, "alice", "pass123");
+        await failLogins(lockSvc, "alice", 3);
+        expect((await lockSvc.getUser(alice.id)).account.locked).toBe(true);
+        now += 61_000;
+        await expect(lockSvc.login("alice", "wrong")).rejects.toMatchObject({
+          type: "INVALID_CREDENTIALS",
+          details: undefined,
+        });
+        const user = await lockSvc.getUser(alice.id);
+        expect(user.account).toMatchObject({ locked: false, lockEnds: 0, failedLoginAttempts: 1 });
+      });
+
+      it("`threshold` more wrong passwords lock it again", async () => {
+        const alice = await createActiveUser(lockSvc, "alice", "pass123");
+        await failLogins(lockSvc, "alice", 3);
+        now += 61_000;
+        await failLogins(lockSvc, "alice", 2);
+        expect((await lockSvc.getUser(alice.id)).account.locked).toBe(false);
+        await expect(lockSvc.login("alice", "wrong")).rejects.toMatchObject({
+          type: "INVALID_CREDENTIALS",
+          details: { lockEnds: now + 60_000 },
+        });
+        await expect(lockSvc.login("alice", "pass123")).rejects.toMatchObject({ type: "LOCKED" });
+        expect((await lockSvc.getUser(alice.id)).account.failedLoginAttempts).toBe(3);
+      });
+
+      it("wrong TOTP codes start over too (the shared count)", async () => {
+        const alice = await createActiveUser(lockSvc, "alice", "pass123");
+        await lockSvc.addMfaMethod(alice.id, {
+          name: "totp",
+          confirmed: true,
+          value: generateTotpSecret(),
+        });
+        await failLogins(lockSvc, "alice", 3);
+        now += 61_000;
+        await expect(
+          lockSvc.verifyMfa(alice.id, "000000", { clock: () => now }),
+        ).rejects.toMatchObject({ type: "MFA_INVALID", details: undefined });
+        expect((await lockSvc.getUser(alice.id)).account).toMatchObject({
+          locked: false,
+          failedLoginAttempts: 1,
+        });
+      });
+
+      it("an admin lock with a duration follows the same rule", async () => {
+        const alice = await createActiveUser(lockSvc, "alice", "pass123");
+        await failLogins(lockSvc, "alice", 2);
+        await lockSvc.lockAccount(alice.id, "admin", 1000);
+        now += 2000;
+        await expect(lockSvc.login("alice", "wrong")).rejects.toMatchObject({
+          type: "INVALID_CREDENTIALS",
+          details: undefined,
+        });
+        expect((await lockSvc.getUser(alice.id)).account.failedLoginAttempts).toBe(1);
+      });
+
+      it("a sign-in check without a password (assertCanSignIn) starts it over as well", async () => {
+        const alice = await createActiveUser(lockSvc, "alice", "pass123");
+        await failLogins(lockSvc, "alice", 3);
+        now += 61_000;
+        expect((await lockSvc.assertCanSignIn(alice.id)).account.failedLoginAttempts).toBe(0);
+        expect((await lockSvc.getUser(alice.id)).account.failedLoginAttempts).toBe(0);
+      });
+
+      it("a permanent lock never lapses and keeps its count", async () => {
+        const alice = await createActiveUser(lockSvc, "alice", "pass123");
+        await failLogins(lockSvc, "alice", 3);
+        await lockSvc.lockAccount(alice.id, "admin"); // permanent
+        now += 999_999_999;
+        await expect(lockSvc.login("alice", "wrong")).rejects.toMatchObject({ type: "LOCKED" });
+        expect((await lockSvc.getUser(alice.id)).account).toMatchObject({
+          locked: true,
+          lockEnds: 0,
+          failedLoginAttempts: 3,
+        });
+      });
+
+      /** A store that runs `gate` once, right after the next handle lookup read its row. */
+      class GatedStore extends UserStoreMemory {
+        gate?: () => Promise<void>;
+        override async findByHandle(handle: string) {
+          const row = await super.findByHandle(handle);
+          const gate = this.gate;
+          this.gate = undefined;
+          await gate?.();
+          return row;
+        }
+      }
+
+      async function racing() {
+        const gated = new GatedStore();
+        const service = new UserService(gated, {
+          password: { ...FAST_SCRYPT },
+          lockout: { threshold: 3, duration: 60_000 },
+          clock: () => now,
+        });
+        const alice = await createActiveUser(service, "alice", "pass123");
+        await failLogins(service, "alice", 3);
+        now += 61_000;
+        return { gated, service, alice };
+      }
+
+      // WHY: two sign-ins can both read the lapsed lock. The one that lifts it
+      // second must not zero the failure the first one already counted, nor
+      // lift a lock that tripped again in between.
+      it("a failure counted while another request lifts the same lock stays counted", async () => {
+        const { gated, service, alice } = await racing();
+        gated.gate = () => failLogins(service, "alice", 1);
+        await expect(service.login("alice", "wrong")).rejects.toMatchObject({
+          type: "INVALID_CREDENTIALS",
+        });
+        const user = await service.getUser(alice.id);
+        expect(user.account).toMatchObject({ locked: false, failedLoginAttempts: 2 });
+      });
+
+      it("a late lift never lifts a lock that tripped again meanwhile", async () => {
+        const { gated, service, alice } = await racing();
+        gated.gate = () => failLogins(service, "alice", 3);
+        await expect(service.login("alice", "wrong")).rejects.toMatchObject({ type: "LOCKED" });
+        const user = await service.getUser(alice.id);
+        expect(user.account).toMatchObject({
+          locked: true,
+          lockEnds: now + 60_000,
+          failedLoginAttempts: 3,
+        });
+      });
+    });
   });
 
   describe("lockout — case sensitivity invariant", () => {
@@ -853,6 +1042,184 @@ describe("UserService", () => {
       await expect(svc.refreshInvitation("nope", reInvite)).rejects.toMatchObject({
         type: "NOT_FOUND",
       });
+    });
+
+    // WHY: a re-issue is a new link — whatever was set through the earlier one
+    // (a password, a second factor someone else may have enrolled) must not
+    // carry over into the acceptance the new link starts.
+    it("a row whose link already set a password starts over in the same write", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      await svc.setPassword(id, "Earlier-Pass1");
+      await svc.addMfaMethod(id, { name: "email", value: "someone@x.test", confirmed: true });
+      await svc.update(id, {
+        trustedDevices: [{ token: "t", issuedAt: now, expiresAt: now + 1000 }],
+      });
+      // The earlier holder proved an inbox of their own.
+      await svc.setVerifiedEmail(id, "attacker@evil.test");
+      expect(await svc.refreshInvitation(id, reInvite)).toBe(true);
+      const row = (await store.findById(id))!;
+      // Unset, read back ABSENT (store contract) — not a stored `null`.
+      expect("verifiedEmail" in row.account).toBe(false);
+      expect(await svc.getCorrespondenceEmail(row)).toBeUndefined();
+      expect(row.account.invitedBy).toBe("issuer-2");
+      expect(row.password.isInitial).toBe(true);
+      expect(row.password.history).toEqual([]);
+      expect(await svc.verifyPassword(id, "Earlier-Pass1")).toBe(false);
+      expect(row.mfa).toEqual({ methods: [], defaultMethod: "", autoSend: false });
+      expect(row.trustedDevices).toEqual([]);
+      expect(row.account).toMatchObject({ pendingInvitation: true, inviteNonce: "n-2" });
+    });
+
+    it("an unused pending row keeps its initial password", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      const before = (await store.findById(id))!.password;
+      expect(await svc.refreshInvitation(id, reInvite)).toBe(true);
+      expect((await store.findById(id))!.password).toEqual(before);
+    });
+  });
+
+  describe("claimInvitation", () => {
+    // WHY: the run that sets an invite's password claims the invite in the
+    // same write, so the emailed link (and any copy of its state) can never set
+    // it again — and no other write can land between the claim and the password.
+    const PW = "Invitee-Pass1";
+    async function pendingInvite(username: string, nonce: string | null = "n-1") {
+      const user = await svc.createUser(username);
+      await svc.update(user.id, {
+        account: { pendingInvitation: true, inviteNonce: nonce },
+      } as never);
+      return user.id;
+    }
+
+    it("sets the password and moves the marker of a pending, unused invite in one write", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      const writes = store.update.bind(store);
+      let calls = 0;
+      store.update = async (...args) => {
+        calls++;
+        return writes(...args);
+      };
+      expect(await svc.claimInvitation(id, "n-1", "n-claimed", PW)).toBe(true);
+      expect(calls).toBe(1);
+      const row = (await store.findById(id))!;
+      expect(row.account.inviteNonce).toBe("n-claimed");
+      expect(row.password.isInitial).toBe(false);
+      expect(await svc.verifyPassword(id, PW)).toBe(true);
+    });
+
+    it("refuses another marker, a password already set and an accepted invite — writing nothing", async () => {
+      const wrong = await pendingInvite("a@example.com");
+      const used = await pendingInvite("b@example.com");
+      await svc.setPassword(used, "Earlier-Pass1");
+      const accepted = await pendingInvite("c@example.com");
+      expect(await svc.acceptInvitation(accepted, "n-1")).toBe(true);
+      for (const [id, nonce] of [
+        [wrong, "other"],
+        [used, "n-1"],
+        [accepted, "n-1"],
+      ] as const) {
+        const before = await store.findById(id);
+        expect(await svc.claimInvitation(id, nonce, "n-claimed", PW)).toBe(false);
+        expect(await store.findById(id)).toEqual(before);
+      }
+    });
+
+    it("of two claims with the same marker only the first sets the password", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      expect(await svc.claimInvitation(id, "n-1", "n-claimed", PW)).toBe(true);
+      expect(await svc.claimInvitation(id, "n-1", "n-claimed", "Other-Pass1")).toBe(false);
+      expect(await svc.verifyPassword(id, PW)).toBe(true);
+    });
+
+    it("a row without a marker (issued before 0.2) is claimed by any run", async () => {
+      const id = await pendingInvite("invitee@example.com", null);
+      expect(await svc.claimInvitation(id, undefined, "n-claimed", PW)).toBe(true);
+      expect((await store.findById(id))!.account.inviteNonce).toBe("n-claimed");
+    });
+
+    it("a re-issue landing between the claim's read and its write wins — nothing of the claim lands", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      const realFind = store.findById.bind(store);
+      let raced = false;
+      store.findById = async (rowId) => {
+        const row = await realFind(rowId);
+        // The second read is the compare-and-set's own: the re-issue lands just before it.
+        if (!raced && row) {
+          raced = true;
+          expect(await svc.refreshInvitation(rowId, { account: { inviteNonce: "n-2" } })).toBe(
+            true,
+          );
+        }
+        return row;
+      };
+      expect(await svc.claimInvitation(id, "n-1", "n-claimed", PW)).toBe(false);
+      const row = (await realFind(id))!;
+      expect(row.account.inviteNonce).toBe("n-2");
+      expect(row.password.isInitial).toBe(true);
+    });
+
+    it("checks the password as setPassword does, before writing anything", async () => {
+      const strict = new UserService(store, {
+        password: { ...FAST_SCRYPT, policies: [ppHasMinLength(12)] },
+        clock: () => now,
+      });
+      const id = await pendingInvite("invitee@example.com");
+      const before = await store.findById(id);
+      const refused = await strict.claimInvitation(id, "n-1", "n-c", "short").catch((e) => e);
+      const viaSet = await strict.setPassword(id, "short").catch((e: unknown) => e);
+      expect(refused).toMatchObject({ type: "POLICY_VIOLATION" });
+      expect((refused as UserAuthError).message).toBe((viaSet as UserAuthError).message);
+      expect(await store.findById(id)).toEqual(before);
+    });
+
+    it("throws NOT_FOUND for an unknown id", async () => {
+      await expect(svc.claimInvitation("nope", "n-1", "n-2", PW)).rejects.toMatchObject({
+        type: "NOT_FOUND",
+      });
+    });
+  });
+
+  describe("updateInvitee", () => {
+    // WHY: an accept-phase write (a factor, the username) checked the link and
+    // then wrote — a re-issue in between let a superseded link's write land.
+    async function pendingInvite(username: string) {
+      const user = await svc.createUser(username);
+      await svc.update(user.id, {
+        account: { pendingInvitation: true, inviteNonce: "n-1" },
+      } as never);
+      return user.id;
+    }
+
+    it("writes while the invite is pending with this marker, from the fresh row", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      expect(await svc.updateInvitee(id, "n-1", (row) => ({ username: `${row.username}-x` }))).toBe(
+        true,
+      );
+      expect((await store.findById(id))!.username).toBe("invitee@example.com-x");
+    });
+
+    it("writes nothing for another marker or an accepted invite", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      expect(await svc.updateInvitee(id, "other", () => ({ username: "x" }))).toBe(false);
+      expect(await svc.acceptInvitation(id, "n-1")).toBe(true);
+      expect(await svc.updateInvitee(id, "n-1", () => ({ username: "x" }))).toBe(false);
+      expect((await store.findById(id))!.username).toBe("invitee@example.com");
+    });
+
+    it("a re-issue landing between its read and its write wins", async () => {
+      const id = await pendingInvite("invitee@example.com");
+      const realFind = store.findById.bind(store);
+      let raced = false;
+      store.findById = async (rowId) => {
+        const row = await realFind(rowId);
+        if (!raced) {
+          raced = true;
+          await svc.refreshInvitation(rowId, { account: { inviteNonce: "n-2" } });
+        }
+        return row;
+      };
+      expect(await svc.updateInvitee(id, "n-1", () => ({ username: "x" }))).toBe(false);
+      expect((await realFind(id))!.username).toBe("invitee@example.com");
     });
   });
 

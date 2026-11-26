@@ -25,6 +25,14 @@ export interface WfDescriptor {
    * the reference implementation of that consumer-side pattern.
    */
   hostCancel?: boolean;
+  /**
+   * Keep the run's state token per tab in `sessionStorage` (`<AsWfForm
+   * persist-token="session">`) and drop the emailed link from the URL once it
+   * was answered. Past the invite password the run continues under a fresh
+   * token the link does not carry — a reload resumes from the saved one, and
+   * the token never lands in the URL or the history.
+   */
+  persistToken?: boolean;
 }
 
 // All seeded users carry the same password — keeping it as a constant here
@@ -152,6 +160,7 @@ export const WORKFLOWS: ReadonlyArray<WfDescriptor> = [
     description: "Admin creates a pending invitation; resume via emailed magic link.",
     requiresAuth: true,
     testCreds: INVITE_ADMIN_USERS,
+    persistToken: true,
   },
   {
     id: "project.handover",

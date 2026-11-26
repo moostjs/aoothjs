@@ -234,7 +234,13 @@ export type DeepPartial<T> = {
 };
 
 export interface UserStoreUpdate {
-  /** Partial object with fields to set (deep-merged) */
+  /**
+   * Partial object with fields to set (deep-merged). A `null` value means
+   * "unset" — the service sends it only for optional fields it owns (e.g.
+   * `account.verifiedEmail`), and they must read back absent. `UserStoreMemory`
+   * removes any key set to `null`; `UsersStoreAtscriptDb` stores NULL and drops
+   * it on read for those aooth-owned optional fields only.
+   */
   set?: DeepPartial<UserCredentials>;
   /** Dot-paths to atomically increment: e.g. {'account.failedLoginAttempts': 1} */
   inc?: Record<string, number>;

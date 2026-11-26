@@ -844,10 +844,29 @@ describe("AuthController", () => {
       app: Awaited<ReturnType<typeof prepareControllerApp>>,
       pending: boolean,
     ): Promise<string> {
-      const user = await app.users.createUser(`u${Math.random()}@x.test`, "Password123");
+      // An invited row: created without a password (initial), as the invite flow does.
+      const user = await app.users.createUser(`u${Math.random()}@x.test`);
       await app.users.update(user.id, { account: { pendingInvitation: pending } } as never);
       return user.id;
     }
+
+    // WHY: once the invitee set the password, the emailed link no longer
+    // continues the run — a re-click must say so instead of a bare 404.
+    it("answers a pending invite whose link already set the password with the 'link used' envelope", async () => {
+      const app = await prepareControllerApp();
+      const used = await seedInvitee(app, true);
+      await app.users.setPassword(used, "Password123");
+      const res = await app.request(`/auth/invite/post-redemption?uid=${used}`);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        finished: true,
+        message: {
+          level: "warn",
+          text: "This invitation link has already been used. Sign in, or ask for a new invitation.",
+        },
+        next: { primary: { action: { type: "redirect", target: "/login", reason: "link-used" } } },
+      });
+    });
 
     it("answers an unknown id and a pending invite identically", async () => {
       const app = await prepareControllerApp();

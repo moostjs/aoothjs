@@ -101,4 +101,32 @@ describe("A1: pre-0.2 invites on a SQL user store", () => {
     const fresh = await app.submit(app.emails[1].token);
     expect(fresh.body.inputRequired?.payload?.id).toBe("SetPasswordForm");
   });
+
+  // WHY: the start-over of a used link is one merge patch on the `account` /
+  // `password` / `mfa` JSON columns — `verifiedEmail: null` must clear the
+  // earlier holder's inbox on SQL, and read back as unset.
+  it("a re-invite of a used link starts over on the SQL store", async () => {
+    await invite(app, "used@x.test");
+    const opened = await app.submit(app.emails[0].token);
+    const after = await app.submit(opened.body.wfs, {
+      formData: { newPassword: INVITEE_PASSWORD, confirmPassword: INVITEE_PASSWORD, consents: [] },
+    });
+    expect(after.body.inputRequired?.payload?.id).toBe("EnrollPickMethodForm");
+    const id = (await app.users.findByHandle("used@x.test"))!.id;
+    await app.users.addMfaMethod(id, { name: "email", value: "other@x.test", confirmed: true });
+    await app.users.setVerifiedEmail(id, "other@x.test");
+
+    await invite(app, "used@x.test");
+    const reset = (await app.users.findByHandle("used@x.test"))!;
+    expect(reset.password.isInitial).toBe(true);
+    expect(reset.mfa.methods).toEqual([]);
+    expect(reset.account.verifiedEmail).toBeUndefined();
+    expect(await app.users.getCorrespondenceEmail(reset)).toBeUndefined();
+    expect((await rawAccount("used@x.test")).pendingInvitation).toBe(true);
+
+    const fresh = await app.submit(app.emails[1].token);
+    expect(fresh.body.inputRequired?.payload?.id).toBe("SetPasswordForm");
+    await completeAccept(app, fresh.body.wfs);
+    expect((await app.users.findByHandle("used@x.test"))?.account.active).toBe(true);
+  });
 });

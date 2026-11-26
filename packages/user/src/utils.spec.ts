@@ -81,26 +81,29 @@ describe("generateSecureRandom", () => {
 describe("deepMerge", () => {
   it("should merge flat objects", () => {
     const target = { a: 1, b: 2 };
-    deepMerge(target, { b: 3, c: 4 } as any);
+    deepMerge(target, { b: 3, c: 4 });
     expect(target).toEqual({ a: 1, b: 3, c: 4 });
   });
 
   it("should deep merge nested objects", () => {
     const target = { account: { active: true, locked: false } };
-    deepMerge(target, { account: { locked: true } } as any);
+    deepMerge(target, { account: { locked: true } });
     expect(target).toEqual({ account: { active: true, locked: true } });
   });
 
   it("should replace arrays entirely", () => {
     const target = { items: [1, 2, 3] };
-    deepMerge(target, { items: [4, 5] } as any);
+    deepMerge(target, { items: [4, 5] });
     expect(target).toEqual({ items: [4, 5] });
   });
 
-  it("should handle null values", () => {
-    const target = { a: { b: 1 } };
-    deepMerge(target, { a: null } as any);
-    expect(target).toEqual({ a: null });
+  // WHY: `null` in a patch means "unset" — the memory store must read it back
+  // absent, as the SQL store does (store contract), not as a stored `null`.
+  it("removes a key whose patch value is null, also nested", () => {
+    const target = { a: { b: 1, c: 2 }, d: 3 };
+    deepMerge(target, { a: { b: null }, d: null });
+    expect(target).toEqual({ a: { c: 2 } });
+    expect("d" in target).toBe(false);
   });
 });
 

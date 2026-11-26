@@ -93,10 +93,22 @@ describe("UserStoreMemory", () => {
       );
     });
 
+    // WHY: `null` in a `set` patch means "unset" — read back absent, as the
+    // SQL store reads its NULL (store contract item 8).
+    it("a null in a set patch unsets the field: it reads back absent", async () => {
+      const store = new UserStoreMemory();
+      await store.create(makeUser("alice"));
+      await store.update("id-alice", { set: { account: { verifiedEmail: "a@x.test" } } });
+      await store.update("id-alice", { set: { account: { verifiedEmail: null } } as any });
+      const user = (await store.findById("id-alice"))!;
+      expect("verifiedEmail" in user.account).toBe(false);
+      expect(user.account.active).toBeDefined();
+    });
+
     it("should deep merge set fields", async () => {
       const store = new UserStoreMemory();
       await store.create(makeUser("alice"));
-      await store.update("id-alice", { set: { account: { active: true } } as any });
+      await store.update("id-alice", { set: { account: { active: true } } });
       const user = await store.findByHandle("alice");
       expect(user!.account.active).toBe(true);
       expect(user!.account.locked).toBe(false); // unchanged
@@ -115,7 +127,7 @@ describe("UserStoreMemory", () => {
       const store = new UserStoreMemory();
       await store.create(makeUser("alice"));
       await store.update("id-alice", {
-        set: { account: { locked: true } } as any,
+        set: { account: { locked: true } },
         inc: { "account.failedLoginAttempts": 3 },
       });
       const user = await store.findByHandle("alice");
@@ -171,7 +183,7 @@ describe("UserStoreMemory", () => {
       await store.withCas("id-alice", (user) => {
         calls++;
         expect(user.username).toBe("alice");
-        return { set: { account: { active: true } } as any };
+        return { set: { account: { active: true } } };
       });
       expect(calls).toBe(1);
       const after = await store.findByHandle("alice");
@@ -190,7 +202,7 @@ describe("UserStoreMemory", () => {
     it("throws NOT_FOUND when the user does not exist", async () => {
       const store = new UserStoreMemory();
       try {
-        await store.withCas("ghost", () => ({ set: { account: { active: true } } as any }));
+        await store.withCas("ghost", () => ({ set: { account: { active: true } } }));
         expect.unreachable();
       } catch (e) {
         expect((e as UserAuthError).type).toBe("NOT_FOUND");
@@ -210,9 +222,9 @@ describe("UserStoreMemory", () => {
         await store.withCas("id-alice", () => {
           calls++;
           // Sneak a competing write in between this attempt's read and its CAS.
-          void store.update("id-alice", { set: { account: { lastLogin: calls } } as any });
+          void store.update("id-alice", { set: { account: { lastLogin: calls } } });
           // We don't care about the patch contents — it'll never apply.
-          return { set: { account: { failedLoginAttempts: calls } } as any };
+          return { set: { account: { failedLoginAttempts: calls } } };
         });
         expect.unreachable();
       } catch (e) {
@@ -241,9 +253,9 @@ describe("UserStoreMemory", () => {
           calls++;
           if (calls <= 4) {
             // Compete for the first 4 attempts; let the 5th win.
-            void store.update("id-alice", { set: { account: { lastLogin: calls } } as any });
+            void store.update("id-alice", { set: { account: { lastLogin: calls } } });
           }
-          return { set: { account: { failedLoginAttempts: calls } } as any };
+          return { set: { account: { failedLoginAttempts: calls } } };
         },
         { maxAttempts: 5 },
       );

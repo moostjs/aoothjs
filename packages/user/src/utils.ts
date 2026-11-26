@@ -42,13 +42,19 @@ export function generateSecureRandom(length: number, charset = DEFAULT_CHARSET):
   return result.join("");
 }
 
+/**
+ * Deep-merge a `set` patch into `target` (in place): plain objects merge
+ * key by key, arrays and other values replace, and `null` removes the key —
+ * `null` in a patch means "unset", read back absent like a SQL store's NULL.
+ */
 export function deepMerge(target: object, source: Record<string, unknown>): void {
   const t = target as Record<string, unknown>;
   for (const key of Object.keys(source)) {
     const sv = source[key];
     const tv = t[key];
-    if (
-      sv !== null &&
+    if (sv === null) {
+      delete t[key];
+    } else if (
       typeof sv === "object" &&
       !Array.isArray(sv) &&
       tv !== null &&

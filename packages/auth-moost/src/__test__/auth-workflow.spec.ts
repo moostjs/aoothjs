@@ -80,6 +80,7 @@ class TestableAuthWorkflow extends AuthWorkflow {
   public exposeAuthzReauthPolicy = (ctx: AuthWfCtx) => this.resolveAuthzReauthPolicy(ctx);
   public exposeProbeSilentAuthz = (ctx: AuthWfCtx, policy: AuthzReauthPolicy) =>
     this.probeSilentAuthz(ctx, policy);
+  public exposeIsAccountBlocked = (user: UserCredentials) => this.isAccountBlocked(user);
   public exposeRecoveryUrl = (u: string | undefined, alt: AuthWfAltCredsPolicy) =>
     this.resolveRecoveryUrl(u, alt);
   public exposeAdminForm = (ctx: AuthWfCtx) => this.resolveAdminForm(ctx);
@@ -2377,6 +2378,56 @@ describe("resolveTotpAccountLabel (authenticator account label)", () => {
   });
 });
 
+// WHY: the no-password entry paths (silent authorize, `sso-callback`,
+// `prove-control`) share one account-state gate. It must judge a lock as a
+// password sign-in does: a lapsed timed lock is lifted (count back to 0) —
+// before, it refused until a password sign-in lifted the lock.
+describe("account-state gate of the no-password sign-ins", () => {
+  async function account(users: UserService, name: string, patch?: object) {
+    const row = await users.createUser(name, "pw");
+    await users.activateAccount(row.id);
+    if (patch) await users.update(row.id, { account: patch } as never);
+    return users.getUser(row.id);
+  }
+
+  it("a lapsed timed lock is no block: it is lifted and the failed count starts over", async () => {
+    const { wf, users } = makeWorkflowWithDeps();
+    const lapsed = await account(users, "lapsed", {
+      locked: true,
+      lockReason: "x",
+      lockEnds: Date.now() - 1000,
+      failedLoginAttempts: 10,
+    });
+    expect(await wf.exposeIsAccountBlocked(lapsed)).toBe(false);
+    expect((await users.getUser(lapsed.id)).account).toMatchObject({
+      locked: false,
+      failedLoginAttempts: 0,
+    });
+  });
+
+  it("a holding lock, a permanent lock, an inactive or a deleted account blocks", async () => {
+    const { wf, users } = makeWorkflowWithDeps();
+    const timed = await account(users, "timed");
+    await users.lockAccount(timed.id, "x", 60_000);
+    const permanent = await account(users, "permanent");
+    await users.lockAccount(permanent.id, "x");
+    const inactive = await account(users, "inactive", { active: false });
+    const deleted = await account(users, "deleted", {
+      locked: true,
+      lockEnds: Date.now() - 1000,
+    });
+    await users.deleteUser(deleted.id);
+    for (const user of [
+      await users.getUser(timed.id),
+      await users.getUser(permanent.id),
+      inactive,
+      deleted,
+    ]) {
+      expect(await wf.exposeIsAccountBlocked(user), user.username).toBe(true);
+    }
+  });
+});
+
 // ───────────────────────────────────────────────────────────────────────────
 // Consent-only authorize (silent session → consent) — AUTHZ_CONSENT work order.
 // WHY: with `resolveAuthzReauthPolicy() → { mode: 'consent-only' }` a live
@@ -2529,6 +2580,38 @@ describe("Consent-only authorize (silent session → consent)", () => {
     ctx = { authz: { handle: "h" } };
     expect(await probe(wf, ctx, policy, liveSession(inactive.id))).toBe(false);
     expect(ctx.subject).toBeUndefined();
+
+    // A timed lock that still holds refuses as well.
+    const timed = await users.createUser("timed", "pw");
+    await users.activateAccount(timed.id);
+    await users.lockAccount(timed.id, "test", 60_000);
+    ctx = { authz: { handle: "h" } };
+    expect(await probe(wf, ctx, policy, liveSession(timed.id))).toBe(false);
+    expect(ctx.subject).toBeUndefined();
+  });
+
+  // WHY: a lapsed timed lock is no lock — a password sign-in lifts it, so the
+  // session-backed sign-in must too (one rule), and the count starts over.
+  it("probe binds an account whose timed lock has lapsed, and its failed count starts over", async () => {
+    const { wf, users } = makeWorkflowWithDeps();
+    const row = await users.createUser("lapsed", "pw");
+    await users.activateAccount(row.id);
+    await users.update(row.id, {
+      account: {
+        locked: true,
+        lockReason: "x",
+        lockEnds: Date.now() - 1000,
+        failedLoginAttempts: 10,
+      },
+    } as never);
+    const ctx: AuthWfCtx = { authz: { handle: "h" } };
+    expect(await probe(wf, ctx, { mode: "consent-only" }, liveSession(row.id))).toBe(true);
+    expect(ctx.subject).toBe(row.id);
+    expect((await users.getUser(row.id)).account).toMatchObject({
+      locked: false,
+      lockEnds: 0,
+      failedLoginAttempts: 0,
+    });
   });
 
   it("maxSessionAgeMs: stale session origin (and origin-less legacy tokens) fall back; fresh origin binds", async () => {

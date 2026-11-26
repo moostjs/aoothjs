@@ -290,11 +290,15 @@ export class UserService<T extends object = object> {
     const valid = await this.hasher.verify(password, user.password.hash);
 
     if (valid) {
-      const now = await this.recordLogin(user.id);
+      const mfaRequired = this.hasConfirmedMfaMethods(user.mfa);
+      // With a second factor still due the failed count stays: it is reset when
+      // the sign-in completes (`verifyMfa` success, or the caller's
+      // `recordLogin`) — else each correct password would restart the second
+      // factor's guesses.
+      const now = await this.recordLogin(user.id, { keepFailedCount: mfaRequired });
       // Patch in-memory instead of re-reading from store
       user.account.lastLogin = now;
-      user.account.failedLoginAttempts = 0;
-      const mfaRequired = this.hasConfirmedMfaMethods(user.mfa);
+      if (!mfaRequired) user.account.failedLoginAttempts = 0;
       return { user, mfaRequired };
     }
 
@@ -310,7 +314,8 @@ export class UserService<T extends object = object> {
    * The account checks `login` runs before the password, without one — for a
    * sign-in that proves the first factor another way (a magic link): throws
    * `NOT_FOUND`, `INACTIVE` (incl. a pending invitation) or `LOCKED`, and
-   * lifts an expired lock like `login` does. Returns the fresh row.
+   * lifts a lapsed timed lock like `login` does (the failed-attempt count
+   * starts over). Returns the fresh row.
    */
   async assertCanSignIn(id: string): Promise<UserCredentials & T> {
     const user = await this.getUser(id);
@@ -321,9 +326,12 @@ export class UserService<T extends object = object> {
 
   /**
    * Stamp a successful login on the user record: `account.lastLogin = now` and
-   * reset `account.failedLoginAttempts = 0`. The single writer of `lastLogin`.
+   * reset `account.failedLoginAttempts = 0` (kept with `opts.keepFailedCount`).
+   * The single writer of `lastLogin`.
    *
-   * Called by {@link login} on a valid password verify, AND by passwordless
+   * Called by {@link login} on a valid password verify — keeping the count
+   * while a second factor is still due — AND by a sign-in that completes after
+   * one (call it once the second factor passed), AND by passwordless
    * auto-login terminals (invite-accept / signup) which issue a session without
    * going through `login()`. Stamping there closes out that first login so the
    * derived `isFirstLogin = !lastLogin` check stops re-classifying the user's
@@ -332,11 +340,11 @@ export class UserService<T extends object = object> {
    * Returns the timestamp written, so callers holding an in-memory row can patch
    * it without re-reading the store.
    */
-  async recordLogin(id: string): Promise<number> {
+  async recordLogin(id: string, opts?: { keepFailedCount?: boolean }): Promise<number> {
     const now = this.config.clock();
     await this.store.update(id, {
       set: {
-        account: { lastLogin: now, failedLoginAttempts: 0 },
+        account: { lastLogin: now, ...(!opts?.keepFailedCount && { failedLoginAttempts: 0 }) },
       },
     });
     return now;
@@ -416,33 +424,106 @@ export class UserService<T extends object = object> {
   async acceptInvitation(id: string, nonce: string | undefined): Promise<boolean> {
     let accepted = false;
     await this.store.withCas(id, (user) => {
-      accepted = false;
-      const account = user.account;
-      if (!account.pendingInvitation) return null;
-      // `!= null`: a SQL store may read a pre-0.2 row's unset nonce back as `null`.
-      if (account.inviteNonce != null && account.inviteNonce !== nonce) return null;
-      accepted = true;
-      return { set: { account: { pendingInvitation: false } } };
+      accepted = isCurrentInvite(user, nonce);
+      return accepted ? { set: { account: { pendingInvitation: false } } } : null;
     });
     return accepted;
+  }
+
+  /**
+   * Claim a pending invitation by setting its password: checks `newPassword`
+   * as `setPassword` does (throwing the same `POLICY_VIOLATION` /
+   * `PASSWORD_IN_HISTORY` before anything is written), then writes the
+   * password AND moves `account.inviteNonce` to `next` in ONE compare-and-set
+   * write — only while the row is still pending, its password is still the
+   * initial one (no link of this invite set a password yet) and its marker
+   * equals `nonce` (a row without a marker — written before 0.2 — matches
+   * any). Every state holding the old marker — the emailed link included —
+   * then stops matching the account. Returns `false` (nothing written) when the
+   * invite was accepted, replaced, or its password was already set, so of two
+   * runs of one link only one sets the password. Drops trusted devices like
+   * `setPassword`. Throws `UserAuthError("NOT_FOUND")` when no row matches.
+   */
+  async claimInvitation(
+    id: string,
+    nonce: string | undefined,
+    next: string,
+    newPassword: string,
+  ): Promise<boolean> {
+    const password = await this.newPasswordData(await this.getUser(id), newPassword);
+    let claimed = false;
+    await this.store.withCas(id, (user) => {
+      claimed = isUnusedInvite(user, nonce);
+      if (!claimed) return null;
+      return {
+        set: {
+          password,
+          account: { inviteNonce: next },
+          ...(user.trustedDevices?.length ? { trustedDevices: [] } : {}),
+        },
+      };
+    });
+    return claimed;
+  }
+
+  /**
+   * Write to a pending invitee's row on behalf of its current link, in ONE
+   * compare-and-set write: `mutate` builds the patch from the fresh row, and
+   * it is applied only while the invite is still pending and its marker equals
+   * `nonce` (a row without a marker matches any). Returns `false` (nothing
+   * written) when the invite was accepted, replaced or claimed by another run
+   * of the link meanwhile — so a write of a superseded link never lands on the
+   * account, even when the re-issue happens between a check and the write.
+   * Throws `UserAuthError("NOT_FOUND")` when no row matches `id`.
+   */
+  async updateInvitee(
+    id: string,
+    nonce: string | undefined,
+    mutate: (current: UserCredentials & T) => DeepPartial<UserCredentials & T>,
+  ): Promise<boolean> {
+    let written = false;
+    await this.store.withCas(id, (user) => {
+      written = isCurrentInvite(user, nonce);
+      return written ? { set: mutate(user) } : null;
+    });
+    return written;
   }
 
   /**
    * Refresh a pending invitation — a re-invite or a resend — in ONE
    * compare-and-set write: applies `patch` (the new link marker
    * `account.inviteNonce` and, for a re-invite, its roles, extras and issuer)
-   * only while the row is still pending. Returns `false` (nothing written)
-   * when the invite was accepted — also when the acceptance lands while the
-   * refresh runs — so no part of a refresh reaches a live account. Throws
-   * `UserAuthError("NOT_FOUND")` when no row matches `id`, and
-   * `UserAuthError("CAS_EXHAUSTED")` when concurrent writes outlast the retries.
+   * only while the row is still pending. A row whose invite link was already
+   * used to set a password starts the acceptance over in the same write: a
+   * fresh random initial password, no MFA methods, no trusted devices and no
+   * `account.verifiedEmail` (an earlier link holder may have proven an inbox of
+   * their own). Columns of your own, the username and consent records are not
+   * reset.
+   *
+   * Returns `false` (nothing written) when the invite was accepted — also when
+   * the acceptance lands while the refresh runs — so no part of a refresh
+   * reaches a live account. Throws `UserAuthError("NOT_FOUND")` when no row
+   * matches `id`, and `UserAuthError("CAS_EXHAUSTED")` when concurrent writes
+   * outlast the retries.
    */
   async refreshInvitation(id: string, patch: DeepPartial<UserCredentials & T>): Promise<boolean> {
+    // Hashed up front: the write that decides on the reset is synchronous.
+    const hash = await this.hasher.hash(this.hasher.generatePassword());
     let refreshed = false;
     await this.store.withCas(id, (user) => {
       refreshed = user.account.pendingInvitation === true;
       if (!refreshed) return null;
-      return { set: patch };
+      if (user.password.isInitial) return { set: patch };
+      return {
+        set: {
+          ...patch,
+          password: { hash, history: [], lastChanged: this.config.clock(), isInitial: true },
+          mfa: { methods: [], defaultMethod: "", autoSend: false },
+          // `null` in a patch unsets the field (store contract).
+          account: { ...patch.account, verifiedEmail: null as unknown as string },
+          ...(user.trustedDevices?.length ? { trustedDevices: [] } : {}),
+        },
+      };
     });
     return refreshed;
   }
@@ -511,9 +592,7 @@ export class UserService<T extends object = object> {
 
   async unlockAccount(id: string): Promise<void> {
     const found = await this.store.update(id, {
-      set: {
-        account: { locked: false, lockReason: "", lockEnds: 0, failedLoginAttempts: 0 },
-      },
+      set: { account: { ...LIFTED_LOCK } },
     });
     if (!found) throw new UserAuthError("NOT_FOUND");
   }
@@ -1004,6 +1083,29 @@ export class UserService<T extends object = object> {
     user: UserCredentials & T,
     newPassword: string,
   ): Promise<void> {
+    const password = await this.newPasswordData(user, newPassword);
+    // A new password drops every remembered device in the same write: a
+    // trusted-device cookie skips MFA, so it must not outlive the password
+    // it was earned with (recovery, change, forced change, admin reset alike).
+    // Written only when the row has some, so a model without the column never
+    // receives it.
+    await this.store.update(id, {
+      set: {
+        password,
+        ...(user.trustedDevices?.length ? { trustedDevices: [] } : {}),
+      },
+    });
+  }
+
+  /**
+   * The `password` patch of `newPassword` for `user`, after the checks every
+   * password write runs: the policies (`POLICY_VIOLATION`), then the current
+   * password and the history (`PASSWORD_IN_HISTORY`).
+   */
+  private async newPasswordData(
+    user: UserCredentials & T,
+    newPassword: string,
+  ): Promise<PasswordData> {
     const policyResult = await this.checkPolicies(newPassword, user.password);
     if (!policyResult.passed) {
       throw new UserAuthError("POLICY_VIOLATION", policyResult.errors.join("; "), {
@@ -1022,29 +1124,16 @@ export class UserService<T extends object = object> {
       }
     }
 
-    const newHash = await this.hasher.hash(newPassword);
     const limit = this.config.password.historyLength;
-    const newHistory =
-      limit > 0
-        ? [user.password.hash, ...user.password.history].filter(Boolean).slice(0, limit)
-        : [];
-
-    // A new password drops every remembered device in the same write: a
-    // trusted-device cookie skips MFA, so it must not outlive the password
-    // it was earned with (recovery, change, forced change, admin reset alike).
-    // Written only when the row has some, so a model without the column never
-    // receives it.
-    await this.store.update(id, {
-      set: {
-        password: {
-          hash: newHash,
-          history: newHistory,
-          lastChanged: this.config.clock(),
-          isInitial: false,
-        },
-        ...(user.trustedDevices?.length ? { trustedDevices: [] } : {}),
-      },
-    });
+    return {
+      hash: await this.hasher.hash(newPassword),
+      history:
+        limit > 0
+          ? [user.password.hash, ...user.password.history].filter(Boolean).slice(0, limit)
+          : [],
+      lastChanged: this.config.clock(),
+      isInitial: false,
+    };
   }
 
   private hasConfirmedMfaMethods(mfa: MfaData): boolean {
@@ -1070,8 +1159,15 @@ export class UserService<T extends object = object> {
   }
 
   /**
-   * If `account.locked`: auto-unlock when the lock has expired (mutating
-   * `account` in place), or throw `LOCKED` otherwise.
+   * If `account.locked`: throw `LOCKED` while the lock holds. A timed lock
+   * that has lapsed is lifted and the failed-attempt count starts over, so
+   * the attempt being processed counts as the first. `account` is updated in
+   * place to the row as written.
+   *
+   * The lift is one compare-and-set write against a fresh read: a request
+   * racing it can't zero a failure another one already counted, nor lift a
+   * lock that tripped again meanwhile — a request that finds the lock lifted
+   * goes on with the fresh count, one that finds a new lock gets `LOCKED`.
    */
   private async ensureNotLockedOrThrow(
     id: string,
@@ -1079,20 +1175,16 @@ export class UserService<T extends object = object> {
   ): Promise<void> {
     const lockStatus = this.getLockStatus(account);
     if (!lockStatus.locked) return;
-    if (lockStatus.expired) {
-      await this.store.update(id, {
-        set: {
-          account: { locked: false, lockReason: "", lockEnds: 0 },
-        },
-      });
-      account.locked = false;
-      account.lockEnds = 0;
-      account.lockReason = "";
-      return;
-    }
-    throw new UserAuthError("LOCKED", undefined, {
-      reason: account.lockReason,
-      lockEnds: account.lockEnds,
+    if (!lockStatus.expired) throw lockedError(account);
+    await this.store.withCas(id, (current) => {
+      const status = this.getLockStatus(current.account);
+      if (status.locked && !status.expired) throw lockedError(current.account);
+      // Already lifted (by a racing request or an admin): nothing to write.
+      const { locked, lockReason, lockEnds, failedLoginAttempts } = status.locked
+        ? LIFTED_LOCK
+        : current.account;
+      Object.assign(account, { locked, lockReason, lockEnds, failedLoginAttempts });
+      return status.locked ? { set: { account: { ...LIFTED_LOCK } } } : null;
     });
   }
 
@@ -1133,6 +1225,43 @@ export class UserService<T extends object = object> {
     });
     throw new UserAuthError(errorCode);
   }
+}
+
+/**
+ * The account fields of a lifted lock — written by `unlockAccount` and when a
+ * timed lock lapses: the failed-attempt count starts over with the lock.
+ */
+const LIFTED_LOCK = Object.freeze({
+  locked: false,
+  lockReason: "",
+  lockEnds: 0,
+  failedLoginAttempts: 0,
+});
+
+/**
+ * Whether `user` is a pending invite whose link marker is `nonce` (a row
+ * without a marker — written before 0.2 — matches any; `!= null`: a SQL store
+ * may read the unset marker back as `null`).
+ */
+function isCurrentInvite(user: UserCredentials, nonce: string | undefined): boolean {
+  const account = user.account;
+  return (
+    account.pendingInvitation === true &&
+    (account.inviteNonce == null || account.inviteNonce === nonce)
+  );
+}
+
+/** {@link isCurrentInvite}, and no link of the invite has set a password yet. */
+function isUnusedInvite(user: UserCredentials, nonce: string | undefined): boolean {
+  return isCurrentInvite(user, nonce) && user.password.isInitial;
+}
+
+/** `LOCKED`, with the lock's reason and end (`0` = permanent). */
+function lockedError(account: UserCredentials["account"]): UserAuthError {
+  return new UserAuthError("LOCKED", undefined, {
+    reason: account.lockReason,
+    lockEnds: account.lockEnds,
+  });
 }
 
 /** The store methods that write (keyed by the user id, or `create`'s row). */

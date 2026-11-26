@@ -859,6 +859,19 @@ export interface AuthWfCtx {
    * control; never `@wf.context.pass`-ed to the client.
    */
   loginRecorded?: boolean;
+  /**
+   * The password step stamped the login but kept the failed sign-in count,
+   * because a second factor was still due (`users.login` → `mfaRequired`):
+   * `record-login` resets the count once the sign-in completes. Server-only.
+   */
+  failedCountKept?: boolean;
+  /**
+   * The latest moment (ms since epoch) any paused state of this run may live:
+   * a pause whose expiry would be later — or that would never expire — is
+   * persisted with this one. Set by an invite accept once the password is set
+   * (the link's own expiry). Server-only; read by `WfTriggerProvider`.
+   */
+  expiresBy?: number;
   // Mirrors `AuthWorkflowOpts.autoLoginOn{Invite|Recover}` onto ctx so the
   // finalize-* schema conditions can read it — wf engine invokes condition
   // closures as plain functions, so `this.opts` is not reachable from inside

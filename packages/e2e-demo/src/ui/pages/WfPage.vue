@@ -138,6 +138,15 @@ function applyCreds(cred: { username: string; password: string }): void {
   }
 }
 
+// `@link-used` (with `persist-token`): the emailed link's token was answered and
+// the run is held in `sessionStorage` — drop `wfs` from the URL (replace, not
+// push) so it never sits in the history; `uid` stays for the re-click fallback.
+async function dropLink(): Promise<void> {
+  if (route.query.wfs === undefined) return;
+  const { wfs: _wfs, ...query } = route.query;
+  await router.replace({ query });
+}
+
 // Drives `AsWfForm.navigate` — workflows finishing with a redirect action
 // (e.g. `forgotPassword` → `/wf?id=auth.recovery`) call this. Internal routes
 // stay inside the SPA via vue-router; external URLs hand off to the browser.
@@ -209,6 +218,8 @@ async function navigate(url: string): Promise<void> {
           :fetch-options="fetchOptions"
           :initial-token="initialToken"
           :input="authzInput"
+          :persist-token="descriptor?.persistToken ? 'session' : undefined"
+          @link-used="dropLink"
           @finished="onFinished"
           @error="onError"
         />

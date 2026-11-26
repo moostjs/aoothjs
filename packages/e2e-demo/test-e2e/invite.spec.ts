@@ -639,8 +639,20 @@ test.describe("WF-INVITE — auth.invite family (MFA enrollment, PW MFA coverage
     await submitForm(inviteePage);
 
     // EnrollPickMethodForm pause — `method` radio + `Skip for now` action
-    // visible because variant set mfaMode='optional'. Click skip.
+    // visible because variant set mfaMode='optional'.
     await waitForFormInput(inviteePage, "method");
+    // Past the password the run is on a fresh token the link does not carry:
+    // the page keeps it per tab (`persist-token="session"`) and dropped the
+    // link from the URL, so a reload resumes the run where it was.
+    expect(new URL(inviteePage.url()).searchParams.get("wfs")).toBeNull();
+    await inviteePage.reload();
+    await waitForFormInput(inviteePage, "method");
+    // The emailed link itself no longer continues the run.
+    const linkToken = new URL(resumeUrl).searchParams.get("wfs");
+    const dead = await inviteePage.request.post("/auth/trigger", {
+      data: { wfs: linkToken, input: { action: "skip" } },
+    });
+    expect(dead.status()).toBe(410);
     await clickAction(inviteePage, "Skip for now");
 
     // Auto-login finish runs because skip leaves `ctx.aborted` false.

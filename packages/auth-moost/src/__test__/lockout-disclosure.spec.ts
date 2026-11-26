@@ -1,4 +1,4 @@
-import { RateLimitStoreMemory } from "@aooth/auth";
+import { type RateLimitStore, RateLimitStoreMemory } from "@aooth/auth";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { AuthWorkflowOpts } from "../workflow/auth-workflow.opts";
@@ -89,14 +89,19 @@ describe("lockoutDisclosure 'uniform' — property: unknown ≡ real", { timeout
   );
 });
 
-async function sequence(handle: string): Promise<string[]> {
+async function sequence(
+  handle: string,
+  shadowStore: (store: RateLimitStoreMemory) => RateLimitStore = (store) => store,
+): Promise<string[]> {
   // One injected clock for the account lock and the shadow store: with the
   // wall clock, a slow machine let the 300 ms lock lapse between attempts.
   let now = 1_700_000_000_000;
   const clock = () => now;
   const app = await prepareFlowApp({
     userConfig: { lockout: { threshold: 3, duration: 300 }, clock },
-    workflowOpts: { lockoutShadowStore: new RateLimitStoreMemory({ clock: { now: clock } }) },
+    workflowOpts: {
+      lockoutShadowStore: shadowStore(new RateLimitStoreMemory({ clock: { now: clock } })),
+    },
   });
   await app.seedUser("alice", "Password123!");
   const attempt = async () => {
@@ -106,7 +111,7 @@ async function sequence(handle: string): Promise<string[]> {
   const out: string[] = [];
   for (let i = 0; i < 4; i++) out.push(await attempt());
   now += 400; // the lock expires
-  for (let i = 0; i < 3; i++) out.push(await attempt());
+  for (let i = 0; i < 4; i++) out.push(await attempt());
   return out;
 }
 
@@ -114,10 +119,24 @@ describe(
   "lockoutDisclosure 'uniform' — exact mirror and bounded store (H4/M1)",
   { timeout: 30_000 },
   () => {
+    // WHY: a lapsed lock starts the count over — one wrong password must not
+    // lock the account again — and an unknown handle must read the same.
     it("an unknown handle reads exactly like a real account after its lock expires", async () => {
       const real = await sequence("alice");
-      expect(real).toEqual([INVALID, INVALID, INVALID, LOCKED, INVALID, LOCKED, LOCKED]);
+      const period = [INVALID, INVALID, INVALID, LOCKED];
+      expect(real).toEqual([...period, ...period]);
       expect(await sequence("ghost")).toEqual(real);
+    });
+
+    it("a shadow store without `reset` keeps the count through a lapsed lock (the documented limit)", async () => {
+      const withoutReset = (store: RateLimitStoreMemory): RateLimitStore => ({
+        hit: (key, ttl) => store.hit(key, ttl),
+        get: (key) => store.get(key),
+        expire: (key, ttl) => store.expire(key, ttl),
+      });
+      const first = [INVALID, INVALID, INVALID, LOCKED];
+      const afterLapse = [INVALID, LOCKED, LOCKED, LOCKED];
+      expect(await sequence("ghost", withoutReset)).toEqual([...first, ...afterLapse]);
     });
 
     it("keys are fixed-size hashes and an oversized handle never reaches the store", async () => {

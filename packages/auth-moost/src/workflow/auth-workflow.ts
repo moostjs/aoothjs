@@ -52,6 +52,7 @@ import { HttpError } from "@moostjs/event-http";
 import {
   outlet,
   outletEmail,
+  renewStateToken,
   Step,
   StepRetriableError,
   StepTTL,
@@ -147,6 +148,7 @@ import {
 import {
   consentsPersistTailSchema,
   enrollTrioSteps,
+  invitePromoteToHandle,
   mfaLoopSchema,
   mfaStepUpLoop,
   passwordPhaseSchema,
@@ -313,6 +315,16 @@ const MAGIC_LINK_SEND_PREFIX = "magic-link:";
 /** SHA-256 of `value`, base64url — fixed-size store keys and binding hashes. */
 function sha256url(value: string): string {
   return createHash("sha256").update(value).digest("base64url");
+}
+
+/**
+ * The invite link marker a run moves the account to when it claims the invite
+ * to set its password — derived from the link's own marker, so a later open of
+ * that link can tell "already used" from "replaced by a re-issue" (a random
+ * marker). A run without a marker (an invite issued before 0.2) derives from "".
+ */
+function claimedInviteNonce(nonce: string | undefined): string {
+  return sha256url(`invite-claimed:${nonce ?? ""}`);
 }
 
 /** How long a code's counters outlive the code. */
@@ -523,21 +535,43 @@ function rolesOf(user: UserCredentials): string[] {
  * `alreadyAcceptedRedirectUrl` being non-empty — mirrors how the resolver
  * defaults it, but lets consumers blank it to suppress the secondary button.
  */
-export function buildInviteAlreadyAcceptedEnvelope(opts: {
+export function buildInviteAlreadyAcceptedEnvelope(opts: InviteEndEnvelopeOpts): FinishWfOpts {
+  return inviteEndEnvelope("INVITE_ALREADY_ACCEPTED", "info", "already-accepted", opts);
+}
+
+/**
+ * The "this invitation link has already been used" finish envelope of
+ * `AuthController.invitePostRedemption`, for a still-pending invite whose
+ * password was set through its link (the run continues only where it was set).
+ * Same buttons as {@link buildInviteAlreadyAcceptedEnvelope}.
+ */
+export function buildInviteLinkUsedEnvelope(opts: InviteEndEnvelopeOpts): FinishWfOpts {
+  return inviteEndEnvelope("INVITE_LINK_USED", "warn", "link-used", opts);
+}
+
+/** Where the invite finish envelopes point, and their text overrides. */
+interface InviteEndEnvelopeOpts {
   loginUrl: string;
   alreadyAcceptedRedirectUrl: string;
   /** Text overrides (see `AuthWorkflowOpts.messages`). */
   messages?: AoothMessages;
-}): FinishWfOpts {
+}
+
+function inviteEndEnvelope(
+  code: "INVITE_ALREADY_ACCEPTED" | "INVITE_LINK_USED",
+  level: "info" | "warn",
+  reason: string,
+  opts: InviteEndEnvelopeOpts,
+): FinishWfOpts {
   const altUrl = opts.alreadyAcceptedRedirectUrl;
-  const msg = (code: AoothMessageCode) => resolveAoothMessage(code, {}, opts.messages);
+  const msg = (key: AoothMessageCode) => resolveAoothMessage(key, {}, opts.messages);
   return {
-    message: { level: "info", text: msg("INVITE_ALREADY_ACCEPTED") },
+    message: { level, text: msg(code) },
     next: {
       trigger: "manual",
       primary: {
         label: msg("GO_TO_SIGN_IN"),
-        action: { type: "redirect", target: opts.loginUrl, reason: "already-accepted" },
+        action: { type: "redirect", target: opts.loginUrl, reason },
       },
       ...(altUrl && {
         options: [
@@ -2603,9 +2637,20 @@ export class AuthWorkflow {
    * Account-state gate shared by the three no-password entry paths — the
    * silent-authorize probe, `sso-callback`'s success gate, and `prove-control`'s
    * candidate gate. A blocked account must never bind a subject on any of them.
+   * Judged as a password sign-in judges it (`UserService.assertCanSignIn`, on
+   * a fresh read): an inactive or locked account is blocked, while a timed lock
+   * that has lapsed is lifted instead, and the failed sign-in count starts over.
    */
-  protected isAccountBlocked(user: UserCredentials): boolean {
-    return user.account.locked || !user.account.active;
+  protected async isAccountBlocked(user: UserCredentials): Promise<boolean> {
+    if (!user.account.active) return true;
+    if (!user.account.locked) return false;
+    try {
+      await this.users.assertCanSignIn(user.id);
+      return false;
+    } catch (err) {
+      if (err instanceof UserAuthError) return true;
+      throw err;
+    }
   }
 
   protected async probeSilentAuthz(ctx: AuthWfCtx, policy: AuthzReauthPolicy): Promise<boolean> {
@@ -2628,7 +2673,7 @@ export class AuthWorkflow {
       // Session points at a deleted/unknown row — fall through to credentials.
       return false;
     }
-    if (this.isAccountBlocked(user)) return false;
+    if (await this.isAccountBlocked(user)) return false;
     ctx.subject = session.userId;
     const authz = ctx.authz!;
     authz.silent = true;
@@ -2824,6 +2869,9 @@ export class AuthWorkflow {
       // the stamp. Stamping here (before `prepare-semantic-flags`) also keeps
       // the password path's `isFirstLogin` derivation byte-identical to before.
       ctx.loginRecorded = true;
+      // With a second factor due, `login()` kept the failed count: it is reset
+      // when the sign-in completes (`record-login`), not by the password alone.
+      if (result.mfaRequired) ctx.failedCountKept = true;
       // First validated input passed → move off the cheap encapsulated start to
       // the durable store strategy, so the MFA / enrollment / password-change
       // pauses survive restarts. Pre-validation stays encapsulated (no server row),
@@ -2882,12 +2930,14 @@ export class AuthWorkflow {
    * Whether a failed password sign-in answers "Account locked" — see
    * `AuthWorkflowOpts.lockoutDisclosure`. Under `'uniform'` an unknown or
    * inactive handle keeps a shadow failure counter in `lockoutShadowStore`
-   * that mirrors a real account exactly: every failure counts (the counter is
-   * not reset when it trips — like `failedLoginAttempts`), a lock starts when
-   * `failures >= threshold` and none is active, the tripping attempt still
-   * reads "Invalid credentials", and a permanent lock stays on while probed.
-   * Keys are a hash of the normalised handle (bounded size); the counter
-   * slides for 30 days of inactivity.
+   * that mirrors a real account exactly: every failure counts, a lock starts
+   * when `failures >= threshold` and none is active, the tripping attempt
+   * still reads "Invalid credentials", the count starts over with the lock
+   * (a real account's restarts when its timed lock lapses — nothing counts
+   * while locked, so the two read alike), and a permanent lock stays on while
+   * probed. Keys are a hash of the normalised handle (bounded size); the
+   * counter slides for 30 days of inactivity. Without `get` the store only
+   * counts; without `reset` the count outlives a shadow lock.
    */
   private async failedLoginReadsLocked(
     ctx: AuthWfCtx,
@@ -2918,6 +2968,7 @@ export class AuthWorkflow {
     if (!store.get) return failures > threshold; // no lock key without reads: count only
     if (failures >= threshold) {
       await store.hit(lockKey, duration > 0 ? duration : SHADOW_TTL_MS);
+      await store.reset?.(failKey);
     }
     return false;
   }
@@ -3639,9 +3690,10 @@ export class AuthWorkflow {
    *
    * Re-invite (`ctx.admin.reuseExisting`, stamped by `admin-form` on a
    * `'reuse'` verdict): REFRESH the existing row instead of creating — apply
-   * the freshly-picked roles + `prepareUser` extras, rotate the link marker
-   * (and `invitedBy`), and leave password/MFA state untouched (a pending
-   * record never had usable credentials). `send-email` downstream then mints
+   * the freshly-picked roles + `prepareUser` extras and rotate the link marker
+   * (and `invitedBy`). A row whose earlier link already set a password starts
+   * the acceptance over (a fresh initial password, no MFA methods — see
+   * `UserService.refreshInvitation`). `send-email` downstream then mints
    * a fresh durable handle, i.e. a new full-TTL magic link. A row that
    * vanished since `admin-form` falls through to the normal create path. The
    * refresh is a deep-merge update: arrays (`roles`) replace wholesale, but
@@ -3649,7 +3701,8 @@ export class AuthWorkflow {
    * original invite.
    *
    * Resend (`ctx.admin.resend`, the `'resend'` verdict): rotate only the
-   * link marker — roles, extras and `invitedBy` stay. One revoked meanwhile
+   * link marker — roles, extras and `invitedBy` stay (a used link starts over
+   * as on a re-invite). One revoked meanwhile
    * (the row is gone) answers 410 `INVITE_CANCELLED` instead of creating an
    * account.
    *
@@ -3830,8 +3883,10 @@ export class AuthWorkflow {
 
   /**
    * The invited account, refusing a cancelled invite (410 `INVITE_CANCELLED`,
-   * the row is gone) or a superseded link (410 `INVITE_REPLACED`, a re-invite
-   * rotated the account's marker away from this run's).
+   * the row is gone), a link whose run already set the password (410
+   * `INVITE_LINK_USED`, the run claimed the invite — see `claimInvite`) or a
+   * superseded link (410 `INVITE_REPLACED`, a re-issue rotated the account's
+   * marker away from this run's).
    */
   private async currentInviteRow(ctx: AuthWfCtx): Promise<UserCredentials> {
     this.requireSubject(ctx);
@@ -3840,10 +3895,61 @@ export class AuthWorkflow {
     // `!= null`: a pre-0.2 invite has no marker, and a SQL store may read the
     // unset column back as `null` rather than leaving it out.
     const current = user.account?.inviteNonce;
-    if (current != null && current !== ctx.admin?.inviteNonce) {
-      throw this.httpError(410, "INVITE_REPLACED");
+    const ours = ctx.admin?.inviteNonce;
+    if (current != null && current !== ours) {
+      const used = current === claimedInviteNonce(ours);
+      throw this.httpError(410, used ? "INVITE_LINK_USED" : "INVITE_REPLACED");
     }
     return user;
+  }
+
+  /**
+   * Invite accept: set the password by claiming the invite for this run —
+   * `UserService.claimInvitation` checks the password (a refused one re-pauses
+   * on the emailed link with nothing written), then writes it and moves the
+   * account's link marker to one only this run holds
+   * ({@link claimedInviteNonce}) in ONE compare-and-set write; of two runs of
+   * one link only one sets the password. The run then continues under a fresh
+   * state token ({@link renewStateToken}): a durable emailed token is never
+   * written again (410 `WF_EXPIRED`), and every copy of the link's state —
+   * encapsulated, restored — answers 410 `INVITE_LINK_USED`. Every later pause
+   * expires with the link at the latest (`ctx.expiresBy`).
+   */
+  private async claimInvite(
+    ctx: AuthWfCtx & { subject: string },
+    wf: { requireInput(opts?: { errors?: Record<string, string> }): unknown },
+    user: UserCredentials | null,
+    newPassword: string,
+  ): Promise<void> {
+    // Never set a password through a used link (a superseded or cancelled one
+    // was already refused when `user` was read).
+    if (!user?.account?.pendingInvitation) throw this.httpError(410, "INVITE_ALREADY_ACCEPTED");
+    const ours = ctx.admin?.inviteNonce;
+    const next = claimedInviteNonce(ours);
+    let claimed = false;
+    try {
+      claimed = await this.withStoreErrorTranslation(() =>
+        this.users.claimInvitation(ctx.subject, ours, next, newPassword),
+      );
+    } catch (err) {
+      // A row revoked meanwhile: answered below as a cancelled invite.
+      if (err instanceof UserAuthError && err.type !== "NOT_FOUND") {
+        throw this.throwPublic(ctx, wf, { errors: { newPassword: userAuthErrorText(err) } });
+      }
+      if (!(err instanceof UserAuthError)) throw err;
+    }
+    if (!claimed) {
+      await this.assertInviteStillOpen(ctx);
+      // Still this run's marker on a pending row: its password was set already.
+      throw this.httpError(410, "INVITE_LINK_USED");
+    }
+    (ctx.admin ??= {}).inviteNonce = next;
+    const linkEnds = ctx.admin.linkExpiresAt;
+    if (linkEnds !== undefined) ctx.expiresBy = linkEnds;
+    // The run moves to a fresh state token only the password submit's response
+    // carries: the emailed one (consumed by this request) is never written
+    // again, so it answers 410 `WF_EXPIRED` from here on.
+    renewStateToken();
   }
 
   /**
@@ -3871,10 +3977,17 @@ export class AuthWorkflow {
     const refused = this.validateChosenUsername(ctx, username);
     if (refused) throw this.throwPublic(ctx, wf, { errors: { username: this.msg(refused) } });
     const taken = await this.users.findByHandle(username);
-    if (taken && taken.id !== ctx.subject) {
-      throw this.throwPublic(ctx, wf, { errors: { username: this.msg("CHOOSE_USERNAME_TAKEN") } });
+    const takenError = () =>
+      this.throwPublic(ctx, wf, { errors: { username: this.msg("CHOOSE_USERNAME_TAKEN") } });
+    if (taken && taken.id !== ctx.subject) throw takenError();
+    // Conditioned on this run's link: a re-issue or a claim since the check
+    // above leaves the username alone.
+    try {
+      await this.writeForInvitee(ctx, () => ({ username }));
+    } catch (err) {
+      if (err instanceof UserAuthError && err.type === "ALREADY_EXISTS") throw takenError();
+      throw err;
     }
-    await this.users.update(ctx.subject, { username });
     (ctx.accept ??= {}).usernameChosen = true;
     return undefined;
   }
@@ -3957,8 +4070,10 @@ export class AuthWorkflow {
    * Unified password-set step body — merges login Phase 5 + invite accept-tail
    * + recovery set-password. Stages copy via `ctx.password.changeReason`
    * (`initial` / `expired` / `reset`), pauses for `SetPasswordForm`, validates
-   * match, calls `users.setPassword`, processes inline consents, and clears
-   * the per-user `isPasswordInitial` / `isPasswordExpired` flags.
+   * match, length and the inline consents — every refusal re-pauses before
+   * anything is written — then (invite accept) claims the invite
+   * ({@link claimInvite}), calls `users.setPassword`, and clears the per-user
+   * `isPasswordInitial` / `isPasswordExpired` flags.
    */
   @Step("create-password-form")
   @Public()
@@ -3985,20 +4100,22 @@ export class AuthWorkflow {
       });
     }
     this.refuseShortPassword(ctx, wf, input.newPassword);
-    // Invite accept: never set a password through a used link (a superseded
-    // or cancelled one was already refused when `user` was read).
-    if (ctx.accept && !user?.account?.pendingInvitation) {
-      throw this.httpError(410, "INVITE_ALREADY_ACCEPTED");
-    }
-    try {
-      await this.users.setPassword(ctx.subject, input.newPassword);
-    } catch (err) {
-      if (err instanceof UserAuthError) {
-        throw this.throwPublic(ctx, wf, { errors: { newPassword: userAuthErrorText(err) } });
-      }
-      throw err;
-    }
+    // Before the password write: a missing required consent re-pauses this
+    // same form, which must still be usable (once the password has changed,
+    // the form refuses itself as a replay).
     this.processInlineConsent(ctx, input, wf);
+    if (ctx.accept) {
+      await this.claimInvite(ctx, wf, user, input.newPassword);
+    } else {
+      try {
+        await this.users.setPassword(ctx.subject, input.newPassword);
+      } catch (err) {
+        if (err instanceof UserAuthError) {
+          throw this.throwPublic(ctx, wf, { errors: { newPassword: userAuthErrorText(err) } });
+        }
+        throw err;
+      }
+    }
     ctx.isPasswordInitial = false;
     ctx.isPasswordExpired = false;
     // login.flow: gates the post-MFA `revoke-sessions` and exempts the run
@@ -5455,27 +5572,80 @@ export class AuthWorkflow {
    */
   private async confirmEnrolledFactor(ctx: AuthWfCtx): Promise<void> {
     this.requireSubject(ctx);
-    // Invite accept: no factor lands through a superseded / used link.
-    if (ctx.accept) await this.assertInviteStillOpen(ctx);
     const username = ctx.subject;
     const m = (ctx.mfaEnroll ??= {});
     const methodName = m.method as MfaTransport;
     const value = (methodName === "totp" ? m.secret : m.address) as string;
-    await this.withStoreErrorTranslation(() =>
-      this.users.addMfaMethod(username, { name: methodName, value, confirmed: true }),
-    );
-    // A freshly-confirmed email factor is an inbox proof — record the
-    // correspondence address. Unconditional sibling of the policy-gated
-    // `promote-to-handle` write that follows this step.
-    if (methodName === "email") await this.users.setVerifiedEmail(username, value);
-    // Make this the default UNLESS the flow asked to keep the existing one (the
-    // user is adding/replacing a secondary factor, not setting their first). On
-    // the login/invite forced-enrolment path `keepExistingDefault` is unset and
-    // the user has no default yet, so the first method still becomes default.
-    if (!m.keepExistingDefault) await this.users.setDefaultMfaMethod(username, methodName);
+    if (ctx.accept) {
+      // Invite accept: the factor, its inbox proof and the default land in ONE
+      // write conditioned on this run's link — a superseded or used link (also
+      // one re-issued after a check) writes nothing.
+      await this.confirmInviteeFactor(ctx, { name: methodName, value }, !m.keepExistingDefault);
+    } else {
+      await this.withStoreErrorTranslation(() =>
+        this.users.addMfaMethod(username, { name: methodName, value, confirmed: true }),
+      );
+      // A freshly-confirmed email factor is an inbox proof — record the
+      // correspondence address. Unconditional sibling of the policy-gated
+      // `promote-to-handle` write that follows this step.
+      if (methodName === "email") await this.users.setVerifiedEmail(username, value);
+      // Make this the default UNLESS the flow asked to keep the existing one (the
+      // user is adding/replacing a secondary factor, not setting their first). On
+      // the login forced-enrolment path `keepExistingDefault` is unset and the
+      // user has no default yet, so the first method still becomes default.
+      if (!m.keepExistingDefault) await this.users.setDefaultMfaMethod(username, methodName);
+    }
     m.done = true;
     (ctx.otp ??= {}).verified = true;
     this.clearPin(ctx);
+  }
+
+  /**
+   * {@link confirmEnrolledFactor} for an invite accept: the confirmed factor,
+   * the inbox proof of an email factor (`account.verifiedEmail`) and the
+   * default method in ONE `users.updateInvitee` write, applied only while the
+   * account still carries this run's link marker. A refused write answers like
+   * the link (410 `INVITE_REPLACED` / `INVITE_LINK_USED` /
+   * `INVITE_ALREADY_ACCEPTED` / `INVITE_CANCELLED`).
+   */
+  private async confirmInviteeFactor(
+    ctx: AuthWfCtx & { subject: string },
+    factor: { name: MfaTransport; value: string },
+    makeDefault: boolean,
+  ): Promise<void> {
+    await this.writeForInvitee(ctx, (user) => ({
+      mfa: {
+        methods: [
+          ...user.mfa.methods.filter((existing) => existing.name !== factor.name),
+          { ...factor, confirmed: true },
+        ],
+        ...(makeDefault && { defaultMethod: factor.name }),
+      },
+      ...(factor.name === "email" && { account: { verifiedEmail: factor.value } }),
+    }));
+  }
+
+  /**
+   * One `users.updateInvitee` write for this run's link; when refused (the
+   * link was superseded, used, the invite accepted or revoked meanwhile),
+   * answers 410 like the link itself.
+   */
+  private async writeForInvitee(
+    ctx: AuthWfCtx & { subject: string },
+    mutate: (user: UserCredentials) => DeepPartial<UserCredentials>,
+  ): Promise<void> {
+    let written = false;
+    try {
+      written = await this.withStoreErrorTranslation(() =>
+        this.users.updateInvitee(ctx.subject, ctx.admin?.inviteNonce, mutate),
+      );
+    } catch (err) {
+      // A row revoked meanwhile: answered below as a cancelled invite.
+      if (!(err instanceof UserAuthError && err.type === "NOT_FOUND")) throw err;
+    }
+    if (written) return;
+    await this.assertInviteStillOpen(ctx);
+    throw this.httpError(410, "INVITE_REPLACED");
   }
 
   /**
@@ -5886,9 +6056,11 @@ export class AuthWorkflow {
   @Public()
   recordLogin(@WorkflowParam("context") ctx: AuthWfCtx): undefined | Promise<undefined> {
     if (!ctx.subject) return undefined;
-    if (!ctx.loginRecorded) {
+    if (!ctx.loginRecorded || ctx.failedCountKept) {
       ctx.loginRecorded = true;
-      // Stamp branch (federated / auto-login): genuinely async (store write).
+      delete ctx.failedCountKept;
+      // Stamp branch (federated / auto-login, or a password sign-in that kept
+      // the failed count until its second factor): genuinely async (store write).
       return this.users
         .recordLogin(ctx.subject)
         .then(() => this.afterLogin(ctx))
@@ -6911,7 +7083,7 @@ export class AuthWorkflow {
     // `created` auto-activates in `resolveUser`, so only a `linked` login to a
     // disabled/locked account trips this — exactly what must be blocked.
     const user = await this.users.getUser(outcome.userId);
-    if (this.isAccountBlocked(user)) {
+    if (await this.isAccountBlocked(user)) {
       return this.finishOAuth(ctx, "account-state");
     }
 
@@ -7249,7 +7421,7 @@ export class AuthWorkflow {
     // ── Account-state gate — BEFORE linking / setting subject (mirror the
     // sso-callback success gate; essential for the OTP path since verifyPin,
     // unlike users.login, does not itself reject a locked/inactive account). ──
-    if (this.isAccountBlocked(candidate)) {
+    if (await this.isAccountBlocked(candidate)) {
       delete ctx.pendingLink;
       return this.finishOAuth(ctx, "account-state");
     }
@@ -7542,6 +7714,10 @@ export class AuthWorkflow {
 
         { id: "unset-pending-invitation" },
         { id: "activate-user" },
+        // A channel confirmed through the link becomes a handle only now — after
+        // the account is active, so a failing or pausing promotion can't strand
+        // an accepted but inactive account.
+        ...invitePromoteToHandle,
         // Acceptance is complete (account activated) regardless of whether it
         // auto-logs-in — fire `afterInvitationAccepted` here, ahead of the
         // finalize split. An auto-login invite ALSO hits `record-login` below.

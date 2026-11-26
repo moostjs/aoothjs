@@ -10,7 +10,7 @@ import {
 } from "@moostjs/event-wf";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { deriveWfStateSecret, WfTriggerProvider } from "./provider";
+import { capToRun, deriveWfStateSecret, WfTriggerProvider } from "./provider";
 
 // `stateRegistry()` never touches `wf` — a bare stub keeps the tests focused on
 // the strategy registry without standing up a real MoostWf app.
@@ -325,5 +325,126 @@ describe("aoothExpiresAt records when the token stops working", () => {
     expect(expiryOf(await reported.retrieve(await reported.persist(state)))).toBe(
       1_900_000_000_000,
     );
+  });
+});
+
+describe("capToRun: a pause never outlives its run (`ctx.expiresBy`)", () => {
+  const HOUR = 3_600_000;
+  const WEEK = 7 * 24 * HOUR;
+  const at = (cap: number) =>
+    ({
+      schemaId: "auth/invite/start",
+      indexes: [1],
+      context: { expiresBy: cap },
+    }) as unknown as WfState;
+  /** Persist through the capped strategy; returns the expiry the store recorded. */
+  async function expiryOf(strategy: HandleStateStrategy, cap: number, options?: { ttl?: number }) {
+    const capped = capToRun(strategy);
+    const handle = await capped.persist(at(cap), options);
+    return (await strategy.consumeEntry(handle))?.expiresAt;
+  }
+
+  it("a longer or missing expiry is cut to the bound; a shorter one is kept", async () => {
+    const noDefault = new HandleStateStrategy({ store: new WfStateStoreMemory() });
+    const cap = Date.now() + WEEK;
+    // The bound travels as a `ttl` from "now": allow the milliseconds a persist takes.
+    const near = (value: number | undefined) => Math.abs((value ?? 0) - cap) < 50;
+    expect(near(await expiryOf(noDefault, cap))).toBe(true);
+    const longDefault = new HandleStateStrategy({
+      store: new WfStateStoreMemory(),
+      defaultTtl: 30 * WEEK,
+    });
+    expect(near(await expiryOf(longDefault, cap))).toBe(true);
+    const shortDefault = new HandleStateStrategy({
+      store: new WfStateStoreMemory(),
+      defaultTtl: HOUR,
+    });
+    const before = Date.now();
+    const kept = await expiryOf(shortDefault, cap);
+    expect(kept).toBeGreaterThanOrEqual(before + HOUR);
+    expect(kept).toBeLessThan(cap);
+    const perCall = await expiryOf(noDefault, cap, { ttl: 5 * 60_000 });
+    expect(perCall).toBeLessThanOrEqual(Date.now() + 5 * 60_000);
+  });
+
+  // WHY: a bundled strategy whose `persist` a subclass overrides reports no
+  // expiry (`expiresAtFor` → undefined); capping it anyway replaced its 1 h
+  // default — and a 5 min per-call ttl — with the week-long bound.
+  it("a strategy that cannot report its expiry is left as is", async () => {
+    class Metered extends HandleStateStrategy {
+      override async persist(...args: Parameters<HandleStateStrategy["persist"]>) {
+        return super.persist(...args);
+      }
+    }
+    const metered = new Metered({ store: new WfStateStoreMemory(), defaultTtl: HOUR });
+    expect(metered.expiresAtFor(undefined)).toBeUndefined();
+    const cap = Date.now() + WEEK;
+    expect(await expiryOf(metered, cap)).toBeLessThanOrEqual(Date.now() + HOUR);
+    expect(await expiryOf(metered, cap, { ttl: 5 * 60_000 })).toBeLessThanOrEqual(
+      Date.now() + 5 * 60_000,
+    );
+  });
+
+  it("a strategy that reads only `ttl` is capped through it", async () => {
+    const seen: Array<{ ttl?: number; expiresAt?: number } | undefined> = [];
+    const ttlOnly: WfStateStrategy = {
+      persist: async (_state, options) => {
+        seen.push(options);
+        return "h";
+      },
+      retrieve: async () => null,
+      consume: async () => null,
+      expiresAtFor: (options, now = Date.now()) => now + (options?.ttl ?? 30 * WEEK),
+    };
+    await capToRun(ttlOnly).persist(at(Date.now() + WEEK));
+    expect(seen[0]?.ttl).toBeGreaterThan(WEEK - 60_000);
+    expect(seen[0]?.ttl).toBeLessThanOrEqual(WEEK);
+  });
+
+  it("a bound already past persists a state that is expired at once", async () => {
+    const strategy = new HandleStateStrategy({ store: new WfStateStoreMemory() });
+    const handle = await capToRun(strategy).persist(at(Date.now() - 1000));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(await strategy.retrieve(handle)).toBeNull();
+  });
+
+  it("no bound — or an invalid one — changes nothing", async () => {
+    const strategy = new HandleStateStrategy({ store: new WfStateStoreMemory() });
+    for (const cap of [Number.NaN, 0, -5, Number.POSITIVE_INFINITY]) {
+      expect(await expiryOf(strategy, cap)).toBe(0);
+    }
+  });
+});
+
+describe("the trigger's registry follows stateRegistry() per call", () => {
+  // WHY: the capped registry was built once from the first stateRegistry()
+  // result — a registry built per request (per tenant) then sent every
+  // tenant's states to the first tenant's store.
+  it("a registry built per tenant keeps each tenant's states in its own store", async () => {
+    const stores = { a: new WfStateStoreMemory(), b: new WfStateStoreMemory() };
+    let tenant: "a" | "b" = "a";
+    class PerTenant extends TestProvider {
+      protected override stateRegistry() {
+        const store = new HandleStateStrategy({ store: stores[tenant] });
+        return { strategies: { store }, default: "store" };
+      }
+      registryNow() {
+        return (
+          this as unknown as { triggerRegistry(): ReturnType<TestProvider["publicStateRegistry"]> }
+        ).triggerRegistry();
+      }
+    }
+    const p = new PerTenant(wfStub, jwtAuth());
+    const state = { schemaId: "x", indexes: [0], context: {} } as unknown as WfState;
+    const inA = await p.registryNow().strategies.store.persist(state);
+    tenant = "b";
+    const inB = await p.registryNow().strategies.store.persist(state);
+    expect(await stores.a.get(inA)).toBeTruthy();
+    expect(await stores.b.get(inB)).toBeTruthy();
+    expect(await stores.a.get(inB)).toBeFalsy();
+    // `peek` resolves through the same per-call registry.
+    expect(await p.peek(`store.${inB}`)).not.toBeNull();
+    tenant = "a";
+    expect(await p.peek(`store.${inB}`)).toBeNull();
   });
 });

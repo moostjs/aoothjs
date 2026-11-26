@@ -99,7 +99,9 @@ export interface AuthWorkflowOpts {
    * for the magic-link send cooldown (one link per account and purpose per
    * `mfa.pincodeResendTimeoutMs`). Default: one process-wide in-memory store —
    * pass a shared store (e.g. `RateLimitStoreRedis`) when several instances
-   * serve sign-ins.
+   * serve sign-ins. A store of your own needs `get`, `expire` and `reset` for
+   * the shadow lockout to read exactly like a real account (both bundled
+   * stores have them).
    */
   lockoutShadowStore?: RateLimitStore;
 

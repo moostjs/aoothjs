@@ -20,7 +20,7 @@ export interface RateLimitStore {
   get?(key: string): Promise<number>;
   /** Optional: reset `key`'s expiry to `ttlMs` from now (a sliding window); no-op when missing. */
   expire?(key: string, ttlMs: number): Promise<void>;
-  /** Optional: drop a counter (tests / admin unblock). */
+  /** Optional: drop a counter (tests, an admin unblock, a count that starts over). */
   reset?(key: string): Promise<void>;
 }
 

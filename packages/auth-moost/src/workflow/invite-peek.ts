@@ -25,8 +25,9 @@ export interface InvitePeek {
  * show "Ann invited you as an editor" on the invite page before the invitee
  * acts. Resolves the token through {@link WfTriggerProvider.peek}, then checks
  * it against the account: an invite that was replaced by a re-invite, accepted,
- * cancelled or that is not an invite link reads as `null`, the same as an
- * unknown or expired token.
+ * cancelled, a link already used to set the password, or a token that is not
+ * an invite link (also the token of a run past its password) reads as `null`,
+ * the same as an unknown or expired token.
  *
  * Mount it on your own route and rate-limit that route like invite
  * redemption — e.g. `@RateLimit("30/5m", { id: "app.invite-info" })`.
@@ -39,8 +40,10 @@ export async function peekInvite(
   if (!state || normalizeWfId(state.schemaId) !== INVITE_WORKFLOW) return null;
   const ctx = state.context as AuthWfCtx | undefined;
   const admin = ctx?.admin;
-  // Only the invitee's side of the flow: the link was sent for an account.
-  if (!ctx?.subject || !ctx.email || !admin?.emailDispatched) return null;
+  // Only the invitee's side of the flow: the link was sent for an account,
+  // and the run is still on the link (past the password it continues only in
+  // the browser that set it — that token is no invite link).
+  if (!ctx?.subject || !ctx.email || !admin?.emailDispatched || ctx.passwordChanged) return null;
   const user = await deps.users.findByIdentifier(ctx.subject);
   if (!user?.account?.pendingInvitation) return null;
   // A re-invite rotated the account's marker away from this link's (`!= null`:

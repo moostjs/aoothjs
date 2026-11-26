@@ -26,7 +26,10 @@ import type {
 } from "./auth.dto";
 import { WfTrigger } from "./wf-trigger/decorator";
 import type { AoothMessages } from "./workflow/auth-messages";
-import { buildInviteAlreadyAcceptedEnvelope } from "./workflow/auth-workflow";
+import {
+  buildInviteAlreadyAcceptedEnvelope,
+  buildInviteLinkUsedEnvelope,
+} from "./workflow/auth-workflow";
 import { aoothHttpError } from "./http-messages";
 
 /** Workflows allowed by the bundled `/auth/trigger` endpoint. Subclasses override `triggerWf()` to extend. */
@@ -323,9 +326,13 @@ export class AuthController {
    * but the user-id baked into the magic-link URL by `buildMagicLinkUrl(…, {
    * userId })` lets the SPA resolve the "already accepted" condition itself.
    *
+   * A still-pending invite whose password was already set through its link
+   * (the run continues only in the browser that set it, the emailed link no
+   * longer does) gets the "link already used" envelope instead.
+   *
    * `@Public()` — invitees aren't signed in at this point. Rate limited
    * (`30/5m` per IP, enforced when `rateLimitInterceptors` are installed); an
-   * unknown id and a still-pending invite get the same 404.
+   * unknown id and a still-pending, unused invite get the same 404.
    *
    * Defaults for `loginUrl` / `alreadyAcceptedRedirectUrl` mirror the unified
    * `AuthWorkflow` defaults (`/login` / `/login`). Subclasses override
@@ -349,13 +356,19 @@ export class AuthController {
       if (err instanceof UserAuthError && err.type === "NOT_FOUND") throw inviteNotFound();
       throw err;
     }
-    // Still pending → the magic link genuinely failed for some other reason
-    // (wf state store eviction, etc.). Return 404 so the SPA keeps showing
-    // the actual error rather than masking it with an idempotent envelope.
-    if (user.account?.pendingInvitation) throw inviteNotFound();
     // Wire shape parity with the workflow path: the SPA's `<AsWfFinish>`
     // expects a `WfFinished` (with `finished: true`); the workflow gets that
     // marker from `finishWf()`, the side route adds it directly.
+    if (user.account?.pendingInvitation) {
+      // Pending with an unused link → the link genuinely failed for some other
+      // reason (wf state store eviction, etc.). Return 404 so the SPA keeps
+      // showing the actual error rather than masking it with an envelope.
+      if (user.password.isInitial) throw inviteNotFound();
+      return {
+        finished: true,
+        ...buildInviteLinkUsedEnvelope(this.resolveInvitePostRedemption()),
+      };
+    }
     return {
       finished: true,
       ...buildInviteAlreadyAcceptedEnvelope(this.resolveInvitePostRedemption()),

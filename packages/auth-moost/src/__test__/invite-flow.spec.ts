@@ -861,6 +861,21 @@ describe("A9: peekInvite reads an invite link without consuming it", () => {
     expect(await peek(token)).toBeNull();
   });
 
+  // WHY: past the password the run is no invite link any more — it continues
+  // only in the browser that set the password; a peek must not present it.
+  it("a link already used to set the password, and its run's token, read as null", async () => {
+    const { app, invite, peek } = await boot();
+    await invite("pw@x.test");
+    const token = app.emails[0].token;
+    const opened = await app.submit(token);
+    const after = await app.submit(opened.body.wfs, {
+      formData: { newPassword: INVITEE_PASSWORD, confirmPassword: INVITEE_PASSWORD, consents: [] },
+    });
+    expect(after.body.inputRequired?.payload?.id).toBe("EnrollPickMethodForm");
+    expect(await peek(after.body.wfs)).toBeNull();
+    expect(await peek(token)).toBeNull();
+  });
+
   it("an accepted or cancelled invite reads as null", async () => {
     const { app, invite, peek } = await boot();
     await invite("a@x.test");
@@ -936,11 +951,11 @@ describe("an invite link opened but not yet accepted keeps the link's 7 days", (
     expect(row?.account.active).toBe(true);
   });
 
-  it("once the password is set, the next pause gets the store default — the link cannot finish after it", async () => {
-    // WHY: only the steps before the password belong to the link. Past it, a
-    // 7-day state would let whoever holds the emailed link finish the
-    // acceptance (and get a session) all week; it lives as long as the store's
-    // default, as it always did.
+  it("once the password is set, the run's next pause gets the store default and the link is dead", async () => {
+    // WHY: only the steps before the password belong to the link. Past it the
+    // run continues under its own token (the emailed one answers 410 at once),
+    // whose pauses live as long as the store's default — a shorter one than
+    // the link's week.
     const { app, issuedAt, token } = await boot(HOUR);
     vi.setSystemTime(issuedAt + DAY);
     await openLink(app, token);
@@ -951,8 +966,9 @@ describe("an invite link opened but not yet accepted keeps the link's 7 days", (
     const storeDefault = issuedAt + DAY + HOUR;
     expect(lastExpiry(app)).toEqual({ store: storeDefault, recorded: storeDefault });
 
-    vi.setSystemTime(storeDefault + 1);
     expect((await app.submit(token, { action: "skip" })).status).toBe(410);
+    vi.setSystemTime(storeDefault + 1);
+    expect((await app.submit(afterPassword.body.wfs, { action: "skip" })).status).toBe(410);
     expect((await app.users.findByHandle("w@x.test"))?.account.pendingInvitation).toBe(true);
   });
 

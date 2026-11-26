@@ -25,6 +25,7 @@ import { createInviteOutlet, reservePendingInviteLink } from "../workflow/invite
 import { createMagicLinkOutlet, MAGIC_LINK_STRATEGY } from "../workflow/magic-link-outlet";
 import { derivePincodeKey, pincodeKeySlot, WF_STATE_KEY_LABEL } from "../workflow/pincode-key";
 import { withoutPublicProjection } from "../workflow/public-projection";
+import { runExpiresBy } from "../workflow/run-expiry";
 import { aoothHttpError } from "../http-messages";
 
 /** Cap of the default (in-memory) magic-link store. */
@@ -155,6 +156,9 @@ function tagStrategy(name: string, strategy: WfStateStrategy): WfStateStrategy {
   };
   // The strategy it wraps — for introspection (tests, diagnostics).
   Object.defineProperty(wrapped, "inner", { value: strategy });
+  if (strategy.expiresAtFor) {
+    wrapped.expiresAtFor = (options, now) => strategy.expiresAtFor!(options, now);
+  }
   if (strategy.persistEntry) {
     wrapped.persistEntry = (state, options, overrides) =>
       strategy.persistEntry!(tagged(state, options), options, overrides);
@@ -168,6 +172,45 @@ function tagStrategy(name: string, strategy: WfStateStrategy): WfStateStrategy {
   }
   return wrapped;
 }
+
+/**
+ * Internal (exported for tests): wrap a registered strategy so a pause never
+ * outlives its run — {@link runExpiresBy} of the paused context. A persist the
+ * strategy reports to expire later, or never, gets a `ttl` that ends at that
+ * bound instead (`ttl` is what every strategy reads; a sooner per-call or
+ * default expiry is kept). A strategy that cannot report its expiry (no
+ * `expiresAtFor`, or one that answers `undefined` — e.g. a bundled strategy
+ * whose `persist` a subclass overrides) is left as is: a bound it cannot
+ * compare would replace a shorter default. Restores (`persistEntry`) keep the
+ * consumed state's expiry, as the trigger passes it.
+ */
+export function capToRun(strategy: WfStateStrategy): WfStateStrategy {
+  const capped = (state: WfState, options?: WfPersistOptions): WfPersistOptions | undefined => {
+    const cap = runExpiresBy(state.context);
+    if (cap === undefined || !strategy.expiresAtFor) return options;
+    const applied = strategy.expiresAtFor(options);
+    if (applied === undefined || (applied > 0 && applied <= cap)) return options;
+    return { ...options, ttl: Math.max(1, cap - Date.now()) };
+  };
+  const wrapped: WfStateStrategy = {
+    persist: (state, options, overrides) =>
+      strategy.persist(state, capped(state, options), overrides),
+    retrieve: (token) => strategy.retrieve(token),
+    consume: (token) => strategy.consume(token),
+  };
+  if (strategy.expiresAtFor) {
+    wrapped.expiresAtFor = (options, now) => strategy.expiresAtFor!(options, now);
+  }
+  if (strategy.persistEntry) {
+    wrapped.persistEntry = (state, options, overrides) =>
+      strategy.persistEntry!(state, options, overrides);
+  }
+  if (strategy.consumeEntry) wrapped.consumeEntry = (token) => strategy.consumeEntry!(token);
+  return wrapped;
+}
+
+/** The capped twin of each registry {@link WfTriggerProvider.stateRegistry} returned. */
+const cappedRegistries = new WeakMap<StateRegistry, StateRegistry>();
 
 const HOOK_NAMES = [
   "around",
@@ -506,6 +549,26 @@ export class WfTriggerProvider {
   }
 
   /**
+   * {@link stateRegistry} as the trigger (and {@link peek}) gets it: every
+   * strategy capped to its run ({@link capToRun}). Called per request, like
+   * `stateRegistry()` — the wrapped registry is kept per registry object, so
+   * a registry an override builds per request (or per tenant) stays its own.
+   */
+  private triggerRegistry(): StateRegistry {
+    const registry = this.stateRegistry();
+    let wrapped = cappedRegistries.get(registry);
+    if (!wrapped) {
+      const strategies: Record<string, WfStateStrategy> = {};
+      for (const [name, strategy] of Object.entries(registry.strategies)) {
+        strategies[name] = capToRun(strategy);
+      }
+      wrapped = { ...registry, strategies };
+      cappedRegistries.set(registry, wrapped);
+    }
+    return wrapped;
+  }
+
+  /**
    * Read the paused workflow state a resume token (`wfs`) points at, WITHOUT
    * consuming it — e.g. to show what a link is for before its holder acts.
    * The token is resolved exactly as a resume resolves it (its strategy
@@ -518,7 +581,7 @@ export class WfTriggerProvider {
   async peek(token: string): Promise<WfState | null> {
     const i = token.indexOf(".");
     if (i <= 0 || i === token.length - 1) return null;
-    const strategies = this.stateRegistry().strategies;
+    const strategies = this.triggerRegistry().strategies;
     const name = token.slice(0, i);
     if (!Object.hasOwn(strategies, name)) return null;
     return strategies[name].retrieve(token.slice(i + 1));
@@ -580,7 +643,7 @@ export class WfTriggerProvider {
         startOnly,
         block,
         around: around ? (run) => around(() => attempt(run)) : attempt,
-        state: this.stateRegistry(),
+        state: this.triggerRegistry(),
         outlets: this.outlets,
         token: opts.token ?? this.token,
       },
