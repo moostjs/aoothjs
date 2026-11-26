@@ -63,7 +63,7 @@ try {
 | `NOT_FOUND`           | `getUser`, `login`, `verifyPassword`, `verifyMfa`, `update`, `activate*`, `deactivate*`, `lock*`, `unlock*`, `deleteUser`, MFA / trusted-device methods when the user is missing | —                                                                                                                | `404`                           |
 | `ALREADY_EXISTS`      | `createUser` when the `username` **or** any configured secondary handle field is taken (`UserStoreMemory.create` throws it directly; `UsersStoreAtscriptDb` maps CONFLICT)       | —                                                                                                                | `409`                           |
 | `INACTIVE`            | `login`, `verifyMfa` when `account.active === false`                                                                                                                             | —                                                                                                                | `403`                           |
-| `LOCKED`              | `ensureNotLockedOrThrow` in `login` / `verifyMfa` after the auto-unlock check, before password / TOTP verification                                                               | `{ reason: string, lockEnds: number }`                                                                           | `403`                           |
+| `LOCKED`              | `login` / `verifyMfa` / `assertCanSignIn` on a lock that still holds (a lapsed timed lock is lifted instead), before password / TOTP verification                                | `{ reason: string, lockEnds: number }`                                                                           | `403`                           |
 | `INVALID_CREDENTIALS` | bad password in `login`; bad current password in `changePassword`                                                                                                                | `{ lockEnds: number }` **only** when the failure tripped the lock; otherwise absent                              | `400`                           |
 | `MFA_INVALID`         | bad TOTP in `verifyMfa`                                                                                                                                                          | `{ lockEnds: number }` **only** when the failure tripped the lock                                                | `400`                           |
 | `MFA_NOT_CONFIGURED`  | `confirmMfaMethod` / `setDefaultMfaMethod` with an unknown `name`; `verifyMfa` when no confirmed `totp` method exists                                                            | —                                                                                                                | `400`                           |
@@ -112,12 +112,12 @@ throw new UserAuthError("LOCKED", "Account is locked", {
 });
 ```
 
-Thrown when `account.locked === true` and (if temporary) `lockEnds >= now`. Auto-unlock fires before this throw — a lock with `lockEnds > 0 && lockEnds < now` returns the user to the unlocked path silently.
+Thrown when `account.locked === true` and (if temporary) `lockEnds >= now`. A lapsed lock is lifted before this check — a lock with `lockEnds > 0 && lockEnds < now` returns the user to the unlocked path silently, with the failed count started over.
 
 ::: warning `lockEnds: 0` is permanent
 Distinguish the two surfaces:
 
-- `lockEnds > 0 && lockEnds < now` ⇒ expired ⇒ auto-unlock (no `LOCKED` thrown).
+- `lockEnds > 0 && lockEnds < now` ⇒ expired ⇒ lifted, the failed count starts over (no `LOCKED` thrown).
 - `lockEnds === 0` ⇒ permanent ⇒ always throws `LOCKED`.
 - `lockEnds > now` ⇒ active temporary lock ⇒ throws `LOCKED` with `lockEnds` set.
 

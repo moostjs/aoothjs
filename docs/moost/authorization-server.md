@@ -397,7 +397,7 @@ class AppAuthWorkflow extends AuthWorkflow {
 }
 ```
 
-Under `consent-only`, `init-login` probes the trigger request's session (authz runs only — a plain login visit never probes): a valid credential binds the subject and the run skips the credentials form **and the MFA loop** (the session already proved its factors at login), pausing directly on `AuthorizeConsentForm` — which now names the acting identity ("Signed in as …") so a wrong-account grant is catchable. Every probe failure — no session, expired/garbage credential, deleted/locked/deactivated account — falls back silently to the credentials path with no 401 leak. Both consent-gate defenses above are untouched: the browser binding is checked before any prompt (a phished handle is inert even in a session-holding browser) and Authorize/Deny still gates the mint.
+Under `consent-only`, `init-login` probes the trigger request's session (authz runs only — a plain login visit never probes): a valid credential binds the subject and the run skips the credentials form **and the MFA loop** (the session already proved its factors at login), pausing directly on `AuthorizeConsentForm` — which now names the acting identity ("Signed in as …") so a wrong-account grant is catchable. Every probe failure — no session, expired/garbage credential, deleted/locked/deactivated account — falls back silently to the credentials path with no 401 leak (a timed lock that has lapsed is no lock: the probe lifts it, as a password sign-in would, since 0.2.24). Both consent-gate defenses above are untouched: the browser binding is checked before any prompt (a phished handle is inert even in a session-holding browser) and Authorize/Deny still gates the mint.
 
 Two optional knobs on the policy:
 

@@ -98,6 +98,7 @@ Inviting an email that is still pending is a **re-invite**: the default `duplica
 - **Roles** — the re-invite's roles (picked, plus any `inferAdminRoles` adds) replace the old ones. A re-invite with no roles keeps the old ones, unless its `prepareUser` result has a `roles` key (an extra like any other, below).
 - **Extras** — the re-invite's `prepareUser` result is written over the account: the keys it returns take their new values, keys it no longer returns keep their old values.
 - **Issuer** — `account.invitedBy` becomes the re-inviting user.
+- **A used link starts over** (since 0.2.24) — when the invitee already set a password through an earlier link but did not finish (say, they stopped at MFA enrolment), the account goes back to "never used" in the same write: a fresh random initial password, no MFA methods (and no default method), no trusted devices, and no `account.verifiedEmail` (the earlier holder may have proven an inbox of their own). A channel confirmed through an earlier link never became a login handle — that promotion waits for the acceptance. The earlier run answers `410 INVITE_REPLACED`. **Not reset**: the username (a pick under `inviteUsername: 'choose'` stays), consent records already stored, your own columns (say `backupCodes`) and whatever your `extra-step` wrote — reset those yourself if the earlier link may have set them.
 
 The update is one compare-and-set write that applies only while the invite is still pending (`UserService.refreshInvitation`): a re-invite that meets an account accepted in the meantime — even one accepted while the re-invite runs — answers `409` (`AOOTH_USER_ALREADY_EXISTS`), sends nothing and leaves the account exactly as accepted.
 
@@ -112,7 +113,7 @@ POST /auth/trigger  { "wfid": "auth/invite/start" }
 POST /auth/trigger  { "wfs": "<wfs>", "input": { "action": "resend", "formData": { "email": "ann@example.com" } } }
 ```
 
-The default `duplicateInviteCheck` answers this submit with `'resend'` (since 0.2.19): the account keeps its roles, extras and `invitedBy`, and a fresh link goes out through the configured `inviteDelivery`; roles submitted with it are ignored. An invite accepted meanwhile answers `409` (`AOOTH_USER_ALREADY_EXISTS`); one revoked meanwhile — or never issued — answers `410` (`INVITE_CANCELLED`) and creates and sends nothing. Your start request carries the same app context (`input.formData`) as for an invite.
+The default `duplicateInviteCheck` answers this submit with `'resend'` (since 0.2.19): the account keeps its roles, extras and `invitedBy`, and a fresh link goes out through the configured `inviteDelivery`; roles submitted with it are ignored. Like a re-invite, a resend starts a used link over (since 0.2.24): an admin who resends an invite whose password was already set restarts the acceptance — the invitee sets a password (and enrols MFA) again through the new link. An invite accepted meanwhile answers `409` (`AOOTH_USER_ALREADY_EXISTS`); one revoked meanwhile — or never issued — answers `410` (`INVITE_CANCELLED`) and creates and sends nothing. Your start request carries the same app context (`input.formData`) as for an invite.
 
 What to know before you offer it:
 
@@ -194,9 +195,9 @@ To show "Ann invited you as an editor" on the invite page before the invitee doe
 | `roles`     | Roles the invite grants — when it grants any.                      |
 | `expiresAt` | When the link stops working (ms since epoch) — when known.         |
 
-`expiresAt` is when the link stops working. Until the invitee sets a password, the bundled invite link expires exactly 7 days after it is issued: the invite pause carries its own lifetime, so the state is persisted with an explicit `ttl`, and a per-call `ttl` replaces the state strategy's default TTL (`wfStateEncapsulatedTtlMs()`, a `defaultTtl` of your `HandleStateStrategy`). Opening the link does not change it (since 0.2.21): every pause before the password is set — the username pick, the password form and their retries — expires at that same moment, whatever the default TTL (shorter, longer or none), so `expiresAt` stays the same across opens. Once the password is set, with a durable `store` the same link still continues the run (MFA enrolment, your `extra-step`) for as long as the state store's default TTL allows — with a store that has no `defaultTtl`, until the run finishes — so set a `defaultTtl` on the durable store; with the encapsulated `store`, the emailed token restarts at the password form, which is refused ([how long a paused state lives](./workflows#paused-state-lifetime)). `expiresAt` is absent when nothing bounds the state, and when the state strategy cannot report its expiry: the built-in strategies do (through `expiresAtFor`), a custom `WfStateStrategy` must implement `expiresAtFor(options?, now?)` — the epoch ms a persist with those options expires, `0` for never — for `expiresAt` to be present.
+`expiresAt` is when the link stops working. Until the invitee sets a password, the bundled invite link expires exactly 7 days after it is issued: the invite pause carries its own lifetime, so the state is persisted with an explicit `ttl`, and a per-call `ttl` replaces the state strategy's default TTL (`wfStateEncapsulatedTtlMs()`, a `defaultTtl` of your `HandleStateStrategy`). Opening the link does not change it (since 0.2.21): every pause before the password is set — the username pick, the password form and their retries — expires at that same moment, whatever the default TTL (shorter, longer or none), so `expiresAt` stays the same across opens. Once the password is set the link stops working ([below](#after-the-password)), and `peekInvite` reads it as `null` — as it does the token of the run past its password, which is no invite link. `expiresAt` is absent when nothing bounds the state, and when the state strategy cannot report its expiry: the built-in strategies do (through `expiresAtFor`), a custom `WfStateStrategy` must implement `expiresAtFor(options?, now?)` — the epoch ms a persist with those options expires, `0` for never — for `expiresAt` to be present.
 
-It returns `null` — one answer for all — for an unknown, expired or malformed token, a token that is not an invite link, and an invite that was replaced by a re-invite, accepted or revoked. The token is resolved exactly as opening the link resolves it, including hashed handles (`hashHandles`), so pass the `wfs` value from the link as it is.
+It returns `null` — one answer for all — for an unknown, expired or malformed token, a token that is not an invite link, a link already used to set the password, and an invite that was replaced by a re-invite, accepted or revoked. The token is resolved exactly as opening the link resolves it, including hashed handles (`hashHandles`), so pass the `wfs` value from the link as it is.
 
 There is no bundled route — mount one, and rate-limit it like invite redemption:
 
@@ -273,13 +274,41 @@ The hook runs on every resume the route admits — sign-in forms and the issuer'
 
 The invitee opens the link (an anonymous resume of the same run): already-accepted / cancelled / replaced checks → optional username pick → set password → MFA enrolment when required → consents → the account is activated → finish (auto-login when `autoLoginOnInvite`, default `true`; otherwise a redirect to `loginUrl`). `account.verifiedEmail` is recorded only when the handle looks like an email address and the link was not returned to the issuer.
 
-| Situation                              | Response                                                                               |
-| -------------------------------------- | -------------------------------------------------------------------------------------- |
-| account deleted (invite cancelled)     | `410`, `code: "INVITE_CANCELLED"`                                                      |
-| a newer invite replaced this link      | `410`, `code: "INVITE_REPLACED"`                                                       |
-| already accepted (state still present) | "already accepted" finish envelope — the run ends there (no password step, no session) |
-| accepted by another run while paused   | `410`, `code: "INVITE_ALREADY_ACCEPTED"`                                               |
-| reuse forced onto an accepted account  | `409`, `code: "AOOTH_USER_ALREADY_EXISTS"`                                             |
+| Situation                                                                                                | Response                                                                                                                                                                                                      |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| account deleted (invite cancelled)                                                                       | `410`, `code: "INVITE_CANCELLED"`                                                                                                                                                                             |
+| a newer invite replaced this link                                                                        | `410`, `code: "INVITE_REPLACED"`                                                                                                                                                                              |
+| the link was already used to set the password (since 0.2.24)                                             | `410`, `code: "INVITE_LINK_USED"` — see [below](#after-the-password)                                                                                                                                          |
+| already accepted — an invite accepted before 0.2.24 (or issued before 0.2), its link state still present | "already accepted" finish envelope — the run ends there (no password step, no session). A link of an invite accepted since 0.2.24 answers `INVITE_LINK_USED` (encapsulated) or `WF_EXPIRED` (durable) instead |
+| accepted by another run while paused                                                                     | `410`, `code: "INVITE_ALREADY_ACCEPTED"`                                                                                                                                                                      |
+| reuse forced onto an accepted account                                                                    | `409`, `code: "AOOTH_USER_ALREADY_EXISTS"`                                                                                                                                                                    |
+
+### Once the password is set {#after-the-password}
+
+Until the invitee sets a password, the link works for whoever holds it, as issued: opening it again, a refused password, a missing required consent or a refused username re-pause on the same link and keep its 7 days. The password submit then claims the invite for its run (since 0.2.24): `UserService.claimInvitation` checks the password and, in one compare-and-set write applied only while the invite is pending, its password is still the initial one and the account carries this link's marker, writes the password and moves the account's link marker to one only that run holds. From then on:
+
+- **The run continues only in the browser that set the password.** With a durable `store` it continues under a fresh `wfs` that only the password submit's response carries; the emailed token's state is never written again. With the encapsulated `store` every pause has a new token anyway.
+- **The emailed link stops working**, whatever is submitted: it never sets the password again, enrols a factor or signs anyone in. A durable emailed token answers `410 WF_EXPIRED` (its state is gone) — [`GET /auth/invite/post-redemption?uid=`](./controllers#get-auth-invite-post-redemption) then answers the "link already used" envelope; an encapsulated one answers `410 INVITE_LINK_USED` ("This invitation link has already been used. Sign in, or ask for a new invitation.").
+- **Two holders at the password form**: the first submit wins and writes; the other writes nothing — it gets `410 WF_EXPIRED` with a durable `store` (both hold the one token, which the first submit used up), `410 INVITE_LINK_USED` with the encapsulated one.
+- **Every later pause of the run expires with the link at the latest** — at the state strategy's default when that is sooner, at the link's own expiry (7 days from issue) otherwise, so also with no default at all. A strategy that cannot report its expiry (no `expiresAtFor`, or a bundled strategy whose `persist` you override) is left uncapped and keeps its own expiry. Runs that set the password before 0.2.24 are capped the same way. Before, a pause after the password never expired under a strategy without a default (the encapsulated default), though it can still finish the acceptance and sign in.
+- **To start over**, the issuer re-invites or [resends](#resending-an-invite) — the account goes back to "never used" (see [re-invites](#re-invites) for what that resets) and a new link goes out.
+
+**Keep the current token per tab, not in the URL.** Your client must send the `wfs` of the latest response — the bundled `<AsWfForm>` does. Past the password that is no longer the link's token, so a page that reads `?wfs=` from the URL on every load would resend the dead emailed token after a reload. With `<AsWfForm>` (`@atscript/vue-wf` 0.1.187), let it keep the token in `sessionStorage` and drop the link from the URL once it has been used:
+
+```vue
+<AsWfForm
+  path="/auth/trigger"
+  name="auth/invite/start"
+  :initial-token="link"
+  persist-token="session"
+  @link-used="dropLink"
+/>
+<!-- dropLink: router.replace({ query: { ...route.query, wfs: undefined } }) -->
+```
+
+The token then lives per tab (`wf:<name>`), survives a reload and never reaches the URL or the history; the saved token wins over no link or the same link, a different link starts from itself, and the entry is removed when the run is over. A client of your own does the same: keep the latest token in `sessionStorage`, prefer it over the URL on load, and remove the link's token from the URL after the first answer. Don't put the post-password token into the URL or the history: it continues the acceptance and can sign the invitee in.
+
+Runs paused **after** the password before 0.2.24 recorded no claim: their emailed link (with a durable `store`, the same token as the browser's) keeps working until the run finishes or the state's TTL ends, as before. A link of the encapsulated `store` whose password was set before 0.2.24 can no longer set it again (`410 INVITE_LINK_USED`).
 
 Your own `extra-step` override runs in the accept phase **before** the acceptance write (`unset-pending-invitation`), so whatever it writes can still belong to a link that turns out to be superseded. Keep such writes idempotent, or move them to `afterInvitationAccepted()`, which runs only after the acceptance succeeded.
 
@@ -290,6 +319,7 @@ The `HttpError` bodies carry the message `code` next to the text, so an SPA can 
 - **DO** return every required column from `prepareUser` — and handle `email === undefined` there (the same hook serves self-signup and federated sign-up).
 - **DO** validate tenant / scope input in `resolveInviteContext`; it comes from the client's start request.
 - **DO** run your schema sync after upgrading (`account.invitedBy`, `account.inviteNonce`).
+- **DO** send the `wfs` of the latest response on every submit, and keep it per tab in `sessionStorage` (`<AsWfForm @token>`), not in the URL — past the password the emailed token no longer continues the run, and the current one must not land in the history.
 - **DON'T** replace `WfTriggerProvider.outlets` without keeping `createInviteOutlet()` if you use `'deliver'` or `'return-link'`.
 - **DON'T** build a separate "resend invite" flow, or re-send a stored link — submit the admin form with the [`resend` action](#resending-an-invite); re-invite the same email to change its roles.
 - **DON'T** read the workflow-state table yourself to show invite details — use [`peekInvite`](#peek-invite); it applies the store's handle hashing and the replaced-invite check.

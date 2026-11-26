@@ -68,6 +68,9 @@ Examples actually emitted by `UserService`:
   set: { account: { locked: true, lockReason: "Too many login attempts", lockEnds } },
 }
 
+// unlockAccount — and a lapsed timed lock lifted at sign-in (via withCas → expectedVersion)
+{ set: { account: { locked: false, lockReason: "", lockEnds: 0, failedLoginAttempts: 0 } } }
+
 // password change
 { set: { password: { hash, history, lastChanged, isInitial: false } } }
 
@@ -96,7 +99,7 @@ Backed by `Map<id, UserCredentials & T>` (keyed by the surrogate `id`). Features
 - `create` mints an `id` if absent and throws `UserAuthError("ALREADY_EXISTS")` on a duplicate `username` **or** any configured handle field value (it takes the same `handleFields` as the atscript-db store; omit for username-only).
 - Reads (`findById`/`findByHandle`/`findByIdentifier`) return a **`structuredClone`** of the stored record — mutating it does not affect storage.
 - `create` also stores a `structuredClone` — callers can keep using the object they passed in without leaking subsequent mutations into the store.
-- `update.set` deep-merges via the in-package `deepMerge` (top-level fields shallow-merged, plain-object sub-fields recursively merged, arrays / null / primitives replaced).
+- `update.set` deep-merges via the in-package `deepMerge` (top-level fields shallow-merged, plain-object sub-fields recursively merged, arrays / primitives replaced, `null` REMOVES the key — since 0.2.24).
 - `update.inc` walks the dot-path with `incrementAtPath` (treats absent path components as `0`, creates intermediate objects on demand).
 - `update` returns `false` when no entry exists; `delete` returns the `Map.delete` boolean.
 
@@ -113,7 +116,7 @@ Start from the contract above. Rules:
 5. **`update` / `delete` return `false`** when no row matched (by `id`). The service surfaces that as `NOT_FOUND`.
 6. **Arrays in `set` are full replacements.** The service has already built `next` from `prev` — your job is to persist whatever you receive.
 7. **`withCas`** loops up to `opts.maxAttempts` (default 2): re-read via `findById` → `mutator(current)` (may return `null` to bail) → `update` under `expectedVersion = current.version`; throw `CAS_EXHAUSTED` on saturation, `NOT_FOUND` on a missing row. See `UserStoreMemory.withCas`.
-8. **Unset optional fields = ABSENT, never `null`.** SQL reads an unset column back as `null` → drop `null` from `account.pendingInvitation` / `invitedBy` / `inviteNonce` / `verifiedEmail`, `trustedDevices`, `seenDevices` before returning (the bundled `UsersStoreAtscriptDb` does, since 0.2.7). A leaked `null` nonce breaks invite acceptance.
+8. **Unset optional fields = ABSENT, never `null`.** SQL reads an unset column back as `null` → drop `null` from `account.pendingInvitation` / `invitedBy` / `inviteNonce` / `verifiedEmail`, `trustedDevices`, `seenDevices` before returning (the bundled `UsersStoreAtscriptDb` does, since 0.2.7). A leaked `null` nonce breaks invite acceptance. A `null` IN A `set` PATCH = unset (since 0.2.24 — the invite start-over sends `account.verifiedEmail: null`): accept it, read the field back absent.
 
 ```ts
 import { UserStore, UserAuthError, type UserCredentials, type UserStoreUpdate } from "@aooth/user";

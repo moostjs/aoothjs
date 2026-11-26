@@ -121,7 +121,7 @@ The bounce is a **dumb transport adapter** — it verifies nothing (state, CSRF,
 - **DO** keep the `redirect_uri` callback a SPA bridge that POSTs `code`/`state` into `/auth/trigger` (`auth/login/flow`) — the federated leg is a workflow START, not a controller route.
 - **DON'T** look for a flow store or a `/start` route — both are gone. The verifier is **derived** from the signed-state seed and re-derived at the callback (stateless), so a multi-pod deployment needs no shared OAuth store.
 - **DON'T** expect the cookieless-demo behavior in a real app: the library's `redirect` step finishes login with a **redirect envelope** (the session — and the trusted-device cookie — ride the finish-envelope `cookies` map / Set-Cookie). The demo opts out (`resolveRedirect` returns `undefined` for `ctx.oauth`) only because it replays a Bearer token from `sessionStorage`.
-- **DON'T** assume federated login skips MFA — a federated user reuses the password-login tail by `@Step` id, so MFA / consent / concurrency gates fire identically. The account-state (locked/inactive) gate runs **inside `sso-callback`** (and `prove-control`), before the subject is set, because `issue` does not re-gate.
+- **DON'T** assume federated login skips MFA — a federated user reuses the password-login tail by `@Step` id, so MFA / consent / concurrency gates fire identically. The account-state (locked/inactive) gate runs **inside `sso-callback`** (and `prove-control`), before the subject is set, because `issue` does not re-gate. It judges a lock as a password sign-in does: a timed lock that has lapsed is lifted (and the failed sign-in count starts over) instead of refusing — since 0.2.24.
 
 ## See also
 

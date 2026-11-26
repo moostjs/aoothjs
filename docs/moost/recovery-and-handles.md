@@ -125,7 +125,7 @@ class MyAuth extends AuthWorkflow {
 }
 ```
 
-Returning `undefined` (the default) leaves the channel un-promoted. The `promote-to-handle` `@Step` runs once per flow, right after `enroll-confirm`, and only for a freshly-confirmed `email`/`sms` channel (TOTP and skipped enrolments carry no address, so they're never promoted).
+Returning `undefined` (the default) leaves the channel un-promoted. The `promote-to-handle` `@Step` runs once per flow, right after `enroll-confirm` — in an invite accept only once the acceptance is final, after `activate-user` (since 0.2.24: until then a re-issue may start the account over, and a channel an earlier link holder confirmed must not become a handle) — and only for a freshly-confirmed `email`/`sms` channel (TOTP and skipped enrolments carry no address, so they're never promoted).
 
 ::: tip Collisions are best-effort
 The handle column is unique-indexed, so promoting a value **another account already owns** is swallowed — that user keeps the factor as MFA-only and the existing owner keeps the handle. Promotion never fails a flow.

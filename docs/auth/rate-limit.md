@@ -111,7 +111,7 @@ interface RateLimitStore {
   get?(key: string): Promise<number>;
   /** Optional (since 0.2): reset `key`'s expiry to `ttlMs` from now (sliding); no-op when missing. */
   expire?(key: string, ttlMs: number): Promise<void>;
-  /** Optional: drop a counter (tests / admin unblock). */
+  /** Optional: drop a counter (tests, an admin unblock; the 'uniform' lockout restarts a shadow count with it). */
   reset?(key: string): Promise<void>;
 }
 ```

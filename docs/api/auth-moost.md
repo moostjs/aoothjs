@@ -54,7 +54,7 @@ The single unified workflow class. Replaces the former `LoginWorkflow` / `Recove
 - `buildAddMfaFinishEnvelope(ctx): WfFinished` — pure construction of `finish-add-mfa`'s outcome envelope (priority: removed → changed → added → blocked → nothing-available → cancelled); override to customize the manage-flow terminal copy/data.
 - **Event hooks** `afterLogin` / `afterInvitationAccepted` / `afterSignup` / `afterPasswordReset` / `afterPasswordChanged` / `afterMfaChanged` `(ctx: AuthWfCtx): void | Promise<void>` — fired once at each flow's single completion point (default no-op); awaited, a throw propagates (login hooks fire before delivery → atomic). `afterLogin` is the `record-login` funnel every login routes through (interactive / federated / auto-login), firing after `account.lastLogin` is stamped and before the session/code is issued — it does **not** fire for the no-session fresh-login redirect, change-password rotation, or an auto-login whose account is no longer active (the `auto-login-check` step finishes that run without a session). See [Workflows — Event hooks](/moost/workflows#event-hooks).
 
-**Error posture** — `@Step` bodies throw exactly two shapes: `throw wf.requireInput({ errors, formMessage? })` for retriable input errors (engine re-renders the form under the SAME `wfs` handle; token survives), and `throw new HttpError(<status>, <msg>)` for terminal failures (token consumed). See [Error patterns](/moost/workflows#error-patterns).
+**Error posture** — `@Step` bodies throw exactly two shapes: `throw wf.requireInput({ errors, formMessage? })` for retriable input errors (engine re-renders the form and the run stays resumable — under the same `wfs` on a durable `store`, but a client always sends the `wfs` of the latest response: the encapsulated strategy and an invite's password step hand out a new one), and `throw new HttpError(<status>, <msg>)` for terminal failures (token consumed). See [Error patterns](/moost/workflows#error-patterns).
 
 ### `WfTriggerProvider`
 
@@ -342,7 +342,7 @@ interface InvitePeek {
 }
 ```
 
-Since 0.2.7. Reads an invite link's token without consuming it and returns a safe projection, or `null` for an unknown / expired / non-invite token and for an invite that was replaced, accepted or revoked. No bundled route — mount one and rate-limit it. See [Invites — showing what a link is for](/moost/invites#peek-invite).
+Since 0.2.7. Reads an invite link's token without consuming it and returns a safe projection, or `null` for an unknown / expired / non-invite token (also the token of a run past its password, since 0.2.24), for a link already used to set the password, and for an invite that was replaced, accepted or revoked. No bundled route — mount one and rate-limit it. See [Invites — showing what a link is for](/moost/invites#peek-invite).
 
 ### `createMagicLinkOutlet` / `MAGIC_LINK_OUTLET` / `MAGIC_LINK_STRATEGY`
 
@@ -367,9 +367,14 @@ function buildInviteAlreadyAcceptedEnvelope(opts: {
   alreadyAcceptedRedirectUrl: string;
   messages?: AoothMessages; // since 0.2
 }): FinishWfOpts; // shared "already accepted" finish envelope
+function buildInviteLinkUsedEnvelope(opts: {
+  loginUrl: string;
+  alreadyAcceptedRedirectUrl: string;
+  messages?: AoothMessages;
+}): FinishWfOpts; // since 0.2.24 — "link already used" (INVITE_LINK_USED, level warn), same buttons
 ```
 
-Exported so subclasses (and `AuthController.invitePostRedemption`) reuse the same role parsing, mass-assignment guard, and idempotent-redirect envelope.
+Exported so subclasses (and `AuthController.invitePostRedemption`) reuse the same role parsing, mass-assignment guard, and idempotent-redirect envelopes.
 
 ### Messages {#messages}
 
