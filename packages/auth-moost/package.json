@@ -1,6 +1,6 @@
 {
   "name": "@aooth/auth-moost",
-  "version": "0.2.26",
+  "version": "0.2.27",
   "description": "Moost auth integration for aoothjs — AuthGuard interceptor, useAuth composable, REST endpoints, workflows",
   "keywords": [
     "aoothjs",
