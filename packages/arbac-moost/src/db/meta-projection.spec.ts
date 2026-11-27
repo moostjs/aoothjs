@@ -424,6 +424,67 @@ describe("pruneMetaByVisibility — writeOnly stamping", () => {
   });
 });
 
+/** A field with `@ui.valueHelp.fill` entries into the sibling fields `locals`. */
+function filledLeaf(...locals: string[]): TSerializedAnnotatedType {
+  const fills = locals.map((local) => ({ local, targetField: "name" }));
+  return { ...leaf(), metadata: { "ui.valueHelp.fill": fills } };
+}
+
+function localsOf(n: TSerializedAnnotatedType): string[] | undefined {
+  return (n.metadata["ui.valueHelp.fill"] as Array<{ local: string }> | undefined)?.map(
+    (f) => f.local,
+  );
+}
+
+function pruneType(type: TSerializedAnnotatedType, v: MetaVisibility): TSerializedAnnotatedType {
+  return pruneMetaByVisibility({ ...usersMeta(), type }, v).type;
+}
+
+describe("pruneMetaByVisibility — value-help fill targets", () => {
+  type Props = Record<string, TSerializedAnnotatedType>;
+  const propsOf = (n: TSerializedAnnotatedType) => (n.type as unknown as { props: Props }).props;
+
+  it("drops a fill into a field pinned by `set` or hidden; keeps visible and write-only targets", () => {
+    const out = pruneType(
+      obj({
+        customer: filledLeaf("customerName", "region", "note", "secret"),
+        customerName: leaf(),
+        region: leaf(),
+        note: leaf(),
+        secret: leaf(),
+      }),
+      {
+        ...vis({ customer: 1, customerName: 1, region: 1 }),
+        writable: new Set(["note"]),
+        forced: new Set(["customerName"]),
+      },
+    );
+    // `customerName` is served read-only and the server overwrites it; `secret` is not served.
+    expect(localsOf(propsOf(out).customer)).toEqual(["region", "note"]);
+  });
+
+  it("resolves `local` next to the bound field, and drops the key when no target is left", () => {
+    const out = pruneType(
+      obj({ address: obj({ city: filledLeaf("zip"), zip: leaf() }), zip: leaf() }),
+      {
+        ...vis({ address: 1, zip: 1 }),
+        writable: "all",
+        forced: new Set(["address.zip"]),
+      },
+    );
+    const city = propsOf(propsOf(out).address).city;
+    expect(city.metadata).not.toHaveProperty("ui.valueHelp.fill");
+  });
+
+  it("serves the fills unchanged when every target is an input", () => {
+    const out = pruneType(
+      obj({ customer: filledLeaf("customerName", "region"), customerName: leaf(), region: leaf() }),
+      vis({ customer: 1, customerName: 1, region: 1 }),
+    );
+    expect(localsOf(propsOf(out).customer)).toEqual(["customerName", "region"]);
+  });
+});
+
 describe("collectMethodNames", () => {
   it("collects methods across the prototype chain without firing accessors", () => {
     class Base {

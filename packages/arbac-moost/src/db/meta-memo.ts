@@ -151,7 +151,9 @@ export interface MetaDecisionInput {
   crud: readonly boolean[];
   readScopes: readonly object[];
   writeScopes: readonly object[];
-  /** Absent when no read op is allowed (no pruning). */
+  /** Keys the write scopes pin via `set`, when no read op is allowed (stamped read-only then). */
+  forced?: ReadonlySet<string>;
+  /** Absent when no read op is allowed (no read pruning). */
   projection?: {
     vis: MetaVisibility;
     /** The relation names the overlay resolved (`resolveRelationTree`), per level. */
@@ -187,7 +189,14 @@ export function metaDecisionKey(
     checkScopes(input.writeScopes, seen);
     checkScopes(input.readScopes, seen);
     const p = input.projection;
-    if (!p) return JSON.stringify([bits(input.actions), bits(input.crud)]);
+    if (!p) {
+      const { forced } = input;
+      return JSON.stringify([
+        bits(input.actions),
+        bits(input.crud),
+        forced ? sortedNames(forced) : 0,
+      ]);
+    }
     const refTargets: unknown[] = [];
     const types = [...p.refTargets.keys()].toSorted((a, b) => idOf(a) - idOf(b));
     for (const type of types) {

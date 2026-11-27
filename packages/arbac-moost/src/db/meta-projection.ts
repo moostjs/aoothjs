@@ -311,12 +311,13 @@ function pruneSerializedType(
         continue;
       }
       const child = { ...level, basePath: path };
+      const own = withFillTargets(prop, basePath, vis);
       if (!isMetaFieldVisible(path, vis)) {
         if (isPathWritable(path, vis)) {
           // Keep the whole subtree (clients need the full shape to WRITE it),
           // stamped write-only so forms render set-only inputs.
           props[name] = withVisibleTargets(
-            stampWriteOnly(prop),
+            stampWriteOnly(own),
             path,
             vis,
             refTargets,
@@ -326,7 +327,7 @@ function pruneSerializedType(
           // A hidden parent of writable leaves: keep only those (the walk
           // below drops every other hidden child), stamped write-only.
           props[name] = withVisibleTargets(
-            stampWriteOnly(pruneSerializedType(prop, child)),
+            stampWriteOnly(pruneSerializedType(own, child)),
             path,
             vis,
             refTargets,
@@ -335,7 +336,7 @@ function pruneSerializedType(
         }
         continue;
       }
-      const pruned = pruneSerializedType(prop, child);
+      const pruned = pruneSerializedType(own, child);
       props[name] = withVisibleTargets(
         isForced(path, vis) ? stampReadOnly(pruned) : pruned,
         path,
@@ -422,6 +423,31 @@ function pickerFieldsOf(entry: TAtscriptAnnotatedType | undefined): string[] {
 interface Target {
   type: object;
   fields: string[];
+}
+
+/**
+ * Drop the `ui.valueHelp.fill` entries whose `local` (a sibling of the bound field) is no input
+ * here: pinned by `set` (a pick writes a `meta.readonly` field since `@atscript/ui` 0.1.191, and
+ * the server overwrites it) or not served.
+ */
+function withFillTargets(
+  node: TSerializedAnnotatedTypeInner,
+  basePath: string,
+  vis: MetaVisibility,
+): TSerializedAnnotatedTypeInner {
+  const fills = node.metadata?.[UI_VALUE_HELP_FILL] as Array<{ local?: unknown }> | undefined;
+  if (!Array.isArray(fills)) return node;
+  const kept = fills.filter(({ local }) => {
+    if (typeof local !== "string") return false;
+    const path = basePath ? `${basePath}.${local}` : local;
+    return !isForced(path, vis) && (isMetaFieldVisible(path, vis) || isPathWritable(path, vis));
+  });
+  if (kept.length === fills.length) return node;
+  const { [UI_VALUE_HELP_FILL]: _fill, ...metadata } = node.metadata;
+  return {
+    ...node,
+    metadata: kept.length > 0 ? { ...metadata, [UI_VALUE_HELP_FILL]: kept } : metadata,
+  };
 }
 
 function withoutBinding(node: TSerializedAnnotatedTypeInner): TSerializedAnnotatedTypeInner {
@@ -708,10 +734,11 @@ function crudHandlers(op: TCrudOp, methods: ReadonlySet<string>): readonly strin
  *    own grant on the related table — no grant → relation and nav type
  *    dropped). `ref`s to hidden targets are stripped. An allowed read op
  *    without scopes is an unscoped grant (no field restriction; relations
- *    still follow the relation policy). No read op allowed → no pruning:
- *    `crud` already advertises no read surface, and write-only principals
- *    still need `type` for their insert/update forms. PK + `preferredId` are
- *    never pruned.
+ *    still follow the relation policy). No read op allowed → no pruning
+ *    (only fields the write scopes pin via `set` are stamped `meta.readonly`,
+ *    and fills into them dropped): `crud` already advertises no read surface,
+ *    and write-only principals still need `type` for their insert/update
+ *    forms. PK + `preferredId` are never pruned.
  *
  * 3. The capabilities (`crud[op]` control lists, field `groupable` /
  *    `bucketable` / `numeric` / `sortable`, relation `filterable`, the
@@ -770,20 +797,30 @@ export async function applyArbacMetaOverlay(
     }
     return { ...meta, actions: meta.actions.filter((_, i) => actionBits[i]), crud };
   };
+  const writeEffective = effectiveScope(writeScopes);
+  const forced = writeEffective.set ? new Set(Object.keys(writeEffective.set)) : undefined;
   if (readScopes.length === 0) {
     const key =
       memoMax > 0
         ? metaDecisionKey(
-            { actions: actionBits, crud: crudBits, readScopes, writeScopes },
+            { actions: actionBits, crud: crudBits, readScopes, writeScopes, forced },
             RECORD_CTX,
           )
         : undefined;
-    return memoMetaProjection(meta, key, memoMax, overlay);
+    // Every field visible (empty projection), no relation level: only the `set` stamps apply.
+    const build = forced?.size
+      ? () =>
+          pruneMetaByVisibility(overlay(), {
+            allowed: {},
+            alwaysVisible: NO_NAMES,
+            withGrants: NO_NAMES,
+            forced,
+          })
+      : overlay;
+    return memoMetaProjection(meta, key, memoMax, build);
   }
   const writable = collectWritableFields(writeScopes, false);
-  const writeEffective = effectiveScope(writeScopes);
   const nestedWrites = writeEffective.nestedWrites;
-  const forced = writeEffective.set ? new Set(Object.keys(writeEffective.set)) : undefined;
   if (isIdentifierSet(source)) {
     // The 0.1.67 identifier-set signature: no table to key on — not memoized.
     const vis = buildScopeVisibility(readScopes, undefined, source);

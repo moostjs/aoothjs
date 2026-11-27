@@ -1,4 +1,10 @@
-import { allowTableAction, allowTableRead, allowTableWrite, defineRole } from "@aooth/arbac";
+import {
+  allowTableAction,
+  allowTableOps,
+  allowTableRead,
+  allowTableWrite,
+  defineRole,
+} from "@aooth/arbac";
 import { DbSpace } from "@atscript/db";
 import { BetterSqlite3Driver, SqliteAdapter } from "@atscript/db-sqlite";
 import {
@@ -37,6 +43,12 @@ import { WrDoc, WrNote, WrSignForm, WrUser } from "./write-fixtures.as";
 const tenantA = (extra: ArbacDbScope = {}): ArbacDbScope => ({ filter: { tenant: "a" }, ...extra });
 const writer = (id: string, scope: () => ArbacDbScope) =>
   defineRole<object, ArbacDbScope>().id(id).use(allowTableWrite("wr-docs", { scope })).build();
+/** Insert + `/meta` only: no read op. */
+const inserter = (id: string, scope: () => ArbacDbScope) =>
+  defineRole<object, ArbacDbScope>()
+    .id(id)
+    .use(allowTableOps("wr-docs", ["insert", "meta"], { scope }))
+    .build();
 
 const ROLES = [
   writer("writer", () => tenantA()),
@@ -51,6 +63,9 @@ const ROLES = [
   // Two roles: the union of their filters / checks / nestedWrites applies.
   writer("writer-b", () => ({ filter: { tenant: "b" }, nestedWrites: ["owner"] })),
   defineRole<object, ArbacDbScope>().id("reader").use(allowTableRead("wr-docs")).build(),
+  // Insert forms without a read op: `/meta` keeps the whole field surface.
+  inserter("insert-only", () => tenantA()),
+  inserter("insert-only-set", () => tenantA({ set: { "profile.tenant": "a" } })),
   defineRole<object, ArbacDbScope>()
     .id("signer")
     .use(allowTableRead("wr-docs"), allowTableAction("wr-docs", ["doc.sign"]))
@@ -447,6 +462,46 @@ describe("A10 allowedFields / set", () => {
       profile: { name: "pa", tenant: "a" },
       settings: { theme: "light", locked: "yes" },
     });
+  });
+});
+
+/** `role`'s `/meta`: its `fields` and the serialized `profile` prop. */
+async function profileOf(role: string) {
+  await boot([role]);
+  const res = await send("GET", "/wr-docs/meta");
+  expect(res.status, JSON.stringify(res.body)).toBe(200);
+  return { fields: res.body.fields, profile: res.body.type.type.props.profile };
+}
+
+/** Switch the booted app's principal to `roles`; is `profile.tenant` served read-only? */
+async function stamped(roles: string[]): Promise<boolean> {
+  user.roles = roles;
+  const res = await send("GET", "/wr-docs/meta");
+  return res.body.type.type.props.profile.type.props.tenant.metadata?.["meta.readonly"] === true;
+}
+
+describe("/meta for a role with no read op", () => {
+  it("keeps the whole field surface, but a field the write scopes pin is read-only", async () => {
+    const { fields, profile } = await profileOf("insert-only-set");
+    expect(profile.type.props.tenant.metadata?.["meta.readonly"]).toBe(true);
+    expect(profile.type.props.name.metadata?.["meta.readonly"]).toBeUndefined();
+    expect(Object.keys(fields)).toEqual(expect.arrayContaining(["title", "profile.tenant"]));
+  });
+
+  it("without `set` nothing is stamped", async () => {
+    const { profile } = await profileOf("insert-only");
+    expect(profile.type.props.tenant.metadata?.["meta.readonly"]).toBeUndefined();
+  });
+
+  it("the memoized envelope keeps the two apart", async () => {
+    await boot(["insert-only"]);
+    // Warm the memo (it keeps an envelope from its second sight on), then switch principals.
+    expect([await stamped(["insert-only"]), await stamped(["insert-only"])]).toEqual([
+      false,
+      false,
+    ]);
+    expect(await stamped(["insert-only-set"])).toBe(true);
+    expect(await stamped(["insert-only"])).toBe(false);
   });
 });
 
